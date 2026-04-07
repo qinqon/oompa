@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/qinqon/github-issue-resolver/pkg/agent"
@@ -34,7 +35,20 @@ func parseConfig() agent.Config {
 	flag.BoolVar(&cfg.DryRun, "dry-run", false, "Log what would be done without executing")
 	flag.StringVar(&cfg.SignedOffBy, "signed-off-by", os.Getenv("AI_AGENT_SIGNED_OFF_BY"), "Signed-off-by value for commits (e.g. \"Name <email>\")")
 
+	var reviewers string
+	flag.StringVar(&reviewers, "reviewers", os.Getenv("AI_AGENT_REVIEWERS"), "Comma-separated whitelist of users/bots whose reviews to address (empty = all)")
+
 	flag.Parse()
+
+	if reviewers != "" {
+		for _, r := range strings.Split(reviewers, ",") {
+			r = strings.TrimSpace(r)
+			if r != "" {
+				cfg.Reviewers = append(cfg.Reviewers, r)
+			}
+		}
+	}
+
 	return cfg
 }
 

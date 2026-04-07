@@ -125,13 +125,12 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			continue
 		}
 
-		// Filter out bot comments
+		// Filter comments to only whitelisted reviewers
 		var humanComments []ReviewComment
 		for _, c := range comments {
-			if c.User == a.cfg.Owner+"[bot]" || c.User == "github-actions[bot]" {
-				continue
+			if a.isAllowedReviewer(c.User) {
+				humanComments = append(humanComments, c)
 			}
-			humanComments = append(humanComments, c)
 		}
 
 		if len(humanComments) == 0 {
@@ -189,4 +188,18 @@ func (a *Agent) CleanupDone(ctx context.Context) {
 			a.logger.Error("failed to save state", "error", err)
 		}
 	}
+}
+
+// isAllowedReviewer returns true if the user is in the reviewers whitelist.
+// If the whitelist is empty, all users are allowed.
+func (a *Agent) isAllowedReviewer(user string) bool {
+	if len(a.cfg.Reviewers) == 0 {
+		return true
+	}
+	for _, r := range a.cfg.Reviewers {
+		if r == user {
+			return true
+		}
+	}
+	return false
 }

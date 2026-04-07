@@ -263,16 +263,17 @@ func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
 	}
 }
 
-func TestProcessReviewComments_SkipsBotComments(t *testing.T) {
+func TestProcessReviewComments_SkipsNonWhitelistedUsers(t *testing.T) {
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
-			{ID: 60, User: "github-actions[bot]", Body: "CI passed"},
+			{ID: 60, User: "random-user", Body: "some comment"},
 		},
 	}
 	runner := &mockCommandRunner{}
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.Reviewers = []string{"trusted-reviewer"}
 	agent.state.ActiveIssues[42] = &IssueWork{
 		IssueNumber:   42,
 		PRNumber:      100,
@@ -283,7 +284,35 @@ func TestProcessReviewComments_SkipsBotComments(t *testing.T) {
 	agent.ProcessReviewComments(context.Background())
 
 	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude for bot comments")
+		t.Error("should not invoke claude for non-whitelisted user")
+	}
+}
+
+func TestProcessReviewComments_AllowsAllWhenWhitelistEmpty(t *testing.T) {
+	claudeResult, _ := json.Marshal(ClaudeResult{Result: "Done"})
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "anyone", Body: "fix this"},
+		},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	// No reviewers set — empty whitelist means allow all
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:   42,
+		IssueTitle:    "Fix bug",
+		PRNumber:      100,
+		Status:        "pr-open",
+		WorktreePath:  "/tmp/worktree",
+		LastCommentID: 50,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	if len(runner.calls) != 1 {
+		t.Errorf("expected 1 claude call with empty whitelist, got %d", len(runner.calls))
 	}
 }
 

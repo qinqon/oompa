@@ -15,4 +15,5 @@ type Config struct {
 	LogLevel      string
 	DryRun        bool
 	SignedOffBy   string
+	Reviewers     []string // whitelist of users/bots whose reviews to address
 }
