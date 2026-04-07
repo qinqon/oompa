@@ -67,7 +67,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			CreatedAt:    time.Now(),
 		}
 
-		prompt := buildImplementationPrompt(issue)
+		prompt := buildImplementationPrompt(issue, a.cfg.SignedOffBy)
 		_, err = runClaude(ctx, a.runner, worktreePath, prompt, a.cfg)
 		if err != nil {
 			a.logger.Error("claude failed", "issue", issue.Number, "error", err)
@@ -128,7 +128,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 
 		a.logger.Info("addressing review comments", "pr", work.PRNumber, "count", len(humanComments))
 
-		prompt := buildReviewResponsePrompt(*work, humanComments)
+		prompt := buildReviewResponsePrompt(*work, humanComments, a.cfg.SignedOffBy)
 		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg)
 		if err != nil {
 			a.logger.Error("claude failed to address review", "pr", work.PRNumber, "error", err)

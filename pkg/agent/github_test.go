@@ -218,3 +218,49 @@ func TestListPRsByHead(t *testing.T) {
 		t.Errorf("expected head 'ai/issue-42', got %q", prs[0].Head)
 	}
 }
+
+func TestGetAuthenticatedUser_WithNameAndEmail(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/user", func(w http.ResponseWriter, r *http.Request) {
+		user := &github.User{
+			Login: github.Ptr("jdoe"),
+			Name:  github.Ptr("Jane Doe"),
+			Email: github.Ptr("jane@example.com"),
+		}
+		json.NewEncoder(w).Encode(user)
+	})
+
+	gh := setupTestClient(t, mux)
+	name, email, err := gh.GetAuthenticatedUser(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "Jane Doe" {
+		t.Errorf("expected name 'Jane Doe', got %q", name)
+	}
+	if email != "jane@example.com" {
+		t.Errorf("expected email 'jane@example.com', got %q", email)
+	}
+}
+
+func TestGetAuthenticatedUser_FallbackToLogin(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/user", func(w http.ResponseWriter, r *http.Request) {
+		user := &github.User{
+			Login: github.Ptr("jdoe"),
+		}
+		json.NewEncoder(w).Encode(user)
+	})
+
+	gh := setupTestClient(t, mux)
+	name, email, err := gh.GetAuthenticatedUser(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "jdoe" {
+		t.Errorf("expected name 'jdoe' (login fallback), got %q", name)
+	}
+	if email != "jdoe@users.noreply.github.com" {
+		t.Errorf("expected noreply email fallback, got %q", email)
+	}
+}

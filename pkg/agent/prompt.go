@@ -2,7 +2,12 @@ package agent
 
 import "fmt"
 
-func buildImplementationPrompt(issue Issue) string {
+func buildImplementationPrompt(issue Issue, signedOffBy string) string {
+	signoff := ""
+	if signedOffBy != "" {
+		signoff = fmt.Sprintf("\n6. Add \"Signed-off-by: %s\" to every commit message", signedOffBy)
+	}
+
 	return fmt.Sprintf(`You are resolving GitHub issue #%d: %s
 
 Issue description:
@@ -16,13 +21,13 @@ Instructions:
 5. Create a PR using "gh pr create" with:
    - A /kind label (e.g. /kind bug, /kind feature)
    - "Fixes #%d" in the PR body
-   - A release-note block describing the change
+   - A release-note block describing the change%s
 
 Do not merge the PR. Only create it.`,
-		issue.Number, issue.Title, issue.Body, issue.Number)
+		issue.Number, issue.Title, issue.Body, issue.Number, signoff)
 }
 
-func buildReviewResponsePrompt(work IssueWork, comments []ReviewComment) string {
+func buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, signedOffBy string) string {
 	prompt := fmt.Sprintf(`You are addressing review comments on PR #%d for issue #%d: %s
 
 Review comments to address:
@@ -45,6 +50,10 @@ Instructions:
 2. Run "make lint" and "make test" to verify your changes
 3. Commit and push your changes
 4. Do not force-push`
+
+	if signedOffBy != "" {
+		prompt += fmt.Sprintf("\n5. Add \"Signed-off-by: %s\" to every commit message", signedOffBy)
+	}
 
 	return prompt
 }

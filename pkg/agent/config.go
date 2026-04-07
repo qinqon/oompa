@@ -14,4 +14,5 @@ type Config struct {
 	VertexProject string
 	LogLevel      string
 	DryRun        bool
+	SignedOffBy   string
 }

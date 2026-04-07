@@ -13,7 +13,7 @@ func TestBuildImplementationPrompt(t *testing.T) {
 		Labels: []string{"good-for-ai"},
 	}
 
-	prompt := buildImplementationPrompt(issue)
+	prompt := buildImplementationPrompt(issue, "")
 
 	checks := []string{
 		"#42",
@@ -28,6 +28,12 @@ func TestBuildImplementationPrompt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+
+	// With signed-off-by
+	prompt = buildImplementationPrompt(issue, "Test User <test@example.com>")
+	if !strings.Contains(prompt, "Signed-off-by: Test User <test@example.com>") {
+		t.Error("prompt missing Signed-off-by when provided")
 	}
 }
 
@@ -55,7 +61,7 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		},
 	}
 
-	prompt := buildReviewResponsePrompt(work, comments)
+	prompt := buildReviewResponsePrompt(work, comments, "")
 
 	checks := []string{
 		"reviewer1",

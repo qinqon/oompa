@@ -161,3 +161,23 @@ func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, branch 
 	}
 	return prs, nil
 }
+
+// GetAuthenticatedUser returns the name and email of the authenticated user.
+func (g *GoGitHubClient) GetAuthenticatedUser(ctx context.Context) (name, email string, err error) {
+	user, _, err := g.client.Users.Get(ctx, "")
+	if err != nil {
+		return "", "", fmt.Errorf("getting authenticated user: %w", err)
+	}
+
+	name = user.GetName()
+	if name == "" {
+		name = user.GetLogin()
+	}
+
+	email = user.GetEmail()
+	if email == "" {
+		email = fmt.Sprintf("%s@users.noreply.github.com", user.GetLogin())
+	}
+
+	return name, email, nil
+}
