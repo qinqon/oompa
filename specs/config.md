@@ -14,6 +14,7 @@ type Config struct {
     VertexProject string
     LogLevel      string
     DryRun        bool
+    SignedOffBy   string
 }
 ```
 
@@ -30,6 +31,7 @@ type Config struct {
 | `GITHUB_TOKEN` | -- | (required) | GitHub PAT for go-github client |
 | `CLOUD_ML_REGION` | `--vertex-region` | (required) | GCP Vertex AI region |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | `--vertex-project` | (required) | GCP project ID for Vertex |
+| `AI_AGENT_SIGNED_OFF_BY` | `--signed-off-by` | (GitHub user) | Signed-off-by for commits. Defaults to authenticated GitHub user's name and email |
 
 Config from env vars (`AI_AGENT_*`) with flag overrides, read in `main()`.
 

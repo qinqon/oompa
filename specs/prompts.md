@@ -1,19 +1,21 @@
 # Prompt Templates
 
-## `buildImplementationPrompt(issue Issue) string`
+## `buildImplementationPrompt(issue Issue, signedOffBy string) string`
 
 Tells Claude to:
 - Read Claude.md for conventions
 - Implement the fix, run `make lint` and `make test`
 - Commit (no trailing period, 72 char body)
 - Create PR via `gh pr create` with `/kind`, `Fixes #N`, release-note block
+- If signedOffBy is non-empty, add `Signed-off-by:` to every commit message
 
-## `buildReviewResponsePrompt(work IssueWork, comments []ReviewComment) string`
+## `buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, signedOffBy string) string`
 
 Tells Claude to:
 - Address each review comment
 - Run lint/test, commit, push
 - No force-push
+- If signedOffBy is non-empty, add `Signed-off-by:` to every commit message
 
 ## Tests (`prompt_test.go`)
 

@@ -29,6 +29,15 @@ type GitHubClient interface {
 | `AddLabel` | `client.Issues.AddLabelsToIssue()` |
 | `RemoveLabel` | `client.Issues.RemoveLabelForIssue()` |
 | `ListPRsByHead` | `client.PullRequests.List()` with `Head: branch` |
+| `GetAuthenticatedUser` | `client.Users.Get("")`, returns name + email with login/noreply fallbacks |
+
+## Additional Methods (on concrete type, not interface)
+
+```go
+func (g *GoGitHubClient) GetAuthenticatedUser(ctx context.Context) (name, email string, err error)
+```
+
+Used at startup to default the `--signed-off-by` value.
 
 ## Tests (`github_test.go`)
 
@@ -40,3 +49,5 @@ Use `net/http/httptest` with canned JSON responses. Point go-github client at te
 - `TestAddIssueComment` -- verifies request body
 - `TestAddLabel` / `TestRemoveLabel`
 - `TestListPRsByHead` -- filters by branch
+- `TestGetAuthenticatedUser_WithNameAndEmail` -- returns name and email
+- `TestGetAuthenticatedUser_FallbackToLogin` -- falls back to login and noreply email

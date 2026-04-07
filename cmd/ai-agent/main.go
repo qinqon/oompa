@@ -130,8 +130,8 @@ func main() {
 
 func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 	logger.Debug("starting poll cycle")
+	a.CleanupDone(ctx)
 	a.ProcessNewIssues(ctx)
 	a.ProcessReviewComments(ctx)
-	a.CleanupDone(ctx)
 	logger.Debug("poll cycle complete")
 }

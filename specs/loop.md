@@ -15,11 +15,11 @@ type Agent struct {
 
 ## Methods
 
+- `(a *Agent) CleanupDone(ctx)` -- remove worktrees for merged/closed PRs
 - `(a *Agent) ProcessNewIssues(ctx)` -- find labeled issues, create worktrees, run Claude, create PRs
 - `(a *Agent) ProcessReviewComments(ctx)` -- check for new review comments, run Claude to address them
-- `(a *Agent) CleanupDone(ctx)` -- remove worktrees for merged/closed PRs
 
-Main loop lives in `main.go`, calls these methods sequentially.
+Main loop lives in `cmd/ai-agent/main.go`, calls these methods sequentially. CleanupDone runs first so that closed/merged PRs are removed from state before ProcessNewIssues checks for new work.
 
 ## Tests (`loop_test.go`)
 
