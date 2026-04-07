@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -15,6 +15,18 @@ type Agent struct {
 	state     *State
 	cfg       Config
 	logger    *slog.Logger
+}
+
+// NewAgent creates a new Agent with all dependencies wired.
+func NewAgent(gh GitHubClient, runner CommandRunner, worktrees WorktreeManager, state *State, cfg Config, logger *slog.Logger) *Agent {
+	return &Agent{
+		gh:        gh,
+		runner:    runner,
+		worktrees: worktrees,
+		state:     state,
+		cfg:       cfg,
+		logger:    logger,
+	}
 }
 
 // ProcessNewIssues finds labeled issues and spawns Claude to implement fixes.

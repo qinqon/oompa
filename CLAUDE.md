@@ -9,13 +9,13 @@ This project uses spec-driven development. **Read the relevant spec before imple
 | Spec | Drives |
 |------|--------|
 | [specs/architecture.md](specs/architecture.md) | Overall structure, directory layout, main loop flow |
-| [specs/state.md](specs/state.md) | `state.go` + `state_test.go` |
-| [specs/github-client.md](specs/github-client.md) | `github.go` + `github_test.go` |
-| [specs/claude-runner.md](specs/claude-runner.md) | `claude.go` + `claude_test.go` |
-| [specs/worktree.md](specs/worktree.md) | `worktree.go` + `worktree_test.go` |
-| [specs/prompts.md](specs/prompts.md) | `prompt.go` + `prompt_test.go` |
-| [specs/loop.md](specs/loop.md) | `loop.go` + `loop_test.go` |
-| [specs/config.md](specs/config.md) | `main.go` (Config struct, env/flag parsing) |
+| [specs/state.md](specs/state.md) | `pkg/agent/state.go` + `pkg/agent/state_test.go` |
+| [specs/github-client.md](specs/github-client.md) | `pkg/agent/github.go` + `pkg/agent/github_test.go` |
+| [specs/claude-runner.md](specs/claude-runner.md) | `pkg/agent/claude.go` + `pkg/agent/claude_test.go` |
+| [specs/worktree.md](specs/worktree.md) | `pkg/agent/worktree.go` + `pkg/agent/worktree_test.go` |
+| [specs/prompts.md](specs/prompts.md) | `pkg/agent/prompt.go` + `pkg/agent/prompt_test.go` |
+| [specs/loop.md](specs/loop.md) | `pkg/agent/loop.go` + `pkg/agent/loop_test.go` |
+| [specs/config.md](specs/config.md) | `cmd/ai-agent/main.go` (config parsing) + `pkg/agent/config.go` (Config struct) |
 | [specs/error-handling.md](specs/error-handling.md) | Error handling and safety constraints |
 | [specs/testing.md](specs/testing.md) | Mock types, test strategy, verification |
 
@@ -30,18 +30,18 @@ This project uses spec-driven development. **Read the relevant spec before imple
 ## Build & Test
 
 ```bash
-go build -o ai-agent .
+go build -o ai-agent ./cmd/ai-agent
 go test ./...
 ```
 
 ## Implementation Order
 
 Implement in dependency order:
-1. `go.mod` + types (Issue, ReviewComment, PR, ClaudeResult)
-2. `state.go` + `state_test.go`
-3. `prompt.go` + `prompt_test.go`
-4. `claude.go` + `claude_test.go`
-5. `github.go` + `github_test.go`
-6. `worktree.go` + `worktree_test.go`
-7. `loop.go` + `loop_test.go`
-8. `main.go`
+1. `go.mod` + `pkg/agent/types.go` (Issue, ReviewComment, PR, ClaudeResult)
+2. `pkg/agent/state.go` + `pkg/agent/state_test.go`
+3. `pkg/agent/prompt.go` + `pkg/agent/prompt_test.go`
+4. `pkg/agent/claude.go` + `pkg/agent/claude_test.go`
+5. `pkg/agent/github.go` + `pkg/agent/github_test.go`
+6. `pkg/agent/worktree.go` + `pkg/agent/worktree_test.go`
+7. `pkg/agent/loop.go` + `pkg/agent/loop_test.go`
+8. `cmd/ai-agent/main.go`

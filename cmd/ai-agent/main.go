@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/signal"
 	"time"
+
+	"github.com/qinqon/github-issue-resolver/pkg/agent"
 )
 
 func envOrDefault(key, def string) string {
@@ -17,8 +19,8 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
-func parseConfig() Config {
-	cfg := Config{}
+func parseConfig() agent.Config {
+	cfg := agent.Config{}
 
 	flag.StringVar(&cfg.Owner, "owner", envOrDefault("AI_AGENT_OWNER", "openperouter"), "GitHub repo owner")
 	flag.StringVar(&cfg.Repo, "repo", envOrDefault("AI_AGENT_REPO", "openperouter"), "GitHub repo name")
@@ -78,15 +80,16 @@ func main() {
 	defer cancel()
 
 	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", cfg.Owner, cfg.Repo)
+	runner := &agent.ExecRunner{}
 
-	agent := &Agent{
-		gh:        NewGoGitHubClient(token),
-		runner:    &ExecRunner{},
-		worktrees: NewGitWorktreeManager(&ExecRunner{}, cfg.CloneDir, repoURL),
-		state:     LoadState(cfg.StatePath),
-		cfg:       cfg,
-		logger:    logger,
-	}
+	a := agent.NewAgent(
+		agent.NewGoGitHubClient(token),
+		runner,
+		agent.NewGitWorktreeManager(runner, cfg.CloneDir, repoURL),
+		agent.LoadState(cfg.StatePath),
+		cfg,
+		logger,
+	)
 
 	logger.Info("starting ai-agent",
 		"owner", cfg.Owner,
@@ -100,7 +103,7 @@ func main() {
 	defer ticker.Stop()
 
 	// Run once immediately, then on tick
-	runLoop(ctx, agent, logger)
+	runLoop(ctx, a, logger)
 
 	for {
 		select {
@@ -108,15 +111,15 @@ func main() {
 			logger.Info("shutting down")
 			return
 		case <-ticker.C:
-			runLoop(ctx, agent, logger)
+			runLoop(ctx, a, logger)
 		}
 	}
 }
 
-func runLoop(ctx context.Context, agent *Agent, logger *slog.Logger) {
+func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 	logger.Debug("starting poll cycle")
-	agent.ProcessNewIssues(ctx)
-	agent.ProcessReviewComments(ctx)
-	agent.CleanupDone(ctx)
+	a.ProcessNewIssues(ctx)
+	a.ProcessReviewComments(ctx)
+	a.CleanupDone(ctx)
 	logger.Debug("poll cycle complete")
 }
