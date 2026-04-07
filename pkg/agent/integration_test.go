@@ -654,7 +654,7 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 		t.Error("expected comment about exhausted CI fix attempts")
 	}
 
-	// CI passes — verify it's detected
+	// CI passes — verify no further action is taken
 	gh.setCheckRuns("fakesha123", []CheckRun{
 		{ID: 2, Name: "test", Status: "completed", Conclusion: "success"},
 	})
@@ -662,10 +662,23 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 	agent.state.ActiveIssues[77].CIFixAttempts = 0
 	agent.state.ActiveIssues[77].LastCIStatus = ""
 
+	runner.mu.Lock()
+	callsBefore = len(runner.calls)
+	runner.mu.Unlock()
+
 	agent.ProcessCIFailures(ctx)
 
-	if agent.state.ActiveIssues[77].LastCIStatus != "success" {
-		t.Errorf("expected CI status 'success', got %q", agent.state.ActiveIssues[77].LastCIStatus)
+	runner.mu.Lock()
+	newCalls = 0
+	for i := callsBefore; i < len(runner.calls); i++ {
+		if runner.calls[i].Name == "claude" {
+			newCalls++
+		}
+	}
+	runner.mu.Unlock()
+
+	if newCalls != 0 {
+		t.Error("should not invoke claude when CI passes")
 	}
 }
 

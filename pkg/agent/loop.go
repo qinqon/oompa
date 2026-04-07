@@ -183,28 +183,15 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		// Check if all checks are completed
-		allCompleted := true
+		// Collect completed failures — act immediately without waiting for all checks
 		var failures []CheckRun
 		for _, r := range runs {
-			if r.Status != "completed" {
-				allCompleted = false
-				break
-			}
-			if r.Conclusion == "failure" {
+			if r.Status == "completed" && r.Conclusion == "failure" {
 				failures = append(failures, r)
 			}
 		}
 
-		if !allCompleted || len(runs) == 0 {
-			continue
-		}
-
-		if len(failures) == 0 {
-			if work.LastCIStatus != "success" {
-				a.logger.Info("CI passing", "pr", work.PRNumber)
-				work.LastCIStatus = "success"
-			}
+		if len(runs) == 0 || len(failures) == 0 {
 			continue
 		}
 
