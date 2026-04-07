@@ -12,7 +12,9 @@ Tells Claude to:
 ## `buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, signedOffBy string) string`
 
 Tells Claude to:
-- Address each review comment
+- For each review comment: implement if valid, push back with explanation if not
+- Always reply to every comment, even when implementing the suggestion
+- Reply using `gh pr review` or `gh api`
 - Run lint/test, commit, push
 - No force-push
 - If signedOffBy is non-empty, add `Signed-off-by:` to every commit message

@@ -15,6 +15,7 @@ type Config struct {
     LogLevel      string
     DryRun        bool
     SignedOffBy   string
+    Reviewers     []string // whitelist of users/bots whose reviews to address
 }
 ```
 
@@ -32,6 +33,7 @@ type Config struct {
 | `CLOUD_ML_REGION` | `--vertex-region` | (required) | GCP Vertex AI region |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | `--vertex-project` | (required) | GCP project ID for Vertex |
 | `AI_AGENT_SIGNED_OFF_BY` | `--signed-off-by` | (GitHub user) | Signed-off-by for commits. Defaults to authenticated GitHub user's name and email |
+| `AI_AGENT_REVIEWERS` | `--reviewers` | (empty = all) | Comma-separated whitelist of users/bots whose reviews to address |
 
 Config from env vars (`AI_AGENT_*`) with flag overrides, read in `main()`.
 

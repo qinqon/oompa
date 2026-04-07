@@ -14,6 +14,7 @@ type mockGitHubClient struct {
     addedComments   []string
     addedLabels     []string
     removedLabels   []string
+    addedReactions  []string
     listIssuesErr   error
     // ...
 }
