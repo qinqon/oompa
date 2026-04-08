@@ -144,6 +144,12 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 
 		a.logger.Info("addressing review comments", "pr", work.PRNumber, "count", len(humanComments))
 
+		// Pull latest changes (someone may have pushed manual commits)
+		if err := a.worktrees.SyncWorktree(ctx, work.WorktreePath); err != nil {
+			a.logger.Error("failed to sync worktree", "pr", work.PRNumber, "error", err)
+			continue
+		}
+
 		// React with eyes to signal we're processing
 		for _, c := range humanComments {
 			if err := a.gh.AddPRCommentReaction(ctx, a.cfg.Owner, a.cfg.Repo, c.ID, "eyes"); err != nil {
@@ -228,6 +234,12 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		}
 
 		a.logger.Info("CI failing, invoking Claude to fix", "pr", work.PRNumber, "failures", len(failures), "attempt", work.CIFixAttempts+1)
+
+		// Pull latest changes
+		if err := a.worktrees.SyncWorktree(ctx, work.WorktreePath); err != nil {
+			a.logger.Error("failed to sync worktree", "pr", work.PRNumber, "error", err)
+			continue
+		}
 
 		prompt := buildCIFixPrompt(*work, failures, a.cfg.SignedOffBy)
 		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg)

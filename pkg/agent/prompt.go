@@ -54,10 +54,11 @@ Instructions:
 2. Reply to each comment using this command (replace COMMENT_ID and BODY):
    gh api repos/%s/%s/pulls/comments/COMMENT_ID/replies -f body="BODY"
 3. Run "make lint" and "make test" to verify your changes
-4. Squash your changes into the existing commit(s) using "git add -A && git commit --amend --no-edit" then force push with "git push --force-with-lease"`, owner, repo)
+4. If you made code changes, squash them into the existing commit using "git add -A && git commit --amend --no-edit" then force push with "git push --force-with-lease"
+5. If the comments are already addressed by existing code and no changes are needed, do NOT amend or push — just reply to the comments`, owner, repo)
 
 	if signedOffBy != "" {
-		prompt += fmt.Sprintf("\n5. Ensure the commit has \"Signed-off-by: %s\"", signedOffBy)
+		prompt += fmt.Sprintf("\n6. Ensure the commit has \"Signed-off-by: %s\"", signedOffBy)
 	}
 
 	return prompt
@@ -81,10 +82,11 @@ Instructions:
 1. Investigate the CI failures above
 2. Fix the code so that CI passes
 3. Run "make lint" and "make test" locally to verify
-4. Squash your changes into the existing commit(s) using "git add -A && git commit --amend --no-edit" then force push with "git push --force-with-lease"`
+4. If you made code changes, squash them into the existing commit using "git add -A && git commit --amend --no-edit" then force push with "git push --force-with-lease"
+5. If no code changes are needed, do NOT amend or push`
 
 	if signedOffBy != "" {
-		prompt += fmt.Sprintf("\n5. Ensure the commit has \"Signed-off-by: %s\"", signedOffBy)
+		prompt += fmt.Sprintf("\n6. Ensure the commit has \"Signed-off-by: %s\"", signedOffBy)
 	}
 
 	return prompt

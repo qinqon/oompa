@@ -12,6 +12,7 @@ type WorktreeManager interface {
 	EnsureRepoCloned(ctx context.Context) error
 	CreateWorktree(ctx context.Context, branchName string) (worktreePath string, err error)
 	RemoveWorktree(ctx context.Context, worktreePath string) error
+	SyncWorktree(ctx context.Context, worktreePath string) error
 }
 
 // GitWorktreeManager implements WorktreeManager using git commands.
@@ -60,6 +61,14 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 	}
 
 	return worktreePath, nil
+}
+
+func (g *GitWorktreeManager) SyncWorktree(ctx context.Context, worktreePath string) error {
+	_, stderr, err := g.runner.Run(ctx, worktreePath, "git", "pull", "--rebase", "origin")
+	if err != nil {
+		return fmt.Errorf("git pull --rebase: %w (stderr: %s)", err, string(stderr))
+	}
+	return nil
 }
 
 func (g *GitWorktreeManager) RemoveWorktree(ctx context.Context, worktreePath string) error {

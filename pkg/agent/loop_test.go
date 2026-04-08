@@ -118,6 +118,10 @@ func (m *mockWorktreeManager) CreateWorktree(_ context.Context, branchName strin
 	return "/tmp/worktrees/" + branchName, nil
 }
 
+func (m *mockWorktreeManager) SyncWorktree(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *mockWorktreeManager) RemoveWorktree(_ context.Context, worktreePath string) error {
 	m.removedPaths = append(m.removedPaths, worktreePath)
 	return nil
