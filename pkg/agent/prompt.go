@@ -54,11 +54,10 @@ Instructions:
 2. Reply to each comment using this command (replace COMMENT_ID and BODY):
    gh api repos/%s/%s/pulls/comments/COMMENT_ID/replies -f body="BODY"
 3. Run "make lint" and "make test" to verify your changes
-4. Commit and push your changes
-5. Do not force-push`, owner, repo)
+4. Squash your changes into the existing commit(s) using "git add -A && git commit --amend --no-edit" then force push with "git push --force-with-lease"`, owner, repo)
 
 	if signedOffBy != "" {
-		prompt += fmt.Sprintf("\n6. Add \"Signed-off-by: %s\" to every commit message", signedOffBy)
+		prompt += fmt.Sprintf("\n5. Ensure the commit has \"Signed-off-by: %s\"", signedOffBy)
 	}
 
 	return prompt
@@ -82,11 +81,10 @@ Instructions:
 1. Investigate the CI failures above
 2. Fix the code so that CI passes
 3. Run "make lint" and "make test" locally to verify
-4. Commit and push your changes
-5. Do not force-push`
+4. Squash your changes into the existing commit(s) using "git add -A && git commit --amend --no-edit" then force push with "git push --force-with-lease"`
 
 	if signedOffBy != "" {
-		prompt += fmt.Sprintf("\n6. Add \"Signed-off-by: %s\" to every commit message", signedOffBy)
+		prompt += fmt.Sprintf("\n5. Ensure the commit has \"Signed-off-by: %s\"", signedOffBy)
 	}
 
 	return prompt
