@@ -130,9 +130,13 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		// Filter comments: skip bot-posted, only whitelisted reviewers, skip already-processed
+		// Filter comments: skip replies, skip bot-posted, only whitelisted reviewers, skip already-processed
 		var humanComments []ReviewComment
 		for _, c := range comments {
+			// Skip replies — only process top-level review comments
+			if c.InReplyToID != 0 {
+				continue
+			}
 			// Skip comments posted by the agent itself
 			if strings.Contains(c.Body, botMarker) {
 				continue
