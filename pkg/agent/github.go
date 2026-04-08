@@ -78,11 +78,12 @@ func (g *GoGitHubClient) GetPRReviewComments(ctx context.Context, owner, repo st
 			continue
 		}
 		comments = append(comments, ReviewComment{
-			ID:   c.GetID(),
-			User: c.GetUser().GetLogin(),
-			Body: c.GetBody(),
-			Path: c.GetPath(),
-			Line: c.GetLine(),
+			ID:          c.GetID(),
+			InReplyToID: c.GetInReplyTo(),
+			User:        c.GetUser().GetLogin(),
+			Body:        c.GetBody(),
+			Path:        c.GetPath(),
+			Line:        c.GetLine(),
 		})
 	}
 	return comments, nil

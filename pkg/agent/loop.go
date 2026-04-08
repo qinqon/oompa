@@ -115,15 +115,25 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			continue
 		}
 
-		// Filter comments: only whitelisted reviewers, skip already-processed (has :eyes: reaction)
+		// Build a set of comment IDs that have a reply from our user
+		repliedTo := make(map[int64]bool)
+		for _, c := range comments {
+			if c.InReplyToID != 0 && c.User == a.cfg.GitHubUser {
+				repliedTo[c.InReplyToID] = true
+			}
+		}
+
+		// Filter comments: only whitelisted reviewers, skip already-processed
 		var humanComments []ReviewComment
 		for _, c := range comments {
 			if !a.isAllowedReviewer(c.User) {
 				continue
 			}
-			// Skip comments we've already reacted to (check our own :eyes: reaction)
-			if already, err := a.gh.HasPRCommentReaction(ctx, a.cfg.Owner, a.cfg.Repo, c.ID, "eyes", a.cfg.GitHubUser); err == nil && already {
-				continue
+			// A comment is processed only if we reacted with :eyes: AND replied to it
+			if repliedTo[c.ID] {
+				if already, err := a.gh.HasPRCommentReaction(ctx, a.cfg.Owner, a.cfg.Repo, c.ID, "eyes", a.cfg.GitHubUser); err == nil && already {
+					continue
+				}
 			}
 			humanComments = append(humanComments, c)
 		}

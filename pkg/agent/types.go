@@ -12,11 +12,12 @@ type Issue struct {
 
 // ReviewComment represents a comment on a PR or issue.
 type ReviewComment struct {
-	ID   int64
-	User string
-	Body string
-	Path string
-	Line int
+	ID          int64
+	InReplyToID int64
+	User        string
+	Body        string
+	Path        string
+	Line        int
 }
 
 // PR represents a GitHub pull request.
