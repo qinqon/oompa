@@ -82,13 +82,18 @@ PR diff summary (files changed in this PR):
 %s
 
 Instructions:
-1. First, investigate whether the CI failures are caused by the changes in this PR
-   - Look at the CI logs and the PR diff
-   - Determine if the failure is related to the PR changes or is a pre-existing/infrastructure issue
+1. First, investigate whether the CI failures are DIRECTLY caused by the changes in this PR
+   - A failure is RELATED only if the code changed in this PR could have directly caused the test/check to fail
+   - A failure is UNRELATED if:
+     * It is a flaky test or intermittent infrastructure failure (e.g. timeouts, network errors, resource limits)
+     * It is an e2e/integration test failure and the PR only changes build files, docs, Makefiles, or configs
+     * The failing test does not test any code path modified by this PR
+     * The error message references components, services, or files not touched by this PR
+   - When in doubt, say UNRELATED — it is better to skip a fixable failure than to waste time on an unfixable one
 2. If the failure is NOT related to the PR changes:
-   - Do NOT attempt to fix it
+   - Do NOT attempt to fix it, do NOT modify any files
    - Your output MUST start with the word UNRELATED followed by a brief explanation
-3. If the failure IS related to the PR changes:
+3. If the failure IS directly related to the PR changes:
    - Your output MUST start with the word RELATED
    - Fix the code so that CI passes
    - Run "make lint" and "make test" locally to verify
