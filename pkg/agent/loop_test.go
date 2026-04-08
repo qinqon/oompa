@@ -20,6 +20,7 @@ type mockGitHubClient struct {
 	removedLabels  []string
 	addedReactions []string
 	checkRuns      []CheckRun
+	prHeadSHAs     []string // returns these in sequence; if empty returns "abc123"
 
 	listIssuesErr error
 }
@@ -85,6 +86,11 @@ func (m *mockGitHubClient) GetCheckRunLog(_ context.Context, _, _ string, _ int6
 }
 
 func (m *mockGitHubClient) GetPRHeadSHA(_ context.Context, _, _ string, _ int) (string, error) {
+	if len(m.prHeadSHAs) > 0 {
+		sha := m.prHeadSHAs[0]
+		m.prHeadSHAs = m.prHeadSHAs[1:]
+		return sha, nil
+	}
 	return "abc123", nil
 }
 
@@ -428,11 +434,12 @@ func TestCleanupDone_OpenPR(t *testing.T) {
 }
 
 func TestProcessCIFailures_FixesFailingCI(t *testing.T) {
-	claudeResult, _ := json.Marshal(ClaudeResult{Result: "Fixed CI"})
+	claudeResult, _ := json.Marshal(ClaudeResult{Result: "RELATED Fixed CI"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
 		},
+		prHeadSHAs: []string{"sha-before", "sha-after"}, // different SHAs = Claude pushed
 	}
 	runner := &mockCommandRunner{stdout: claudeResult}
 	wt := &mockWorktreeManager{}

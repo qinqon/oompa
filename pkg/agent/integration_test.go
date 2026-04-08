@@ -23,16 +23,16 @@ type fakeGitHub struct {
 	addedLabels    []string
 	removedLabels  []string
 	reactions      []string
-	checkRuns      map[string][]CheckRun // ref -> check runs
+	checkRuns      []CheckRun
 	nextPRNumber   int
 	nextCommentID  int64
+	shaCounter     int
 }
 
 func newFakeGitHub() *fakeGitHub {
 	return &fakeGitHub{
 		prs:           make(map[int]*PR),
 		prComments:    make(map[int][]ReviewComment),
-		checkRuns:     make(map[string][]CheckRun),
 		nextPRNumber:  100,
 		nextCommentID: 1000,
 	}
@@ -72,10 +72,10 @@ func (f *fakeGitHub) closePR(prNumber int) {
 	}
 }
 
-func (f *fakeGitHub) setCheckRuns(ref string, runs []CheckRun) {
+func (f *fakeGitHub) setCheckRuns(runs []CheckRun) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.checkRuns[ref] = runs
+	f.checkRuns = runs
 }
 
 func (f *fakeGitHub) mergePR(prNumber int) {
@@ -170,7 +170,7 @@ func (f *fakeGitHubClient) AddPRCommentReaction(_ context.Context, _, _ string, 
 func (f *fakeGitHubClient) GetCheckRuns(_ context.Context, _, _, ref string) ([]CheckRun, error) {
 	f.state.mu.Lock()
 	defer f.state.mu.Unlock()
-	return append([]CheckRun{}, f.state.checkRuns[ref]...), nil
+	return append([]CheckRun{}, f.state.checkRuns...), nil
 }
 
 func (f *fakeGitHubClient) GetCheckRunLog(_ context.Context, _, _ string, _ int64) (string, error) {
@@ -178,7 +178,10 @@ func (f *fakeGitHubClient) GetCheckRunLog(_ context.Context, _, _ string, _ int6
 }
 
 func (f *fakeGitHubClient) GetPRHeadSHA(_ context.Context, _, _ string, _ int) (string, error) {
-	return "fakesha123", nil
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	f.state.shaCounter++
+	return fmt.Sprintf("fakesha%d", f.state.shaCounter), nil
 }
 
 func (f *fakeGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, _ int64, _, _ string) (bool, error) {
@@ -267,7 +270,7 @@ func (f *fakeClaudeRunner) Run(_ context.Context, workDir string, name string, a
 			return nil, []byte("claude error"), err
 		}
 
-		result, _ := json.Marshal(ClaudeResult{Result: "Fixed it"})
+		result, _ := json.Marshal(ClaudeResult{Result: "RELATED Fixed it"})
 		return result, nil, nil
 	}
 
@@ -610,7 +613,7 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 	}
 
 	// CI fails
-	gh.setCheckRuns("fakesha123", []CheckRun{
+	gh.setCheckRuns( []CheckRun{
 		{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "test failed: expected 1 got 2"},
 	})
 
@@ -666,7 +669,7 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 	}
 
 	// CI passes — verify no further action is taken
-	gh.setCheckRuns("fakesha123", []CheckRun{
+	gh.setCheckRuns( []CheckRun{
 		{ID: 2, Name: "test", Status: "completed", Conclusion: "success"},
 	})
 	// Reset attempts to simulate a fresh state after human fix
