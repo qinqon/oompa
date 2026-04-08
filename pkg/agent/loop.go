@@ -256,7 +256,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		a.logger.Info("CI failing, invoking Claude to fix", "pr", work.PRNumber, "failures", len(failures), "attempt", work.CIFixAttempts+1)
+		a.logger.Info("CI failing, investigating", "pr", work.PRNumber, "failures", len(failures), "attempt", work.CIFixAttempts+1)
 
 		// Pull latest changes
 		if err := a.worktrees.SyncWorktree(ctx, work.WorktreePath); err != nil {
@@ -264,12 +264,30 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		prompt := buildCIFixPrompt(*work, failures, a.cfg.SignedOffBy)
-		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg)
+		// Get PR diff to help Claude determine if failure is related
+		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", "origin/main")
+		diff := string(diffOut)
+
+		prompt := buildCIFixPrompt(*work, failures, diff, a.cfg.SignedOffBy)
+		result, err := runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg)
 		if err != nil {
-			a.logger.Error("claude failed to fix CI", "pr", work.PRNumber, "error", err)
+			a.logger.Error("claude failed to investigate CI", "pr", work.PRNumber, "error", err)
+			work.CIFixAttempts++
+			work.LastCIStatus = "failure"
+			continue
 		}
 
+		if strings.HasPrefix(strings.TrimSpace(result.Result), "UNRELATED") {
+			a.logger.Info("CI failure is unrelated to PR changes", "pr", work.PRNumber)
+			explanation := strings.TrimPrefix(strings.TrimSpace(result.Result), "UNRELATED")
+			explanation = strings.TrimSpace(explanation)
+			comment := fmt.Sprintf("CI check failed but appears unrelated to this PR's changes.\n\n%s\n\n%s", explanation, botMarker)
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.IssueNumber, comment)
+			work.LastCIStatus = "unrelated-failure"
+			continue
+		}
+
+		a.logger.Info("CI failure is related, Claude is fixing", "pr", work.PRNumber)
 		work.CIFixAttempts++
 		work.LastCIStatus = "failure"
 	}

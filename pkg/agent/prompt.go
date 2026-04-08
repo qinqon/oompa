@@ -64,7 +64,7 @@ Instructions:
 	return prompt
 }
 
-func buildCIFixPrompt(work IssueWork, failures []CheckRun, signedOffBy string) string {
+func buildCIFixPrompt(work IssueWork, failures []CheckRun, diff, signedOffBy string) string {
 	prompt := fmt.Sprintf(`CI is failing on PR #%d for issue #%d: %s
 
 Failed checks:
@@ -77,16 +77,25 @@ Failed checks:
 		}
 	}
 
-	prompt += `
+	prompt += fmt.Sprintf(`
+PR diff summary (files changed in this PR):
+%s
+
 Instructions:
-1. Investigate the CI failures above
-2. Fix the code so that CI passes
-3. Run "make lint" and "make test" locally to verify
-4. If you made code changes, squash them into the existing commit using "git add -A && git commit --amend --no-edit" then force push with "git push --force-with-lease"
-5. If no code changes are needed, do NOT amend or push`
+1. First, investigate whether the CI failures are caused by the changes in this PR
+   - Look at the CI logs and the PR diff
+   - Determine if the failure is related to the PR changes or is a pre-existing/infrastructure issue
+2. If the failure is NOT related to the PR changes:
+   - Do NOT attempt to fix it
+   - Your output MUST start with the word UNRELATED followed by a brief explanation
+3. If the failure IS related to the PR changes:
+   - Your output MUST start with the word RELATED
+   - Fix the code so that CI passes
+   - Run "make lint" and "make test" locally to verify
+   - Squash your changes into the existing commit using "git add -A && git commit --amend --no-edit" then force push with "git push --force-with-lease"`, diff)
 
 	if signedOffBy != "" {
-		prompt += fmt.Sprintf("\n6. Ensure the commit has \"Signed-off-by: %s\"", signedOffBy)
+		prompt += fmt.Sprintf("\n   - Ensure the commit has \"Signed-off-by: %s\"", signedOffBy)
 	}
 
 	return prompt

@@ -449,8 +449,14 @@ func TestProcessCIFailures_FixesFailingCI(t *testing.T) {
 
 	agent.ProcessCIFailures(context.Background())
 
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 claude call, got %d", len(runner.calls))
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	if claudeCalls != 1 {
+		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
 	}
 	if agent.state.ActiveIssues[42].CIFixAttempts != 1 {
 		t.Errorf("expected 1 CI fix attempt, got %d", agent.state.ActiveIssues[42].CIFixAttempts)
