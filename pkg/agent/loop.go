@@ -299,17 +299,12 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		// Verify Claude actually pushed changes — if not, treat as unrelated
 		newSHA, _ := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
 		if newSHA == headSHA {
-			a.logger.Info("Claude said RELATED but made no changes — treating as unrelated", "pr", work.PRNumber)
-			comment := fmt.Sprintf("CI check failed. Investigation determined a fix was needed but no changes could be made. This may be a flaky test or infrastructure issue.\n\n%s", botMarker)
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.IssueNumber, comment)
-			work.LastCIStatus = "unrelated-failure"
-			continue
+			a.logger.Warn("Claude said RELATED but made no changes", "pr", work.PRNumber)
+		} else {
+			a.logger.Info("CI failure is related, Claude pushed a fix", "pr", work.PRNumber)
 		}
-
-		a.logger.Info("CI failure is related, Claude pushed a fix", "pr", work.PRNumber)
 		work.CIFixAttempts++
 		work.LastCIStatus = "failure"
 	}
