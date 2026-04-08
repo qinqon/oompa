@@ -92,6 +92,11 @@ func (m *mockGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, 
 	return false, nil
 }
 
+func (m *mockGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, _ int, commentID int64, body string) error {
+	m.addedComments = append(m.addedComments, fmt.Sprintf("reply:%d:%s", commentID, body))
+	return nil
+}
+
 // mockWorktreeManager implements WorktreeManager for testing.
 type mockWorktreeManager struct {
 	createdBranches []string

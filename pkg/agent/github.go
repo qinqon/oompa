@@ -22,6 +22,7 @@ type GitHubClient interface {
 	GetCheckRunLog(ctx context.Context, owner, repo string, checkRunID int64) (string, error)
 	GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error)
 	HasPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction, user string) (bool, error)
+	ReplyToPRComment(ctx context.Context, owner, repo string, prNumber int, commentID int64, body string) error
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -227,6 +228,14 @@ func (g *GoGitHubClient) HasPRCommentReaction(ctx context.Context, owner, repo s
 		}
 	}
 	return false, nil
+}
+
+func (g *GoGitHubClient) ReplyToPRComment(ctx context.Context, owner, repo string, prNumber int, commentID int64, body string) error {
+	_, _, err := g.client.PullRequests.CreateCommentInReplyTo(ctx, owner, repo, prNumber, body, commentID)
+	if err != nil {
+		return fmt.Errorf("replying to PR comment: %w", err)
+	}
+	return nil
 }
 
 func (g *GoGitHubClient) GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error) {

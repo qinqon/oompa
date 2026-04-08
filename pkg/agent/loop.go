@@ -152,10 +152,21 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		}
 
 		prompt := buildReviewResponsePrompt(*work, humanComments, a.cfg.SignedOffBy, a.cfg.Owner, a.cfg.Repo)
-		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg)
+		result, err := runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg)
 		if err != nil {
 			a.logger.Error("claude failed to address review", "pr", work.PRNumber, "error", err)
 			continue
+		}
+
+		// Post reply to each comment — use Claude's result as the reply
+		replyBody := result.Result
+		if replyBody == "" {
+			replyBody = "Addressed in the latest push."
+		}
+		for _, c := range humanComments {
+			if err := a.gh.ReplyToPRComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, c.ID, replyBody); err != nil {
+				a.logger.Warn("failed to reply to comment", "comment", c.ID, "error", err)
+			}
 		}
 
 		// Update last seen comment ID

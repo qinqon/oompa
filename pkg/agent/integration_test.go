@@ -185,6 +185,13 @@ func (f *fakeGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, 
 	return false, nil
 }
 
+func (f *fakeGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, _ int, commentID int64, body string) error {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	f.state.postedComments = append(f.state.postedComments, fmt.Sprintf("reply:%d:%s", commentID, body))
+	return nil
+}
+
 // initBareRepo creates a bare repo and a working clone for the agent to use.
 // Returns (cloneDir, cleanup).
 func initBareRepo(t *testing.T) string {
