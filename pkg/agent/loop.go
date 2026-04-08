@@ -121,19 +121,9 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			if !a.isAllowedReviewer(c.User) {
 				continue
 			}
-			// Skip comments we've already reacted to
-			reactions, err := a.gh.GetPRCommentReactions(ctx, a.cfg.Owner, a.cfg.Repo, c.ID)
-			if err == nil {
-				alreadyProcessed := false
-				for _, r := range reactions {
-					if r == "eyes" {
-						alreadyProcessed = true
-						break
-					}
-				}
-				if alreadyProcessed {
-					continue
-				}
+			// Skip comments we've already reacted to (check our own :eyes: reaction)
+			if already, err := a.gh.HasPRCommentReaction(ctx, a.cfg.Owner, a.cfg.Repo, c.ID, "eyes", a.cfg.GitHubUser); err == nil && already {
+				continue
 			}
 			humanComments = append(humanComments, c)
 		}

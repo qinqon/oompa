@@ -231,9 +231,12 @@ func TestGetAuthenticatedUser_WithNameAndEmail(t *testing.T) {
 	})
 
 	gh := setupTestClient(t, mux)
-	name, email, err := gh.GetAuthenticatedUser(context.Background())
+	login, name, email, err := gh.GetAuthenticatedUser(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if login != "jdoe" {
+		t.Errorf("expected login 'jdoe', got %q", login)
 	}
 	if name != "Jane Doe" {
 		t.Errorf("expected name 'Jane Doe', got %q", name)
@@ -253,9 +256,12 @@ func TestGetAuthenticatedUser_FallbackToLogin(t *testing.T) {
 	})
 
 	gh := setupTestClient(t, mux)
-	name, email, err := gh.GetAuthenticatedUser(context.Background())
+	login, name, email, err := gh.GetAuthenticatedUser(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if login != "jdoe" {
+		t.Errorf("expected login 'jdoe', got %q", login)
 	}
 	if name != "jdoe" {
 		t.Errorf("expected name 'jdoe' (login fallback), got %q", name)

@@ -14,5 +14,6 @@ type Config struct {
 	LogLevel      string
 	DryRun        bool
 	SignedOffBy   string
+	GitHubUser    string   // authenticated GitHub username (for reaction checks)
 	Reviewers     []string // whitelist of users/bots whose reviews to address
 }

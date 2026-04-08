@@ -90,15 +90,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Default signed-off-by to the authenticated GitHub user
+	// Fetch authenticated GitHub user for signed-off-by and reaction checks
 	ghClient := agent.NewGoGitHubClient(token)
-	if cfg.SignedOffBy == "" {
-		if name, email, err := ghClient.GetAuthenticatedUser(context.Background()); err == nil {
+	if login, name, email, err := ghClient.GetAuthenticatedUser(context.Background()); err == nil {
+		cfg.GitHubUser = login
+		if cfg.SignedOffBy == "" {
 			cfg.SignedOffBy = fmt.Sprintf("%s <%s>", name, email)
-			logger.Info("using GitHub user for signed-off-by", "signed-off-by", cfg.SignedOffBy)
-		} else {
-			logger.Warn("could not fetch GitHub user for signed-off-by", "error", err)
 		}
+		logger.Info("authenticated as GitHub user", "login", login, "signed-off-by", cfg.SignedOffBy)
+	} else {
+		logger.Error("could not fetch GitHub user", "error", err)
+		os.Exit(1)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)

@@ -21,7 +21,7 @@ type GitHubClient interface {
 	GetCheckRuns(ctx context.Context, owner, repo, ref string) ([]CheckRun, error)
 	GetCheckRunLog(ctx context.Context, owner, repo string, checkRunID int64) (string, error)
 	GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error)
-	GetPRCommentReactions(ctx context.Context, owner, repo string, commentID int64) ([]string, error)
+	HasPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction, user string) (bool, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -215,16 +215,17 @@ func (g *GoGitHubClient) GetCheckRunLog(ctx context.Context, owner, repo string,
 	return log, nil
 }
 
-func (g *GoGitHubClient) GetPRCommentReactions(ctx context.Context, owner, repo string, commentID int64) ([]string, error) {
+func (g *GoGitHubClient) HasPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction, user string) (bool, error) {
 	reactions, _, err := g.client.Reactions.ListPullRequestCommentReactions(ctx, owner, repo, commentID, nil)
 	if err != nil {
-		return nil, fmt.Errorf("listing reactions: %w", err)
+		return false, fmt.Errorf("listing reactions: %w", err)
 	}
-	var contents []string
 	for _, r := range reactions {
-		contents = append(contents, r.GetContent())
+		if r.GetContent() == reaction && r.GetUser().GetLogin() == user {
+			return true, nil
+		}
 	}
-	return contents, nil
+	return false, nil
 }
 
 func (g *GoGitHubClient) GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error) {
@@ -235,22 +236,24 @@ func (g *GoGitHubClient) GetPRHeadSHA(ctx context.Context, owner, repo string, p
 	return pr.GetHead().GetSHA(), nil
 }
 
-// GetAuthenticatedUser returns the name and email of the authenticated user.
-func (g *GoGitHubClient) GetAuthenticatedUser(ctx context.Context) (name, email string, err error) {
+// GetAuthenticatedUser returns the login, name, and email of the authenticated user.
+func (g *GoGitHubClient) GetAuthenticatedUser(ctx context.Context) (login, name, email string, err error) {
 	user, _, err := g.client.Users.Get(ctx, "")
 	if err != nil {
-		return "", "", fmt.Errorf("getting authenticated user: %w", err)
+		return "", "", "", fmt.Errorf("getting authenticated user: %w", err)
 	}
+
+	login = user.GetLogin()
 
 	name = user.GetName()
 	if name == "" {
-		name = user.GetLogin()
+		name = login
 	}
 
 	email = user.GetEmail()
 	if email == "" {
-		email = fmt.Sprintf("%s@users.noreply.github.com", user.GetLogin())
+		email = fmt.Sprintf("%s@users.noreply.github.com", login)
 	}
 
-	return name, email, nil
+	return login, name, email, nil
 }

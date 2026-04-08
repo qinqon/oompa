@@ -88,8 +88,8 @@ func (m *mockGitHubClient) GetPRHeadSHA(_ context.Context, _, _ string, _ int) (
 	return "abc123", nil
 }
 
-func (m *mockGitHubClient) GetPRCommentReactions(_ context.Context, _, _ string, _ int64) ([]string, error) {
-	return nil, nil
+func (m *mockGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, _ int64, _, _ string) (bool, error) {
+	return false, nil
 }
 
 // mockWorktreeManager implements WorktreeManager for testing.

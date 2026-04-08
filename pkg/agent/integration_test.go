@@ -181,8 +181,8 @@ func (f *fakeGitHubClient) GetPRHeadSHA(_ context.Context, _, _ string, _ int) (
 	return "fakesha123", nil
 }
 
-func (f *fakeGitHubClient) GetPRCommentReactions(_ context.Context, _, _ string, _ int64) ([]string, error) {
-	return nil, nil
+func (f *fakeGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, _ int64, _, _ string) (bool, error) {
+	return false, nil
 }
 
 // initBareRepo creates a bare repo and a working clone for the agent to use.
