@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+const (
+	// botMarker is a hidden HTML comment added to all agent-posted comments
+	// so they can be distinguished from manual comments by the same user.
+	botMarker = "<!-- ai-agent-bot -->"
+)
+
 // Agent holds all dependencies and runs the main processing loop.
 type Agent struct {
 	gh        GitHubClient
@@ -124,9 +130,13 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		// Filter comments: only whitelisted reviewers, skip already-processed
+		// Filter comments: skip bot-posted, only whitelisted reviewers, skip already-processed
 		var humanComments []ReviewComment
 		for _, c := range comments {
+			// Skip comments posted by the agent itself
+			if strings.Contains(c.Body, botMarker) {
+				continue
+			}
 			if !a.isAllowedReviewer(c.User) {
 				continue
 			}
@@ -181,9 +191,9 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			if repliedTo[c.ID] {
 				continue
 			}
-			fallback := "Reviewed — no code changes needed for this comment."
+			fallback := "Reviewed — no code changes needed for this comment.\n\n" + botMarker
 			if hasChanges {
-				fallback = "Addressed in the latest push."
+				fallback = "Addressed in the latest push.\n\n" + botMarker
 			}
 			if err := a.gh.ReplyToPRComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, c.ID, fallback); err != nil {
 				a.logger.Warn("failed to reply to comment", "comment", c.ID, "error", err)
