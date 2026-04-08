@@ -160,6 +160,11 @@ func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, branch 
 
 	var prs []PR
 	for _, p := range ghPRs {
+		// Verify the head ref actually matches — the GitHub API may ignore
+		// the head filter when the branch doesn't exist on the upstream repo
+		if p.GetHead().GetRef() != branch {
+			continue
+		}
 		prs = append(prs, PR{
 			Number: p.GetNumber(),
 			State:  p.GetState(),
