@@ -114,7 +114,7 @@ func logStreamEvent(logger *slog.Logger, line []byte) {
 		for _, c := range event.Message.Content {
 			switch c.Type {
 			case "tool_use":
-				logger.Info("claude using tool", "tool", c.Name)
+				logger.Debug("claude using tool", "tool", c.Name)
 			case "text":
 				text := c.Text
 				if len(text) > 200 {
