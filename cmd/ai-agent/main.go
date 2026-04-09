@@ -112,14 +112,14 @@ func main() {
 	state := agent.BuildStateFromGitHub(ctx, ghClient, cfg, cfg.CloneDir, logger)
 	logger.Info("state rebuilt", "active-issues", len(state.ActiveIssues))
 
-	upstreamURL := fmt.Sprintf("https://github.com/%s/%s.git", cfg.Owner, cfg.Repo)
+	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", cfg.Owner, cfg.Repo)
 	forkURL := fmt.Sprintf("https://github.com/%s/%s.git", cfg.GitHubUser, cfg.Repo)
 	runner := &agent.ExecRunner{}
 
 	a := agent.NewAgent(
 		ghClient,
 		runner,
-		agent.NewGitWorktreeManager(runner, cfg.CloneDir, forkURL, upstreamURL),
+		agent.NewGitWorktreeManager(runner, cfg.CloneDir, repoURL, forkURL),
 		state,
 		cfg,
 		logger,
