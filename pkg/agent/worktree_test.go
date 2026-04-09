@@ -10,7 +10,7 @@ import (
 func TestCreateWorktree_New(t *testing.T) {
 	runner := &mockCommandRunner{}
 	cloneDir := "/tmp/repo"
-	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git")
+	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
 
 	path, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
 	if err != nil {
@@ -61,7 +61,7 @@ func TestCreateWorktree_ReusesExisting(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git")
+	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
 
 	path, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
 	if err != nil {
@@ -79,7 +79,7 @@ func TestCreateWorktree_ReusesExisting(t *testing.T) {
 
 func TestRemoveWorktree(t *testing.T) {
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git")
+	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	err := mgr.RemoveWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
 	if err != nil {
@@ -104,7 +104,7 @@ func TestRemoveWorktree(t *testing.T) {
 
 func TestSyncWorktree(t *testing.T) {
 	runner := &mockCommandRunner{stdout: []byte("ai/issue-42\n")}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git")
+	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	err := mgr.SyncWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
 	if err != nil {
@@ -142,7 +142,7 @@ func TestEnsureRepoCloned_AlreadyCloned(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, dir, "https://github.com/owner/repo.git")
+	mgr := NewGitWorktreeManager(runner, dir, "https://github.com/owner/repo.git", "")
 
 	err := mgr.EnsureRepoCloned(context.Background())
 	if err != nil {
@@ -163,7 +163,7 @@ func TestEnsureRepoCloned_Fresh(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "newrepo")
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, dir, "https://github.com/owner/repo.git")
+	mgr := NewGitWorktreeManager(runner, dir, "https://github.com/owner/repo.git", "")
 
 	err := mgr.EnsureRepoCloned(context.Background())
 	if err != nil {
