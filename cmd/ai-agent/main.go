@@ -38,7 +38,12 @@ func parseConfig() agent.Config {
 	var reviewers string
 	flag.StringVar(&reviewers, "reviewers", os.Getenv("AI_AGENT_REVIEWERS"), "Comma-separated whitelist of users/bots whose reviews to address (empty = all)")
 
+	var logFile string
+	flag.StringVar(&logFile, "log-file", os.Getenv("AI_AGENT_LOG_FILE"), "Log file path (default: stderr)")
+
 	flag.Parse()
+
+	cfg.LogFile = logFile
 
 	if reviewers != "" {
 		for _, r := range strings.Split(reviewers, ",") {
@@ -60,7 +65,7 @@ func parseDuration(s string) time.Duration {
 	return d
 }
 
-func setupLogger(level string) *slog.Logger {
+func setupLogger(level, logFile string) (*slog.Logger, func()) {
 	var logLevel slog.Level
 	switch level {
 	case "debug":
@@ -73,12 +78,26 @@ func setupLogger(level string) *slog.Logger {
 		logLevel = slog.LevelInfo
 	}
 
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+	w := os.Stderr
+	cleanup := func() {}
+
+	if logFile != "" {
+		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open log file %s: %v\n", logFile, err)
+			os.Exit(1)
+		}
+		w = f
+		cleanup = func() { f.Close() }
+	}
+
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: logLevel})), cleanup
 }
 
 func main() {
 	cfg := parseConfig()
-	logger := setupLogger(cfg.LogLevel)
+	logger, closeLog := setupLogger(cfg.LogLevel, cfg.LogFile)
+	defer closeLog()
 
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {
