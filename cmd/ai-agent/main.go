@@ -157,6 +157,7 @@ func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 	a.CleanupDone(ctx)
 	a.ProcessNewIssues(ctx)
 	a.ProcessReviewComments(ctx)
+	a.ProcessConflicts(ctx)
 	a.ProcessCIFailures(ctx)
 	logger.Debug("poll cycle complete")
 }

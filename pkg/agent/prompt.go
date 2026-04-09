@@ -124,3 +124,23 @@ Instructions:
 
 	return prompt
 }
+
+func buildConflictResolutionPrompt(work IssueWork, signedOffBy string) string {
+	prompt := fmt.Sprintf(`PR #%d for issue #%d (%s) has merge conflicts with the main branch.
+
+Instructions:
+1. Run "git fetch origin" to get the latest changes
+2. Run "git rebase origin/main" to rebase on top of the latest main branch
+3. Resolve any merge conflicts that arise:
+   - Understand the intent of both the PR changes and the upstream changes
+   - Keep the PR's functionality intact while incorporating upstream changes
+4. Run "make lint" and "make test" to verify the resolved code still works
+5. Force push the rebased branch with "git push --force-with-lease"`,
+		work.PRNumber, work.IssueNumber, work.IssueTitle)
+
+	if signedOffBy != "" {
+		prompt += fmt.Sprintf("\n6. Ensure all commits have \"Signed-off-by: %s\"", signedOffBy)
+	}
+
+	return prompt
+}

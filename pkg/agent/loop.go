@@ -350,6 +350,85 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 	}
 }
 
+const maxConflictFixAttempts = 2
+
+// ProcessConflicts checks for merge conflicts and tries to rebase/resolve them.
+func (a *Agent) ProcessConflicts(ctx context.Context) {
+	for _, work := range a.state.ActiveIssues {
+		if work.PRNumber == 0 || work.Status != "pr-open" {
+			continue
+		}
+
+		mergeState, err := a.gh.GetPRMergeable(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		if err != nil {
+			a.logger.Error("failed to get PR mergeable state", "pr", work.PRNumber, "error", err)
+			continue
+		}
+
+		if mergeState != "dirty" {
+			continue
+		}
+
+		// Check if we already posted a conflict comment for the current HEAD
+		headSHA, _ := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		if headSHA != "" && a.hasExistingBotComment(ctx, work.PRNumber, "conflict") && a.hasExistingBotComment(ctx, work.PRNumber, shortSHA(headSHA)) {
+			continue
+		}
+
+		a.logger.Info("PR has merge conflicts, attempting rebase", "pr", work.PRNumber)
+
+		// Sync worktree and try a simple rebase first
+		if err := a.worktrees.SyncWorktree(ctx, work.WorktreePath); err != nil {
+			a.logger.Error("failed to sync worktree", "pr", work.PRNumber, "error", err)
+			continue
+		}
+
+		_, _, err = a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "origin")
+		if err != nil {
+			a.logger.Error("failed to fetch origin", "pr", work.PRNumber, "error", err)
+			continue
+		}
+
+		// Try automatic rebase
+		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "origin/main")
+		if rebaseErr == nil {
+			// Rebase succeeded, force push
+			_, stderr, pushErr := a.runner.Run(ctx, work.WorktreePath, "git", "push", "--force-with-lease")
+			if pushErr != nil {
+				a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr, "stderr", string(stderr))
+			} else {
+				a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
+				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+					fmt.Sprintf("Merge conflicts on commit %s resolved by rebasing on main.\n\n%s", shortSHA(headSHA), botMarker))
+			}
+			continue
+		}
+
+		// Rebase failed — abort and let Claude try
+		a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort")
+		a.logger.Info("automatic rebase failed, invoking Claude to resolve conflicts", "pr", work.PRNumber, "stderr", string(stderr))
+
+		prompt := buildConflictResolutionPrompt(*work, a.cfg.SignedOffBy)
+		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
+		if err != nil {
+			a.logger.Error("claude failed to resolve conflicts", "pr", work.PRNumber, "error", err)
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+				fmt.Sprintf("PR has merge conflicts on commit %s. Attempted to resolve automatically but failed. Human intervention needed.\n\n%s", shortSHA(headSHA), botMarker))
+			continue
+		}
+
+		// Check if Claude actually resolved and pushed
+		newSHA, _ := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		if newSHA == headSHA {
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+				fmt.Sprintf("PR has merge conflicts on commit %s. Attempted to resolve automatically but failed. Human intervention needed.\n\n%s", shortSHA(headSHA), botMarker))
+		} else {
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+				fmt.Sprintf("Merge conflicts on commit %s resolved and pushed.\n\n%s", shortSHA(headSHA), botMarker))
+		}
+	}
+}
+
 // CleanupDone removes worktrees for merged or closed PRs.
 func (a *Agent) CleanupDone(ctx context.Context) {
 	for issueNum, work := range a.state.ActiveIssues {

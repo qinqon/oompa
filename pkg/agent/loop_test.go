@@ -108,6 +108,10 @@ func (m *mockGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, _ in
 	return nil
 }
 
+func (m *mockGitHubClient) GetPRMergeable(_ context.Context, _, _ string, _ int) (string, error) {
+	return "clean", nil
+}
+
 func (m *mockGitHubClient) AssignIssue(_ context.Context, _, _ string, _ int, _ string) error {
 	return nil
 }

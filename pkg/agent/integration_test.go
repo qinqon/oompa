@@ -194,6 +194,10 @@ func (f *fakeGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, _ in
 	return nil
 }
 
+func (f *fakeGitHubClient) GetPRMergeable(_ context.Context, _, _ string, _ int) (string, error) {
+	return "clean", nil
+}
+
 func (f *fakeGitHubClient) AssignIssue(_ context.Context, _, _ string, _ int, _ string) error {
 	return nil
 }
