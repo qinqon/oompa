@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestCreateWorktree(t *testing.T) {
+func TestCreateWorktree_New(t *testing.T) {
 	runner := &mockCommandRunner{}
 	cloneDir := "/tmp/repo"
 	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git")
@@ -22,23 +22,18 @@ func TestCreateWorktree(t *testing.T) {
 		t.Errorf("expected path %q, got %q", expectedPath, path)
 	}
 
-	if len(runner.calls) != 4 {
-		t.Fatalf("expected 4 calls (worktree remove, prune, branch delete, worktree add), got %d", len(runner.calls))
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected 3 calls (prune, branch delete, worktree add), got %d", len(runner.calls))
 	}
 
-	// Cleanup calls: worktree remove, prune, branch delete
-	if runner.calls[0].Args[0] != "worktree" || runner.calls[0].Args[1] != "remove" {
-		t.Errorf("expected first call to be 'git worktree remove', got %v", runner.calls[0].Args)
+	if runner.calls[0].Args[0] != "worktree" || runner.calls[0].Args[1] != "prune" {
+		t.Errorf("expected first call to be 'git worktree prune', got %v", runner.calls[0].Args)
 	}
-	if runner.calls[1].Args[0] != "worktree" || runner.calls[1].Args[1] != "prune" {
-		t.Errorf("expected second call to be 'git worktree prune', got %v", runner.calls[1].Args)
-	}
-	if runner.calls[2].Args[0] != "branch" {
-		t.Errorf("expected third call to be 'git branch', got %v", runner.calls[2].Args)
+	if runner.calls[1].Args[0] != "branch" {
+		t.Errorf("expected second call to be 'git branch', got %v", runner.calls[1].Args)
 	}
 
-	// Fourth call: worktree add
-	call := runner.calls[3]
+	call := runner.calls[2]
 	expectedArgs := []string{"worktree", "add", "-b", "ai/issue-42", expectedPath, "origin/main"}
 	if call.Name != "git" {
 		t.Errorf("expected command 'git', got %q", call.Name)
@@ -47,6 +42,35 @@ func TestCreateWorktree(t *testing.T) {
 		if i >= len(call.Args) || call.Args[i] != arg {
 			t.Errorf("arg[%d]: expected %q, got %q", i, arg, call.Args[i])
 		}
+	}
+}
+
+func TestCreateWorktree_ReusesExisting(t *testing.T) {
+	cloneDir := t.TempDir()
+	worktreePath := filepath.Join(cloneDir, "worktrees", "ai/issue-42")
+
+	// Simulate an existing worktree with a .git marker
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: ..."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git")
+
+	path, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if path != worktreePath {
+		t.Errorf("expected path %q, got %q", worktreePath, path)
+	}
+
+	if len(runner.calls) != 0 {
+		t.Errorf("expected no git calls when reusing worktree, got %d", len(runner.calls))
 	}
 }
 
