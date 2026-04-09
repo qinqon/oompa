@@ -105,7 +105,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			CreatedAt:    time.Now(),
 		}
 
-		prompt := buildImplementationPrompt(issue, a.cfg.SignedOffBy)
+		prompt := buildImplementationPrompt(issue, a.cfg.SignedOffBy, a.cfg.Owner, a.cfg.Repo)
 		_, err = runClaude(ctx, a.runner, worktreePath, prompt, a.cfg, a.logger, false)
 		if err != nil {
 			a.logger.Error("claude failed", "issue", issue.Number, "error", err)

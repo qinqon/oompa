@@ -13,7 +13,7 @@ func TestBuildImplementationPrompt(t *testing.T) {
 		Labels: []string{"good-for-ai"},
 	}
 
-	prompt := buildImplementationPrompt(issue, "")
+	prompt := buildImplementationPrompt(issue, "", "owner", "repo")
 
 	checks := []string{
 		"#42",
@@ -25,6 +25,7 @@ func TestBuildImplementationPrompt(t *testing.T) {
 		"<user-provided-content>",
 		"</user-provided-content>",
 		"untrusted user input",
+		"--repo owner/repo",
 	}
 
 	for _, want := range checks {
@@ -34,7 +35,7 @@ func TestBuildImplementationPrompt(t *testing.T) {
 	}
 
 	// With signed-off-by
-	prompt = buildImplementationPrompt(issue, "Test User <test@example.com>")
+	prompt = buildImplementationPrompt(issue, "Test User <test@example.com>", "owner", "repo")
 	if !strings.Contains(prompt, "Signed-off-by: Test User <test@example.com>") {
 		t.Error("prompt missing Signed-off-by when provided")
 	}

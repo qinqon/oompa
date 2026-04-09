@@ -2,7 +2,7 @@ package agent
 
 import "fmt"
 
-func buildImplementationPrompt(issue Issue, signedOffBy string) string {
+func buildImplementationPrompt(issue Issue, signedOffBy, owner, repo string) string {
 	signoff := ""
 	if signedOffBy != "" {
 		signoff = fmt.Sprintf("\n6. Add \"Signed-off-by: %s\" to every commit message", signedOffBy)
@@ -25,13 +25,13 @@ Instructions:
 2. Implement the fix for this issue
 3. Run "make lint" and "make test" to verify your changes
 4. Commit your changes with a descriptive message (no trailing period, wrap body at 72 chars)
-5. Create a PR using "gh pr create" with:
+5. Create a PR using "gh pr create --repo %s/%s" with:
    - A /kind label (e.g. /kind bug, /kind feature)
    - "Fixes #%d" in the PR body
    - A release-note block describing the change%s
 
 Do not merge the PR. Only create it.`,
-		issue.Number, issue.Title, issue.Body, issue.Number, signoff)
+		issue.Number, issue.Title, issue.Body, owner, repo, issue.Number, signoff)
 }
 
 func buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, signedOffBy, owner, repo string) string {
