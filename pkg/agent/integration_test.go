@@ -310,7 +310,7 @@ func TestIntegration_FullIssueLifecycle(t *testing.T) {
 
 	// Use real git worktree manager with the real clone
 	bareDir := filepath.Join(filepath.Dir(cloneDir), "repo.git")
-	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir)
+	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir, bareDir)
 
 	agent := NewAgent(
 		ghClient,
@@ -438,7 +438,7 @@ func TestIntegration_ClaudeFailure(t *testing.T) {
 	runner := &fakeClaudeRunner{err: fmt.Errorf("claude crashed")}
 
 	bareDir := filepath.Join(filepath.Dir(cloneDir), "repo.git")
-	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir)
+	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir, bareDir)
 
 	agent := NewAgent(
 		ghClient,
@@ -492,7 +492,7 @@ func TestIntegration_ClosedPRRetriggers(t *testing.T) {
 	runner := &fakeClaudeRunner{}
 
 	bareDir := filepath.Join(filepath.Dir(cloneDir), "repo.git")
-	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir)
+	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir, bareDir)
 
 	agent := NewAgent(
 		ghClient,
@@ -552,7 +552,7 @@ func TestIntegration_ReviewerWhitelist(t *testing.T) {
 	runner := &fakeClaudeRunner{}
 
 	bareDir := filepath.Join(filepath.Dir(cloneDir), "repo.git")
-	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir)
+	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir, bareDir)
 
 	agent := NewAgent(
 		ghClient,
@@ -621,7 +621,7 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 	runner := &fakeClaudeRunner{}
 
 	bareDir := filepath.Join(filepath.Dir(cloneDir), "repo.git")
-	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir)
+	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir, bareDir)
 
 	agent := NewAgent(
 		ghClient,
@@ -740,7 +740,7 @@ func TestIntegration_SyncWorktreePullsManualCommits(t *testing.T) {
 	ghClient := &fakeGitHubClient{state: gh}
 	runner := &fakeClaudeRunner{}
 
-	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir)
+	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir, bareDir)
 
 	agent := NewAgent(
 		ghClient,

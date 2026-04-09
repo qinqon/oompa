@@ -383,14 +383,12 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			continue
 		}
 
-		_, _, err = a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "origin")
-		if err != nil {
-			a.logger.Error("failed to fetch origin", "pr", work.PRNumber, "error", err)
-			continue
-		}
+		// Fetch all remotes and try automatic rebase against the base branch
+		baseRef := a.worktrees.(*GitWorktreeManager).BaseRef()
+		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all")
 
 		// Try automatic rebase
-		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "origin/main")
+		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", baseRef)
 		if rebaseErr == nil {
 			// Rebase succeeded, force push
 			_, stderr, pushErr := a.runner.Run(ctx, work.WorktreePath, "git", "push", "--force-with-lease")
