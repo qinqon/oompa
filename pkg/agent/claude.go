@@ -83,10 +83,12 @@ type streamEvent struct {
 	Subtype string         `json:"subtype,omitempty"`
 	Message *streamMessage `json:"message,omitempty"`
 	// Result fields (only present when Type == "result")
-	Result     string  `json:"result,omitempty"`
-	CostUSD    float64 `json:"cost_usd,omitempty"`
-	NumTurns   int     `json:"num_turns,omitempty"`
-	DurationMs int64   `json:"duration_ms,omitempty"`
+	Result        string  `json:"result,omitempty"`
+	CostUSD       float64 `json:"cost_usd,omitempty"`
+	TotalCostUSD  float64 `json:"total_cost_usd,omitempty"`
+	NumTurns      int     `json:"num_turns,omitempty"`
+	DurationMs    int64   `json:"duration_ms,omitempty"`
+	DurationAPIMs int64   `json:"duration_api_ms,omitempty"`
 }
 
 type streamMessage struct {
@@ -124,7 +126,11 @@ func logStreamEvent(logger *slog.Logger, line []byte) {
 			}
 		}
 	case "result":
-		logger.Info("claude finished", "cost_usd", event.CostUSD, "duration_ms", event.DurationMs, "turns", event.NumTurns)
+		cost := event.CostUSD
+		if cost == 0 {
+			cost = event.TotalCostUSD
+		}
+		logger.Info("claude finished", "cost_usd", cost, "duration_ms", event.DurationMs, "turns", event.NumTurns)
 	}
 }
 
@@ -141,9 +147,13 @@ func parseStreamResult(stdout []byte) (ClaudeResult, error) {
 			continue
 		}
 		if event.Type == "result" {
+			cost := event.CostUSD
+			if cost == 0 {
+				cost = event.TotalCostUSD
+			}
 			return ClaudeResult{
 				Result: event.Result,
-				Cost:   event.CostUSD,
+				Cost:   cost,
 			}, nil
 		}
 	}
