@@ -17,5 +17,6 @@ type Config struct {
 	OneShot       bool
 	SignedOffBy   string
 	GitHubUser    string   // authenticated GitHub username (for reaction checks)
+	GitHubToken   string   // GitHub token (passed to Claude for gh CLI access)
 	Reviewers     []string // whitelist of users/bots whose reviews to address
 }

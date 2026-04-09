@@ -110,6 +110,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	cfg.GitHubToken = token
+
 	// Fetch authenticated GitHub user for signed-off-by and reaction checks
 	ghClient := agent.NewGoGitHubClient(token)
 	if login, name, email, err := ghClient.GetAuthenticatedUser(context.Background()); err == nil {

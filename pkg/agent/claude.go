@@ -170,6 +170,11 @@ func runClaude(ctx context.Context, runner CommandRunner, workDir, prompt string
 			fmt.Sprintf("CLOUD_ML_REGION=%s", cfg.VertexRegion),
 			fmt.Sprintf("ANTHROPIC_VERTEX_PROJECT_ID=%s", cfg.VertexProject),
 		)
+		if cfg.GitHubToken != "" {
+			execRunner.Env = append(execRunner.Env,
+				fmt.Sprintf("GH_TOKEN=%s", cfg.GitHubToken),
+			)
+		}
 	}
 
 	args := []string{"-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"}
