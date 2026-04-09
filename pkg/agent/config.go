@@ -12,6 +12,7 @@ type Config struct {
 	VertexRegion  string
 	VertexProject string
 	LogLevel      string
+	LogFile       string
 	DryRun        bool
 	OneShot       bool
 	SignedOffBy   string
