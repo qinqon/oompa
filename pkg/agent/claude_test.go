@@ -25,14 +25,25 @@ func (m *mockCommandRunner) Run(_ context.Context, workDir string, name string, 
 	return m.stdout, m.stderr, m.err
 }
 
+// streamResultJSON builds a stream-json result line for testing.
+func streamResultJSON(r ClaudeResult) []byte {
+	event := streamEvent{
+		Type:    "result",
+		Subtype: "success",
+		Result:  r.Result,
+		CostUSD: r.Cost,
+	}
+	data, _ := json.Marshal(event)
+	return append(data, '\n')
+}
+
 func TestRunClaude_Success(t *testing.T) {
 	expected := ClaudeResult{Result: "Fixed the bug", Cost: 0.05}
-	data, _ := json.Marshal(expected)
 
-	runner := &mockCommandRunner{stdout: data}
+	runner := &mockCommandRunner{stdout: streamResultJSON(expected)}
 	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
 
-	result, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg)
+	result, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +62,7 @@ func TestRunClaude_Failure(t *testing.T) {
 	}
 	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg)
+	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -61,11 +72,10 @@ func TestRunClaude_Failure(t *testing.T) {
 }
 
 func TestRunClaude_VertexEnvVars(t *testing.T) {
-	data, _ := json.Marshal(ClaudeResult{Result: "ok"})
-	runner := &mockCommandRunner{stdout: data}
+	runner := &mockCommandRunner{stdout: streamResultJSON(ClaudeResult{Result: "ok"})}
 	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg)
+	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +91,7 @@ func TestRunClaude_VertexEnvVars(t *testing.T) {
 
 	// Verify args include the required flags
 	args := strings.Join(call.Args, " ")
-	for _, want := range []string{"-p", "--output-format", "json", "--dangerously-skip-permissions"} {
+	for _, want := range []string{"-p", "--output-format", "stream-json", "--dangerously-skip-permissions"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args missing %q: %v", want, call.Args)
 		}
@@ -92,12 +102,12 @@ func TestRunClaude_InvalidJSON(t *testing.T) {
 	runner := &mockCommandRunner{stdout: []byte("not json at all")}
 	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg)
+	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
-	if !strings.Contains(err.Error(), "failed to parse claude output") {
-		t.Errorf("expected parse error, got: %v", err)
+	if !strings.Contains(err.Error(), "no result event found") {
+		t.Errorf("expected stream parse error, got: %v", err)
 	}
 }
 

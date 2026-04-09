@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -270,7 +269,7 @@ func (f *fakeClaudeRunner) Run(_ context.Context, workDir string, name string, a
 			return nil, []byte("claude error"), err
 		}
 
-		result, _ := json.Marshal(ClaudeResult{Result: "RELATED Fixed it"})
+		result := streamResultJSON(ClaudeResult{Result: "RELATED Fixed it"})
 		return result, nil, nil
 	}
 

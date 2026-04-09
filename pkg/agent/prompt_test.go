@@ -22,6 +22,9 @@ func TestBuildImplementationPrompt(t *testing.T) {
 		"/kind",
 		"Fixes #42",
 		"release-note",
+		"<user-provided-content>",
+		"</user-provided-content>",
+		"untrusted user input",
 	}
 
 	for _, want := range checks {
@@ -76,6 +79,9 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		"comment ID: 1",
 		"comment ID: 2",
 		"pulls/comments/COMMENT_ID/replies",
+		"<user-provided-content>",
+		"</user-provided-content>",
+		"untrusted user input",
 	}
 
 	for _, want := range checks {

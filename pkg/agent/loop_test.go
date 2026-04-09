@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"testing"
@@ -198,7 +197,7 @@ func TestProcessNewIssues_RechecksForPR(t *testing.T) {
 }
 
 func TestProcessNewIssues_HappyPath(t *testing.T) {
-	claudeResult, _ := json.Marshal(ClaudeResult{Result: "Fixed it"})
+	claudeResult := streamResultJSON(ClaudeResult{Result: "Fixed it"})
 	gh := &mockGitHubClient{
 		issues: []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
 		prs:    []PR{{Number: 100, State: "open", Head: "ai/issue-42"}},
@@ -269,7 +268,7 @@ func TestProcessReviewComments_NoNewComments(t *testing.T) {
 }
 
 func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
-	claudeResult, _ := json.Marshal(ClaudeResult{Result: "Addressed"})
+	claudeResult := streamResultJSON(ClaudeResult{Result: "Addressed"})
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
@@ -331,7 +330,7 @@ func TestProcessReviewComments_SkipsNonWhitelistedUsers(t *testing.T) {
 }
 
 func TestProcessReviewComments_AllowsAllWhenWhitelistEmpty(t *testing.T) {
-	claudeResult, _ := json.Marshal(ClaudeResult{Result: "Done"})
+	claudeResult := streamResultJSON(ClaudeResult{Result: "Done"})
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "anyone", Body: "fix this"},
@@ -434,7 +433,7 @@ func TestCleanupDone_OpenPR(t *testing.T) {
 }
 
 func TestProcessCIFailures_FixesFailingCI(t *testing.T) {
-	claudeResult, _ := json.Marshal(ClaudeResult{Result: "RELATED Fixed CI"})
+	claudeResult := streamResultJSON(ClaudeResult{Result: "RELATED Fixed CI"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
