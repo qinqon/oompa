@@ -80,9 +80,13 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 
 		// Only post in-progress comment if we haven't already
 		if !a.hasExistingBotComment(ctx, issue.Number, "working on this issue") {
-			_ = a.gh.AssignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number,
-				fmt.Sprintf("AI agent is working on this issue. A PR will be created shortly.\n\n%s", botMarker))
+			if err := a.gh.AssignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser); err != nil {
+				a.logger.Warn("failed to assign issue", "issue", issue.Number, "error", err)
+			}
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number,
+				fmt.Sprintf("AI agent is working on this issue. A PR will be created shortly.\n\n%s", botMarker)); err != nil {
+				a.logger.Warn("failed to add in-progress comment", "issue", issue.Number, "error", err)
+			}
 		}
 
 		if err := a.worktrees.EnsureRepoCloned(ctx); err != nil {
