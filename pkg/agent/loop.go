@@ -88,7 +88,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		}
 
 		prompt := buildImplementationPrompt(issue, a.cfg.SignedOffBy)
-		_, err = runClaude(ctx, a.runner, worktreePath, prompt, a.cfg, a.logger)
+		_, err = runClaude(ctx, a.runner, worktreePath, prompt, a.cfg, a.logger, false)
 		if err != nil {
 			a.logger.Error("claude failed", "issue", issue.Number, "error", err)
 			work.Status = "failed"
@@ -180,7 +180,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		}
 
 		prompt := buildReviewResponsePrompt(*work, humanComments, a.cfg.SignedOffBy, a.cfg.Owner, a.cfg.Repo)
-		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger)
+		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to address review", "pr", work.PRNumber, "error", err)
 			continue
@@ -288,7 +288,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		diff := string(diffOut)
 
 		prompt := buildCIFixPrompt(*work, failures, diff, a.cfg.SignedOffBy)
-		result, err := runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger)
+		result, err := runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to investigate CI", "pr", work.PRNumber, "error", err)
 			work.CIFixAttempts++

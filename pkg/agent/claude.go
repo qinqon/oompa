@@ -151,7 +151,8 @@ func parseStreamResult(stdout []byte) (ClaudeResult, error) {
 }
 
 // runClaude invokes Claude CLI in headless mode with streaming output and parses the result.
-func runClaude(ctx context.Context, runner CommandRunner, workDir, prompt string, cfg Config, logger *slog.Logger) (ClaudeResult, error) {
+// If resume is true, --continue is passed to resume the most recent session in workDir.
+func runClaude(ctx context.Context, runner CommandRunner, workDir, prompt string, cfg Config, logger *slog.Logger, resume bool) (ClaudeResult, error) {
 	// Set Vertex env vars by wrapping the runner call with env-setting command
 	if execRunner, ok := runner.(*ExecRunner); ok {
 		execRunner.Env = append(execRunner.Env,
@@ -161,17 +162,21 @@ func runClaude(ctx context.Context, runner CommandRunner, workDir, prompt string
 		)
 	}
 
+	args := []string{"-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"}
+	if resume {
+		args = append(args, "--continue")
+	}
+	args = append(args, prompt)
+
 	var stdout, stderr []byte
 	var err error
 
 	if sr, ok := runner.(StreamingRunner); ok && logger != nil {
 		stdout, stderr, err = sr.RunStream(ctx, workDir, func(line []byte) {
 			logStreamEvent(logger, line)
-		}, "claude", "-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions", prompt)
+		}, "claude", args...)
 	} else {
-		stdout, stderr, err = runner.Run(ctx, workDir,
-			"claude", "-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions", prompt,
-		)
+		stdout, stderr, err = runner.Run(ctx, workDir, "claude", args...)
 	}
 
 	if err != nil {

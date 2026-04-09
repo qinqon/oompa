@@ -43,7 +43,7 @@ func TestRunClaude_Success(t *testing.T) {
 	runner := &mockCommandRunner{stdout: streamResultJSON(expected)}
 	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
 
-	result, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg, nil)
+	result, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestRunClaude_Failure(t *testing.T) {
 	}
 	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg, nil)
+	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg, nil, false)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -75,7 +75,7 @@ func TestRunClaude_VertexEnvVars(t *testing.T) {
 	runner := &mockCommandRunner{stdout: streamResultJSON(ClaudeResult{Result: "ok"})}
 	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil)
+	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,11 +98,41 @@ func TestRunClaude_VertexEnvVars(t *testing.T) {
 	}
 }
 
+func TestRunClaude_ResumePassesContinue(t *testing.T) {
+	runner := &mockCommandRunner{stdout: streamResultJSON(ClaudeResult{Result: "ok"})}
+	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
+
+	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	args := strings.Join(runner.calls[0].Args, " ")
+	if !strings.Contains(args, "--continue") {
+		t.Errorf("expected --continue flag when resume=true, got: %v", runner.calls[0].Args)
+	}
+}
+
+func TestRunClaude_NoResumeOmitsContinue(t *testing.T) {
+	runner := &mockCommandRunner{stdout: streamResultJSON(ClaudeResult{Result: "ok"})}
+	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
+
+	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	args := strings.Join(runner.calls[0].Args, " ")
+	if strings.Contains(args, "--continue") {
+		t.Errorf("expected no --continue flag when resume=false, got: %v", runner.calls[0].Args)
+	}
+}
+
 func TestRunClaude_InvalidJSON(t *testing.T) {
 	runner := &mockCommandRunner{stdout: []byte("not json at all")}
 	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil)
+	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil, false)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
