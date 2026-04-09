@@ -18,20 +18,21 @@ type WorktreeManager interface {
 
 // GitWorktreeManager implements WorktreeManager using git commands.
 type GitWorktreeManager struct {
-	runner      CommandRunner
-	cloneDir    string
-	repoURL     string
-	upstreamURL string
+	runner   CommandRunner
+	cloneDir string
+	repoURL  string // upstream repo URL (cloned as origin)
+	forkURL  string // fork repo URL (added as "fork" remote for pushing)
 }
 
 // NewGitWorktreeManager creates a new worktree manager.
-// upstreamURL is the upstream repo URL (may differ from repoURL for fork workflows).
-func NewGitWorktreeManager(runner CommandRunner, cloneDir, repoURL, upstreamURL string) *GitWorktreeManager {
+// repoURL is the upstream repo (cloned as origin).
+// forkURL is the user's fork (added as a "fork" remote for pushing); empty if same-repo workflow.
+func NewGitWorktreeManager(runner CommandRunner, cloneDir, repoURL, forkURL string) *GitWorktreeManager {
 	return &GitWorktreeManager{
-		runner:      runner,
-		cloneDir:    cloneDir,
-		repoURL:     repoURL,
-		upstreamURL: upstreamURL,
+		runner:   runner,
+		cloneDir: cloneDir,
+		repoURL:  repoURL,
+		forkURL:  forkURL,
 	}
 }
 
@@ -41,7 +42,7 @@ func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("git fetch origin: %w (stderr: %s)", err, string(stderr))
 		}
-		g.ensureUpstreamRemote(ctx)
+		g.ensureForkRemote(ctx)
 		return nil
 	}
 
@@ -49,18 +50,25 @@ func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("git clone: %w (stderr: %s)", err, string(stderr))
 	}
-	g.ensureUpstreamRemote(ctx)
+	g.ensureForkRemote(ctx)
 	return nil
 }
 
-// ensureUpstreamRemote adds an "upstream" remote if upstreamURL differs from origin.
-func (g *GitWorktreeManager) ensureUpstreamRemote(ctx context.Context) {
-	if g.upstreamURL == "" || g.upstreamURL == g.repoURL {
+// ensureForkRemote adds a "fork" remote for the user's fork if it differs from origin.
+func (g *GitWorktreeManager) ensureForkRemote(ctx context.Context) {
+	if g.forkURL == "" || g.forkURL == g.repoURL {
 		return
 	}
-	// Add upstream remote (ignore error if it already exists)
-	g.runner.Run(ctx, g.cloneDir, "git", "remote", "add", "upstream", g.upstreamURL)
-	g.runner.Run(ctx, g.cloneDir, "git", "fetch", "upstream")
+	// Add fork remote (ignore error if it already exists)
+	g.runner.Run(ctx, g.cloneDir, "git", "remote", "add", "fork", g.forkURL)
+}
+
+// PushRemote returns the git remote name to push to ("fork" or "origin").
+func (g *GitWorktreeManager) PushRemote() string {
+	if g.forkURL != "" && g.forkURL != g.repoURL {
+		return "fork"
+	}
+	return "origin"
 }
 
 func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName string) (string, error) {
@@ -77,11 +85,7 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 	g.runner.Run(ctx, g.cloneDir, "git", "worktree", "prune")
 	g.runner.Run(ctx, g.cloneDir, "git", "branch", "-D", branchName)
 
-	base := "origin/main"
-	if g.upstreamURL != "" && g.upstreamURL != g.repoURL {
-		base = "upstream/main"
-	}
-	_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "worktree", "add", "-b", branchName, worktreePath, base)
+	_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "worktree", "add", "-b", branchName, worktreePath, "origin/main")
 	if err != nil {
 		return "", fmt.Errorf("git worktree add: %w (stderr: %s)", err, string(stderr))
 	}
@@ -90,8 +94,8 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 }
 
 func (g *GitWorktreeManager) SyncWorktree(ctx context.Context, worktreePath string) error {
-	// Fetch latest from origin
-	_, stderr, err := g.runner.Run(ctx, worktreePath, "git", "fetch", "origin")
+	// Fetch latest from all remotes
+	_, stderr, err := g.runner.Run(ctx, worktreePath, "git", "fetch", "--all")
 	if err != nil {
 		return fmt.Errorf("git fetch: %w (stderr: %s)", err, string(stderr))
 	}
@@ -103,21 +107,14 @@ func (g *GitWorktreeManager) SyncWorktree(ctx context.Context, worktreePath stri
 	}
 	branch := strings.TrimSpace(string(branchOut))
 
-	// Hard reset to remote — the remote branch is the source of truth
-	// (force pushes from amend make rebase unreliable)
-	_, stderr, err = g.runner.Run(ctx, worktreePath, "git", "reset", "--hard", "origin/"+branch)
+	// Try to reset to the push remote's branch (fork or origin)
+	pushRemote := g.PushRemote()
+	_, stderr, err = g.runner.Run(ctx, worktreePath, "git", "reset", "--hard", pushRemote+"/"+branch)
 	if err != nil {
-		return fmt.Errorf("git reset --hard origin/%s: %w (stderr: %s)", branch, err, string(stderr))
+		// Branch may not exist on the push remote yet, that's OK
+		return nil
 	}
 	return nil
-}
-
-// BaseRef returns the git ref to use as the base branch (upstream/main or origin/main).
-func (g *GitWorktreeManager) BaseRef() string {
-	if g.upstreamURL != "" && g.upstreamURL != g.repoURL {
-		return "upstream/main"
-	}
-	return "origin/main"
 }
 
 func (g *GitWorktreeManager) RemoveWorktree(ctx context.Context, worktreePath string) error {
