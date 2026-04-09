@@ -152,7 +152,7 @@ func (g *GoGitHubClient) RemoveLabel(ctx context.Context, owner, repo string, is
 
 func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, branch string) ([]PR, error) {
 	opts := &github.PullRequestListOptions{
-		Head: branch,
+		Head: fmt.Sprintf("%s:%s", owner, branch),
 	}
 
 	ghPRs, _, err := g.client.PullRequests.List(ctx, owner, repo, opts)
