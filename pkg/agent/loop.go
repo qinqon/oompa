@@ -48,7 +48,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		if work, exists := a.state.ActiveIssues[issue.Number]; exists {
 			// Re-check for PR if we lost track of it
 			if work.PRNumber == 0 && work.Status == "implementing" {
-				prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, work.BranchName)
+				prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubUser, work.BranchName)
 				if err == nil && len(prs) > 0 {
 					work.PRNumber = prs[0].Number
 					work.Status = "pr-open"
@@ -64,7 +64,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		branchName := fmt.Sprintf("ai/issue-%d", issue.Number)
 
 		// Check if a PR already exists for this issue
-		prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, branchName)
+		prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubUser, branchName)
 		if err == nil && len(prs) > 0 {
 			a.logger.Info("PR already exists for issue", "issue", issue.Number, "pr", prs[0].Number)
 			a.state.ActiveIssues[issue.Number] = &IssueWork{
@@ -122,7 +122,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
 
 		// Find the PR created by Claude
-		prs, err = a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, branchName)
+		prs, err = a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubUser, branchName)
 		if err != nil {
 			a.logger.Error("failed to list PRs", "issue", issue.Number, "error", err)
 		} else if len(prs) > 0 {

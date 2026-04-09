@@ -204,7 +204,7 @@ func TestListPRsByHead(t *testing.T) {
 	})
 
 	gh := setupTestClient(t, mux)
-	prs, err := gh.ListPRsByHead(context.Background(), "owner", "repo", "ai/issue-42")
+	prs, err := gh.ListPRsByHead(context.Background(), "owner", "repo", "qinqon", "ai/issue-42")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

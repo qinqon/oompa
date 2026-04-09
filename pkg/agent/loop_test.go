@@ -69,7 +69,7 @@ func (m *mockGitHubClient) RemoveLabel(_ context.Context, _, _ string, _ int, la
 	return nil
 }
 
-func (m *mockGitHubClient) ListPRsByHead(_ context.Context, _, _, _ string) ([]PR, error) {
+func (m *mockGitHubClient) ListPRsByHead(_ context.Context, _, _, _, _ string) ([]PR, error) {
 	m.prsCallCount++
 	if m.prsAfterNCalls > 0 && m.prsCallCount <= m.prsAfterNCalls {
 		return nil, nil

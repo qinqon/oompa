@@ -17,7 +17,7 @@ type GitHubClient interface {
 	AddIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error
 	AddLabel(ctx context.Context, owner, repo string, issueNumber int, label string) error
 	RemoveLabel(ctx context.Context, owner, repo string, issueNumber int, label string) error
-	ListPRsByHead(ctx context.Context, owner, repo, branch string) ([]PR, error)
+	ListPRsByHead(ctx context.Context, owner, repo, headOwner, branch string) ([]PR, error)
 	AddPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error
 	GetCheckRuns(ctx context.Context, owner, repo, ref string) ([]CheckRun, error)
 	GetCheckRunLog(ctx context.Context, owner, repo string, checkRunID int64) (string, error)
@@ -150,9 +150,13 @@ func (g *GoGitHubClient) RemoveLabel(ctx context.Context, owner, repo string, is
 	return nil
 }
 
-func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, branch string) ([]PR, error) {
+func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, headOwner, branch string) ([]PR, error) {
+	head := branch
+	if headOwner != "" {
+		head = fmt.Sprintf("%s:%s", headOwner, branch)
+	}
 	opts := &github.PullRequestListOptions{
-		Head: branch,
+		Head: head,
 	}
 
 	ghPRs, _, err := g.client.PullRequests.List(ctx, owner, repo, opts)

@@ -147,7 +147,7 @@ func (f *fakeGitHubClient) RemoveLabel(_ context.Context, _, _ string, _ int, la
 	return nil
 }
 
-func (f *fakeGitHubClient) ListPRsByHead(_ context.Context, _, _, branch string) ([]PR, error) {
+func (f *fakeGitHubClient) ListPRsByHead(_ context.Context, _, _, _, branch string) ([]PR, error) {
 	f.state.mu.Lock()
 	defer f.state.mu.Unlock()
 	var result []PR
