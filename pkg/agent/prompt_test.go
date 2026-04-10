@@ -65,7 +65,7 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		},
 	}
 
-	prompt := buildReviewResponsePrompt(work, comments, "", "owner", "repo")
+	prompt := buildReviewResponsePrompt(work, comments, nil, "", "owner", "repo")
 
 	checks := []string{
 		"reviewer1",

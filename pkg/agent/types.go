@@ -42,10 +42,19 @@ type IssueWork struct {
 	BranchName    string    `json:"branchName"`
 	PRNumber      int       `json:"prNumber"`
 	LastCommentID int64     `json:"lastCommentID"`
+	LastReviewID  int64     `json:"lastReviewID"`
 	Status        string    `json:"status"` // implementing, pr-open, failed, done
 	CIFixAttempts int       `json:"ciFixAttempts"`
 	LastCIStatus  string    `json:"lastCIStatus"` // "", "pending", "success", "failure"
 	CreatedAt     time.Time `json:"createdAt"`
+}
+
+// PRReview represents a GitHub pull request review (approve, request changes, comment).
+type PRReview struct {
+	ID    int64
+	User  string
+	State string // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
+	Body  string
 }
 
 // CheckRun represents a GitHub Actions check run.

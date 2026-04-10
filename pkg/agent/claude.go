@@ -175,6 +175,18 @@ func runClaude(ctx context.Context, runner CommandRunner, workDir, prompt string
 				fmt.Sprintf("GH_TOKEN=%s", cfg.GitHubToken),
 			)
 		}
+		if cfg.GitAuthorName != "" {
+			execRunner.Env = append(execRunner.Env,
+				fmt.Sprintf("GIT_AUTHOR_NAME=%s", cfg.GitAuthorName),
+				fmt.Sprintf("GIT_COMMITTER_NAME=%s", cfg.GitAuthorName),
+			)
+		}
+		if cfg.GitAuthorEmail != "" {
+			execRunner.Env = append(execRunner.Env,
+				fmt.Sprintf("GIT_AUTHOR_EMAIL=%s", cfg.GitAuthorEmail),
+				fmt.Sprintf("GIT_COMMITTER_EMAIL=%s", cfg.GitAuthorEmail),
+			)
+		}
 	}
 
 	args := []string{"-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"}

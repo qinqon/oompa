@@ -16,7 +16,15 @@ type Config struct {
 	DryRun        bool
 	OneShot       bool
 	SignedOffBy   string
-	GitHubUser    string   // authenticated GitHub username (for reaction checks)
-	GitHubToken   string   // GitHub token (passed to Claude for gh CLI access)
-	Reviewers     []string // whitelist of users/bots whose reviews to address
+	GitHubUser      string   // authenticated GitHub username (for reaction checks)
+	GitHubToken     string   // GitHub token (passed to Claude for gh CLI access)
+	GitHubHeadOwner string   // owner for PR head filtering (fork owner for PAT, repo owner for App)
+	GitAuthorName   string   // git commit author name
+	GitAuthorEmail  string   // git commit author email
+	Reviewers       []string // whitelist of users/bots whose reviews to address
+
+	// GitHub App authentication (alternative to GITHUB_TOKEN)
+	GitHubAppID             int64
+	GitHubAppPrivateKeyPath string
+	GitHubAppInstallationID int64
 }

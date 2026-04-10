@@ -141,7 +141,36 @@ func TestEnsureRepoCloned_AlreadyCloned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := &mockCommandRunner{}
+	repoURL := "https://github.com/owner/repo.git"
+	// Mock returns the repo URL for "git remote get-url origin"
+	runner := &mockCommandRunner{stdout: []byte(repoURL + "\n")}
+	mgr := NewGitWorktreeManager(runner, dir, repoURL, "")
+
+	err := mgr.EnsureRepoCloned(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 calls (get-url, fetch), got %d", len(runner.calls))
+	}
+
+	if runner.calls[0].Args[0] != "remote" || runner.calls[0].Args[1] != "get-url" {
+		t.Errorf("expected 'git remote get-url', got %v", runner.calls[0].Args)
+	}
+	if runner.calls[1].Args[0] != "fetch" {
+		t.Errorf("expected 'git fetch', got %v", runner.calls[1].Args)
+	}
+}
+
+func TestEnsureRepoCloned_URLMismatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock returns a different URL (stale clone from another repo)
+	runner := &mockCommandRunner{stdout: []byte("https://github.com/other/repo.git\n")}
 	mgr := NewGitWorktreeManager(runner, dir, "https://github.com/owner/repo.git", "")
 
 	err := mgr.EnsureRepoCloned(context.Background())
@@ -149,13 +178,18 @@ func TestEnsureRepoCloned_AlreadyCloned(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(runner.calls))
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected 3 calls (get-url, set-url, fetch), got %d", len(runner.calls))
 	}
 
-	call := runner.calls[0]
-	if call.Name != "git" || call.Args[0] != "fetch" {
-		t.Errorf("expected 'git fetch', got %q %v", call.Name, call.Args)
+	if runner.calls[0].Args[0] != "remote" || runner.calls[0].Args[1] != "get-url" {
+		t.Errorf("expected 'git remote get-url', got %v", runner.calls[0].Args)
+	}
+	if runner.calls[1].Args[0] != "remote" || runner.calls[1].Args[1] != "set-url" {
+		t.Errorf("expected 'git remote set-url', got %v", runner.calls[1].Args)
+	}
+	if runner.calls[2].Args[0] != "fetch" {
+		t.Errorf("expected 'git fetch', got %v", runner.calls[2].Args)
 	}
 }
 

@@ -22,6 +22,27 @@ type Agent struct {
 	state     *State
 	cfg       Config
 	logger    *slog.Logger
+	tokenFunc func(context.Context) (string, error) // optional: provides fresh GitHub tokens (for App auth)
+}
+
+// SetTokenFunc sets a function that provides fresh GitHub tokens.
+// Used with GitHub App authentication where installation tokens expire after ~1 hour.
+func (a *Agent) SetTokenFunc(fn func(context.Context) (string, error)) {
+	a.tokenFunc = fn
+}
+
+// RefreshToken updates the GitHub token if a token function is set.
+// Call this before each poll cycle to ensure the token is fresh.
+func (a *Agent) RefreshToken(ctx context.Context) error {
+	if a.tokenFunc == nil {
+		return nil
+	}
+	token, err := a.tokenFunc(ctx)
+	if err != nil {
+		return fmt.Errorf("refreshing GitHub token: %w", err)
+	}
+	a.cfg.GitHubToken = token
+	return nil
 }
 
 // NewAgent creates a new Agent with all dependencies wired.
@@ -48,7 +69,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		if work, exists := a.state.ActiveIssues[issue.Number]; exists {
 			// Re-check for PR if we lost track of it
 			if work.PRNumber == 0 && work.Status == "implementing" {
-				prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubUser, work.BranchName)
+				prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubHeadOwner, work.BranchName)
 				if err == nil && len(prs) > 0 {
 					work.PRNumber = prs[0].Number
 					work.Status = "pr-open"
@@ -64,7 +85,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		branchName := fmt.Sprintf("ai/issue-%d", issue.Number)
 
 		// Check if a PR already exists for this issue
-		prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubUser, branchName)
+		prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubHeadOwner, branchName)
 		if err == nil && len(prs) > 0 {
 			a.logger.Info("PR already exists for issue", "issue", issue.Number, "pr", prs[0].Number)
 			a.state.ActiveIssues[issue.Number] = &IssueWork{
@@ -126,7 +147,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
 
 		// Find the PR created by Claude
-		prs, err = a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubUser, branchName)
+		prs, err = a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubHeadOwner, branchName)
 		if err != nil {
 			a.logger.Error("failed to list PRs", "issue", issue.Number, "error", err)
 		} else if len(prs) > 0 {
@@ -138,7 +159,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 	}
 }
 
-// ProcessReviewComments checks for new review comments and runs Claude to address them.
+// ProcessReviewComments checks for new review comments and review bodies, then runs Claude to address them.
 func (a *Agent) ProcessReviewComments(ctx context.Context) {
 	for _, work := range a.state.ActiveIssues {
 		if work.PRNumber == 0 || work.Status != "pr-open" {
@@ -182,11 +203,29 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			humanComments = append(humanComments, c)
 		}
 
-		if len(humanComments) == 0 {
+		// Fetch PR review bodies (approve, request changes, etc.)
+		reviews, err := a.gh.GetPRReviews(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, work.LastReviewID)
+		if err != nil {
+			a.logger.Warn("failed to get PR reviews", "pr", work.PRNumber, "error", err)
+		}
+
+		// Filter reviews: skip bot-posted, only whitelisted reviewers
+		var humanReviews []PRReview
+		for _, r := range reviews {
+			if strings.Contains(r.Body, botMarker) {
+				continue
+			}
+			if !a.isAllowedReviewer(r.User) {
+				continue
+			}
+			humanReviews = append(humanReviews, r)
+		}
+
+		if len(humanComments) == 0 && len(humanReviews) == 0 {
 			continue
 		}
 
-		a.logger.Info("addressing review comments", "pr", work.PRNumber, "count", len(humanComments))
+		a.logger.Info("addressing review feedback", "pr", work.PRNumber, "comments", len(humanComments), "reviews", len(humanReviews))
 
 		// Pull latest changes (someone may have pushed manual commits)
 		if err := a.worktrees.SyncWorktree(ctx, work.WorktreePath); err != nil {
@@ -194,14 +233,14 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			continue
 		}
 
-		// React with eyes to signal we're processing
+		// React with eyes to signal we're processing inline comments
 		for _, c := range humanComments {
 			if err := a.gh.AddPRCommentReaction(ctx, a.cfg.Owner, a.cfg.Repo, c.ID, "eyes"); err != nil {
 				a.logger.Warn("failed to add reaction", "comment", c.ID, "error", err)
 			}
 		}
 
-		prompt := buildReviewResponsePrompt(*work, humanComments, a.cfg.SignedOffBy, a.cfg.Owner, a.cfg.Repo)
+		prompt := buildReviewResponsePrompt(*work, humanComments, humanReviews, a.cfg.SignedOffBy, a.cfg.Owner, a.cfg.Repo)
 		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to address review", "pr", work.PRNumber, "error", err)
@@ -212,7 +251,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", "origin/main")
 		hasChanges := len(strings.TrimSpace(string(diffOut))) > 0
 
-		// Post fallback reply for comments Claude didn't reply to
+		// Post fallback reply for inline comments Claude didn't reply to
 		updatedComments, _ := a.gh.GetPRReviewComments(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, 0)
 		repliedTo = make(map[int64]bool)
 		for _, c := range updatedComments {
@@ -233,10 +272,31 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
+		// Post fallback reply for review bodies as an issue comment
+		for _, r := range humanReviews {
+			if !a.hasExistingBotComment(ctx, work.PRNumber, fmt.Sprintf("review-%d", r.ID)) {
+				fallback := fmt.Sprintf("Addressed review from @%s", r.User)
+				if hasChanges {
+					fallback += " in the latest push."
+				} else {
+					fallback += " — no code changes needed."
+				}
+				fallback += fmt.Sprintf("\n\n<!-- review-%d -->\n%s", r.ID, botMarker)
+				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, fallback)
+			}
+		}
+
 		// Update last seen comment ID
 		for _, c := range humanComments {
 			if c.ID > work.LastCommentID {
 				work.LastCommentID = c.ID
+			}
+		}
+
+		// Update last seen review ID
+		for _, r := range humanReviews {
+			if r.ID > work.LastReviewID {
+				work.LastReviewID = r.ID
 			}
 		}
 	}

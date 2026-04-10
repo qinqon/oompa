@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,7 +42,25 @@ func parseConfig() agent.Config {
 	var logFile string
 	flag.StringVar(&logFile, "log-file", os.Getenv("AI_AGENT_LOG_FILE"), "Log file path (default: stderr)")
 
+	// GitHub App auth flags
+	var ghAppID int64
+	var ghAppPrivateKey string
+	var ghAppInstallationID int64
+	if v := os.Getenv("GITHUB_APP_ID"); v != "" {
+		ghAppID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	flag.Int64Var(&ghAppID, "github-app-id", ghAppID, "GitHub App ID")
+	flag.StringVar(&ghAppPrivateKey, "github-app-private-key", os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH"), "Path to GitHub App private key PEM file")
+	if v := os.Getenv("GITHUB_APP_INSTALLATION_ID"); v != "" {
+		ghAppInstallationID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	flag.Int64Var(&ghAppInstallationID, "github-app-installation-id", ghAppInstallationID, "GitHub App installation ID")
+
 	flag.Parse()
+
+	cfg.GitHubAppID = ghAppID
+	cfg.GitHubAppPrivateKeyPath = ghAppPrivateKey
+	cfg.GitHubAppInstallationID = ghAppInstallationID
 
 	cfg.LogFile = logFile
 
@@ -99,30 +118,64 @@ func main() {
 	logger, closeLog := setupLogger(cfg.LogLevel, cfg.LogFile)
 	defer closeLog()
 
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		logger.Error("GITHUB_TOKEN is required")
-		os.Exit(1)
-	}
-
 	if cfg.VertexRegion == "" || cfg.VertexProject == "" {
 		logger.Error("CLOUD_ML_REGION and ANTHROPIC_VERTEX_PROJECT_ID are required")
 		os.Exit(1)
 	}
 
-	cfg.GitHubToken = token
+	useAppAuth := cfg.GitHubAppID != 0 && cfg.GitHubAppPrivateKeyPath != "" && cfg.GitHubAppInstallationID != 0
 
-	// Fetch authenticated GitHub user for signed-off-by and reaction checks
-	ghClient := agent.NewGoGitHubClient(token)
-	if login, name, email, err := ghClient.GetAuthenticatedUser(context.Background()); err == nil {
-		cfg.GitHubUser = login
-		if cfg.SignedOffBy == "" {
-			cfg.SignedOffBy = fmt.Sprintf("%s <%s>", name, email)
+	var ghClient *agent.GoGitHubClient
+	var tokenFunc func(context.Context) (string, error)
+
+	if useAppAuth {
+		appAuth, err := agent.NewGitHubAppAuth(cfg.GitHubAppID, cfg.GitHubAppInstallationID, cfg.GitHubAppPrivateKeyPath)
+		if err != nil {
+			logger.Error("failed to set up GitHub App auth", "error", err)
+			os.Exit(1)
 		}
-		logger.Info("authenticated as GitHub user", "login", login, "signed-off-by", cfg.SignedOffBy)
+
+		ghClient = appAuth.Client
+		tokenFunc = appAuth.TokenFunc
+		cfg.GitHubUser = appAuth.Login
+		cfg.GitHubHeadOwner = cfg.Owner // App pushes directly to upstream, no fork
+		cfg.GitAuthorName = appAuth.Name
+		cfg.GitAuthorEmail = appAuth.Email
+		if cfg.SignedOffBy == "" {
+			cfg.SignedOffBy = fmt.Sprintf("%s <%s>", appAuth.Name, appAuth.Email)
+		}
+
+		// Get an initial token for GH_TOKEN and git credential helpers
+		token, err := appAuth.TokenFunc(context.Background())
+		if err != nil {
+			logger.Error("failed to get initial installation token", "error", err)
+			os.Exit(1)
+		}
+		cfg.GitHubToken = token
+
+		logger.Info("authenticated as GitHub App", "login", appAuth.Login, "signed-off-by", cfg.SignedOffBy)
 	} else {
-		logger.Error("could not fetch GitHub user", "error", err)
-		os.Exit(1)
+		token := os.Getenv("GITHUB_TOKEN")
+		if token == "" {
+			logger.Error("GITHUB_TOKEN is required (or configure GitHub App auth with --github-app-id, --github-app-private-key, --github-app-installation-id)")
+			os.Exit(1)
+		}
+		cfg.GitHubToken = token
+
+		ghClient = agent.NewGoGitHubClient(token)
+		if login, name, email, err := ghClient.GetAuthenticatedUser(context.Background()); err == nil {
+			cfg.GitHubUser = login
+			cfg.GitHubHeadOwner = login // PAT pushes to user's fork
+			cfg.GitAuthorName = name
+			cfg.GitAuthorEmail = email
+			if cfg.SignedOffBy == "" {
+				cfg.SignedOffBy = fmt.Sprintf("%s <%s>", name, email)
+			}
+			logger.Info("authenticated as GitHub user", "login", login, "signed-off-by", cfg.SignedOffBy)
+		} else {
+			logger.Error("could not fetch GitHub user", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -134,17 +187,29 @@ func main() {
 	logger.Info("state rebuilt", "active-issues", len(state.ActiveIssues))
 
 	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", cfg.Owner, cfg.Repo)
-	forkURL := fmt.Sprintf("https://github.com/%s/%s.git", cfg.GitHubUser, cfg.Repo)
+	forkURL := repoURL // default: same-repo workflow (GitHub App)
+	if !useAppAuth {
+		forkURL = fmt.Sprintf("https://github.com/%s/%s.git", cfg.GitHubUser, cfg.Repo)
+	}
 	runner := &agent.ExecRunner{}
+
+	wtm := agent.NewGitWorktreeManager(runner, cfg.CloneDir, repoURL, forkURL)
+	if cfg.GitAuthorName != "" || cfg.GitAuthorEmail != "" {
+		wtm.SetGitIdentity(cfg.GitAuthorName, cfg.GitAuthorEmail)
+	}
 
 	a := agent.NewAgent(
 		ghClient,
 		runner,
-		agent.NewGitWorktreeManager(runner, cfg.CloneDir, repoURL, forkURL),
+		wtm,
 		state,
 		cfg,
 		logger,
 	)
+
+	if tokenFunc != nil {
+		a.SetTokenFunc(tokenFunc)
+	}
 
 	logger.Info("starting ai-agent",
 		"owner", cfg.Owner,
@@ -152,6 +217,7 @@ func main() {
 		"label", cfg.Label,
 		"poll-interval", cfg.PollInterval,
 		"dry-run", cfg.DryRun,
+		"auth-mode", map[bool]string{true: "github-app", false: "pat"}[useAppAuth],
 	)
 
 	runLoop(ctx, a, logger)
@@ -176,6 +242,9 @@ func main() {
 
 func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 	logger.Debug("starting poll cycle")
+	if err := a.RefreshToken(ctx); err != nil {
+		logger.Error("failed to refresh GitHub token", "error", err)
+	}
 	a.CleanupDone(ctx)
 	a.ProcessNewIssues(ctx)
 	a.ProcessReviewComments(ctx)

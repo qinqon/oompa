@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"strings"
 
 	"github.com/google/go-github/v84/github"
 )
@@ -27,6 +29,7 @@ type GitHubClient interface {
 	AssignIssue(ctx context.Context, owner, repo string, issueNumber int, user string) error
 	UnassignIssue(ctx context.Context, owner, repo string, issueNumber int, user string) error
 	GetPRMergeable(ctx context.Context, owner, repo string, prNumber int) (string, error)
+	GetPRReviews(ctx context.Context, owner, repo string, prNumber int, sinceID int64) ([]PRReview, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -38,6 +41,14 @@ type GoGitHubClient struct {
 func NewGoGitHubClient(token string) *GoGitHubClient {
 	return &GoGitHubClient{
 		client: github.NewClient(nil).WithAuthToken(token),
+	}
+}
+
+// NewGoGitHubClientFromHTTPClient creates a new client using a custom HTTP client
+// (e.g., one with a GitHub App installation transport).
+func NewGoGitHubClientFromHTTPClient(httpClient *http.Client) *GoGitHubClient {
+	return &GoGitHubClient{
+		client: github.NewClient(httpClient),
 	}
 }
 
@@ -288,6 +299,31 @@ func (g *GoGitHubClient) GetPRMergeable(ctx context.Context, owner, repo string,
 		return "", fmt.Errorf("getting PR mergeable state: %w", err)
 	}
 	return pr.GetMergeableState(), nil
+}
+
+func (g *GoGitHubClient) GetPRReviews(ctx context.Context, owner, repo string, prNumber int, sinceID int64) ([]PRReview, error) {
+	ghReviews, _, err := g.client.PullRequests.ListReviews(ctx, owner, repo, prNumber, nil)
+	if err != nil {
+		return nil, fmt.Errorf("listing PR reviews: %w", err)
+	}
+
+	var reviews []PRReview
+	for _, r := range ghReviews {
+		if r.GetID() <= sinceID {
+			continue
+		}
+		body := strings.TrimSpace(r.GetBody())
+		if body == "" {
+			continue
+		}
+		reviews = append(reviews, PRReview{
+			ID:    r.GetID(),
+			User:  r.GetUser().GetLogin(),
+			State: r.GetState(),
+			Body:  body,
+		})
+	}
+	return reviews, nil
 }
 
 // GetAuthenticatedUser returns the login, name, and email of the authenticated user.

@@ -18,10 +18,12 @@ type WorktreeManager interface {
 
 // GitWorktreeManager implements WorktreeManager using git commands.
 type GitWorktreeManager struct {
-	runner   CommandRunner
-	cloneDir string
-	repoURL  string // upstream repo URL (cloned as origin)
-	forkURL  string // fork repo URL (added as "fork" remote for pushing)
+	runner         CommandRunner
+	cloneDir       string
+	repoURL        string // upstream repo URL (cloned as origin)
+	forkURL        string // fork repo URL (added as "fork" remote for pushing)
+	gitAuthorName  string // override git user.name in worktrees
+	gitAuthorEmail string // override git user.email in worktrees
 }
 
 // NewGitWorktreeManager creates a new worktree manager.
@@ -38,6 +40,14 @@ func NewGitWorktreeManager(runner CommandRunner, cloneDir, repoURL, forkURL stri
 
 func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
 	if _, err := os.Stat(filepath.Join(g.cloneDir, ".git")); err == nil {
+		// Verify origin URL matches the configured repo to prevent stale clones
+		urlOut, _, _ := g.runner.Run(ctx, g.cloneDir, "git", "remote", "get-url", "origin")
+		currentURL := strings.TrimSpace(string(urlOut))
+		if currentURL != g.repoURL {
+			// Origin points to a different repo — re-set it
+			g.runner.Run(ctx, g.cloneDir, "git", "remote", "set-url", "origin", g.repoURL)
+		}
+
 		_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "fetch", "origin")
 		if err != nil {
 			return fmt.Errorf("git fetch origin: %w (stderr: %s)", err, string(stderr))
@@ -51,7 +61,31 @@ func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
 		return fmt.Errorf("git clone: %w (stderr: %s)", err, string(stderr))
 	}
 	g.ensureForkRemote(ctx)
+	g.configureGitIdentity(ctx, g.cloneDir)
 	return nil
+}
+
+// SetGitIdentity configures the git author/committer identity for worktrees.
+// When set, git user.name and user.email are written to the local git config
+// of every clone and worktree, overriding the global git config.
+func (g *GitWorktreeManager) SetGitIdentity(name, email string) {
+	g.gitAuthorName = name
+	g.gitAuthorEmail = email
+}
+
+// configureGitIdentity sets local git user.name/user.email in the given directory
+// and disables commit signing to avoid using the host's GPG/SSH keys.
+func (g *GitWorktreeManager) configureGitIdentity(ctx context.Context, dir string) {
+	if g.gitAuthorName != "" {
+		g.runner.Run(ctx, dir, "git", "config", "user.name", g.gitAuthorName)
+	}
+	if g.gitAuthorEmail != "" {
+		g.runner.Run(ctx, dir, "git", "config", "user.email", g.gitAuthorEmail)
+	}
+	if g.gitAuthorName != "" || g.gitAuthorEmail != "" {
+		g.runner.Run(ctx, dir, "git", "config", "commit.gpgsign", "false")
+		g.runner.Run(ctx, dir, "git", "config", "tag.gpgsign", "false")
+	}
 }
 
 // ensureForkRemote adds a "fork" remote for the user's fork if it differs from origin.
@@ -76,6 +110,7 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 
 	// Reuse existing worktree if it's still valid
 	if _, err := os.Stat(filepath.Join(worktreePath, ".git")); err == nil {
+		g.configureGitIdentity(ctx, worktreePath)
 		return worktreePath, nil
 	}
 
@@ -90,6 +125,7 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 		return "", fmt.Errorf("git worktree add: %w (stderr: %s)", err, string(stderr))
 	}
 
+	g.configureGitIdentity(ctx, worktreePath)
 	return worktreePath, nil
 }
 

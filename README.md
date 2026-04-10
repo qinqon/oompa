@@ -18,7 +18,8 @@ Claude never merges; a human must approve and merge every PR.
 - Go 1.25+
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and on `PATH`
 - Google Cloud Application Default Credentials configured (`gcloud auth application-default login` or a service account key)
-- A GitHub personal access token with repo scope
+- GitHub authentication: either a personal access token (PAT) with repo scope **or** a GitHub App (see below)
+- `gh` CLI installed and configured as a git credential helper (`gh auth setup-git`)
 
 ## Build
 
@@ -28,6 +29,8 @@ go build -o ai-agent ./cmd/ai-agent
 
 ## Usage
 
+### With a personal access token (PAT)
+
 ```bash
 export GITHUB_TOKEN="ghp_..."
 export CLOUD_ML_REGION="us-east5"
@@ -35,6 +38,47 @@ export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
 
 ./ai-agent --owner myorg --repo myrepo
 ```
+
+### With a GitHub App
+
+```bash
+export GITHUB_APP_ID="123456"
+export GITHUB_APP_PRIVATE_KEY_PATH="/path/to/private-key.pem"
+export GITHUB_APP_INSTALLATION_ID="78901234"
+export CLOUD_ML_REGION="us-east5"
+export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
+
+./ai-agent --owner myorg --repo myrepo
+```
+
+### Setting up a GitHub App
+
+1. Go to your organization's settings: `https://github.com/organizations/<org>/settings/apps/new`
+2. Fill in the basic info:
+   - **App name**: a unique name (e.g. `myorg-issue-resolver`)
+   - **Homepage URL**: your repo or org URL
+   - **Webhook**: uncheck "Active" (the agent uses polling, not webhooks)
+3. Set **repository permissions**:
+   | Permission | Access |
+   |---|---|
+   | Actions | Read-only |
+   | Checks | Read-only |
+   | Contents | Read and write |
+   | Issues | Read and write |
+   | Metadata | Read-only |
+   | Pull requests | Read and write |
+4. Leave all organization/account permissions as "No access" and all event subscriptions unchecked.
+5. Under "Where can this GitHub App be installed?", select "Only on this account".
+6. Click **Create GitHub App** and note the **App ID**.
+7. On the app settings page, scroll to "Private keys" and click **Generate a private key**. Save the downloaded `.pem` file.
+8. In the left sidebar, click **Install App**, then install it on the target repository.
+9. Get the **Installation ID**:
+   ```bash
+   gh api /orgs/<org>/installations \
+     --jq '.installations[] | select(.app_slug | contains("<app-slug>")) | .id'
+   ```
+
+When using GitHub App auth, the agent pushes branches directly to the upstream repository (no fork) and authenticates as `<app-slug>[bot]`. Installation tokens are automatically refreshed before each poll cycle.
 
 ### Flags and environment variables
 
@@ -51,9 +95,14 @@ export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
 | `--reviewers` | `AI_AGENT_REVIEWERS` | all | Comma-separated allowlist of reviewers to respond to |
 | `--dry-run` | — | `false` | Log actions without executing them |
 | `--one-shot` | — | `false` | Run one poll cycle and exit |
-| — | `GITHUB_TOKEN` | *required* | GitHub personal access token |
+| — | `GITHUB_TOKEN` | *required (PAT)* | GitHub personal access token |
+| `--github-app-id` | `GITHUB_APP_ID` | — | GitHub App ID |
+| `--github-app-private-key` | `GITHUB_APP_PRIVATE_KEY_PATH` | — | Path to GitHub App private key PEM file |
+| `--github-app-installation-id` | `GITHUB_APP_INSTALLATION_ID` | — | GitHub App installation ID |
 | `--vertex-region` | `CLOUD_ML_REGION` | *required* | GCP Vertex AI region |
 | `--vertex-project` | `ANTHROPIC_VERTEX_PROJECT_ID` | *required* | GCP project ID for Vertex AI |
+
+`GITHUB_TOKEN` is required when not using GitHub App auth. When all three `--github-app-*` flags are provided, the agent uses App auth instead.
 
 ## State
 

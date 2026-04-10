@@ -43,7 +43,7 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 		}
 
 		// Check if a PR already exists for this branch
-		prs, err := gh.ListPRsByHead(ctx, cfg.Owner, cfg.Repo, cfg.GitHubUser, branchName)
+		prs, err := gh.ListPRsByHead(ctx, cfg.Owner, cfg.Repo, cfg.GitHubHeadOwner, branchName)
 		if err != nil {
 			logger.Warn("failed to list PRs for issue", "issue", issue.Number, "error", err)
 			continue
