@@ -13,6 +13,120 @@ A single long-running Go binary that automatically resolves GitHub issues using 
 
 Claude never merges; a human must approve and merge every PR.
 
+## Loop flow
+
+```plantuml
+@startuml
+title github-issue-resolver — Main Loop
+
+start
+
+repeat
+
+  partition "CleanupDone" {
+    :Iterate active issues in state;
+    while (more issues?) is (yes)
+      :Get PR state from GitHub;
+      if (PR merged or closed?) then (yes)
+        :Remove worktree;
+        :Remove from state;
+      endif
+    endwhile (no)
+  }
+
+  partition "ProcessNewIssues" {
+    :List issues with configured label;
+    while (more issues?) is (yes)
+      if (already tracked?) then (yes)
+        :Skip;
+      else (no)
+        :Post "working on it" comment;
+        :Ensure repo is cloned;
+        :Create worktree + branch\n""ai/issue-<N>"";
+        :Run Claude to implement fix;
+        if (Claude succeeded?) then (yes)
+          :Find PR created by Claude;
+          :Track issue as **pr-open**;
+        else (no)
+          :Add **ai-failed** label;
+          :Comment with error;
+          :Track issue as **failed**;
+        endif
+      endif
+    endwhile (no)
+  }
+
+  partition "ProcessReviewComments" {
+    :Iterate open PRs;
+    while (more PRs?) is (yes)
+      :Fetch review comments since last seen;
+      :Filter: allowed reviewers only,\nskip bot's own, skip already replied;
+      if (new comments?) then (yes)
+        :React with 👀 to each comment;
+        :Sync worktree;
+        :Run Claude to address comments;
+        :Post fallback reply for\nany unanswered comment;
+      endif
+    endwhile (no)
+  }
+
+  partition "ProcessConflicts" {
+    :Iterate open PRs;
+    while (more PRs?) is (yes)
+      :Check PR mergeable state;
+      if (state is dirty?) then (yes)
+        :Sync worktree;
+        :Try **git rebase origin/main**;
+        if (rebase succeeded?) then (yes)
+          :Push with --force-with-lease;
+          :Comment: resolved by rebase;
+        else (no)
+          :Abort rebase;
+          :Run Claude to resolve conflicts;
+          if (Claude pushed new commits?) then (yes)
+            :Comment: conflicts resolved;
+          else (no)
+            :Comment: human intervention needed;
+          endif
+        endif
+      endif
+    endwhile (no)
+  }
+
+  partition "ProcessCIFailures" {
+    :Iterate open PRs;
+    while (more PRs?) is (yes)
+      if (fix attempts >= 3?) then (yes)
+        :Comment: human intervention needed;
+      else (no)
+        :Get check runs for HEAD SHA;
+        if (completed failures found?) then (yes)
+          :Fetch logs for failing checks;
+          :Sync worktree;
+          :Run Claude to investigate;
+          if (Claude says UNRELATED?) then (yes)
+            :Comment: failure unrelated to PR;
+          else (no)
+            if (Claude pushed a fix?) then (yes)
+              :Comment: pushed a fix;
+            else (no)
+              :Comment: could not fix;
+            endif
+          endif
+          :Increment fix attempts;
+        endif
+      endif
+    endwhile (no)
+  }
+
+backward: Sleep(**poll-interval**);
+repeat while (not --one-shot\nand not interrupted?) is (continue)
+
+stop
+
+@enduml
+```
+
 ## Prerequisites
 
 - Go 1.25+
