@@ -265,14 +265,6 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		// Post acknowledgment for review bodies
-		for _, r := range humanReviews {
-			ackMarker := fmt.Sprintf("<!-- review-%d -->", r.ID)
-			if !a.hasExistingBotComment(ctx, work.PRNumber, ackMarker) {
-				ack := fmt.Sprintf("Addressing review from @%s...\n\n%s\n%s", r.User, ackMarker, botMarker)
-				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, ack)
-			}
-		}
 
 		prompt := buildReviewResponsePrompt(*work, humanComments, humanReviews, a.cfg.Owner, a.cfg.Repo)
 		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
