@@ -40,8 +40,7 @@ RUN gh auth setup-git 2>/dev/null || true
 RUN mkdir -p /work && chown agent:agent /work
 VOLUME /work
 
-RUN git config --global --add safe.directory '*'
-
 USER agent
+RUN git config --global --add safe.directory '*'
 ENTRYPOINT ["ai-agent"]
 CMD ["--clone-dir", "/work"]
