@@ -116,6 +116,10 @@ func (m *mockGitHubClient) GetPRReviews(_ context.Context, _, _ string, _ int, _
 	return nil, nil
 }
 
+func (m *mockGitHubClient) CreatePR(_ context.Context, _, _, _, _, _, _ string) (int, error) {
+	return 100, nil
+}
+
 func (m *mockGitHubClient) AssignIssue(_ context.Context, _, _ string, _ int, _ string) error {
 	return nil
 }

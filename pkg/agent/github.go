@@ -30,6 +30,7 @@ type GitHubClient interface {
 	UnassignIssue(ctx context.Context, owner, repo string, issueNumber int, user string) error
 	GetPRMergeable(ctx context.Context, owner, repo string, prNumber int) (string, error)
 	GetPRReviews(ctx context.Context, owner, repo string, prNumber int, sinceID int64) ([]PRReview, error)
+	CreatePR(ctx context.Context, owner, repo, title, body, head, base string) (int, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -324,6 +325,19 @@ func (g *GoGitHubClient) GetPRReviews(ctx context.Context, owner, repo string, p
 		})
 	}
 	return reviews, nil
+}
+
+func (g *GoGitHubClient) CreatePR(ctx context.Context, owner, repo, title, body, head, base string) (int, error) {
+	pr, _, err := g.client.PullRequests.Create(ctx, owner, repo, &github.NewPullRequest{
+		Title: github.Ptr(title),
+		Body:  github.Ptr(body),
+		Head:  github.Ptr(head),
+		Base:  github.Ptr(base),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("creating PR: %w", err)
+	}
+	return pr.GetNumber(), nil
 }
 
 // GetAuthenticatedUser returns the login, name, and email of the authenticated user.

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeGitHub is a stateful fake GitHub API server for integration tests.
@@ -202,6 +203,15 @@ func (f *fakeGitHubClient) GetPRReviews(_ context.Context, _, _ string, _ int, _
 	return nil, nil
 }
 
+func (f *fakeGitHubClient) CreatePR(_ context.Context, _, _, _, _, head, _ string) (int, error) {
+	// Extract branch from "owner:branch" format if needed
+	branch := head
+	if idx := strings.Index(head, ":"); idx >= 0 {
+		branch = head[idx+1:]
+	}
+	return f.state.addPR(branch), nil
+}
+
 func (f *fakeGitHubClient) AssignIssue(_ context.Context, _, _ string, _ int, _ string) error {
 	return nil
 }
@@ -265,22 +275,11 @@ func (f *fakeClaudeRunner) Run(_ context.Context, workDir string, name string, a
 	err := f.err
 	f.mu.Unlock()
 
-	// If this is a claude invocation, simulate work by creating a commit
+	// If this is a claude invocation, simulate work by creating/modifying a file
+	// The agent handles commit, push, and PR creation.
 	if name == "claude" {
-		// Create a file and commit it
 		filePath := filepath.Join(workDir, "fix.go")
-		os.WriteFile(filePath, []byte("package main\n// fix\n"), 0o644)
-
-		exec.Command("git", "-C", workDir, "add", ".").Run()
-		cmd := exec.Command("git", "-C", workDir, "commit", "-m", "implement fix")
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=Claude",
-			"GIT_AUTHOR_EMAIL=claude@test.com",
-			"GIT_COMMITTER_NAME=Claude",
-			"GIT_COMMITTER_EMAIL=claude@test.com",
-		)
-		cmd.Run()
-		exec.Command("git", "-C", workDir, "push", "origin", "HEAD").Run()
+		os.WriteFile(filePath, []byte(fmt.Sprintf("package main\n// fix %d\n", time.Now().UnixNano())), 0o644)
 
 		if f.onClaudeRun != nil {
 			f.onClaudeRun()
@@ -325,26 +324,19 @@ func TestIntegration_FullIssueLifecycle(t *testing.T) {
 		slog.Default(),
 	)
 
-	// === Phase 1: New issue appears, Claude implements it ===
+	// === Phase 1: New issue appears, Claude implements it, agent commits/pushes/creates PR ===
 	gh.addIssue(Issue{Number: 42, Title: "Fix the bug", Body: "It's broken"})
-
-	// PR is created during Claude's run (simulating gh pr create)
-	var prNum int
-	runner.onClaudeRun = func() {
-		prNum = gh.addPR("ai/issue-42")
-	}
 
 	agent.CleanupDone(ctx)
 	agent.ProcessNewIssues(ctx)
-	runner.onClaudeRun = nil // clear hook so subsequent Claude calls don't create more PRs
 
-	// Verify state
+	// Verify state — agent should have committed, pushed, and created the PR
 	work, ok := agent.state.ActiveIssues[42]
 	if !ok {
 		t.Fatal("issue 42 should be in state after processing")
 	}
-	if work.PRNumber != prNum {
-		t.Errorf("expected PR %d, got %d", prNum, work.PRNumber)
+	if work.PRNumber == 0 {
+		t.Error("expected PR to be created")
 	}
 	if work.Status != "pr-open" {
 		t.Errorf("expected status 'pr-open', got %q", work.Status)
@@ -369,7 +361,7 @@ func TestIntegration_FullIssueLifecycle(t *testing.T) {
 	}
 
 	// === Phase 2: Review comment arrives, Claude addresses it ===
-	commentID := gh.addReviewComment(prNum, "reviewer", "Please add tests", "fix.go", 2)
+	commentID := gh.addReviewComment(work.PRNumber, "reviewer", "Please add tests", "fix.go", 2)
 
 	agent.ProcessReviewComments(ctx)
 
@@ -420,7 +412,7 @@ func TestIntegration_FullIssueLifecycle(t *testing.T) {
 
 	// === Phase 4: PR merged, cleanup ===
 	worktreePath := agent.state.ActiveIssues[42].WorktreePath
-	gh.mergePR(prNum)
+	gh.mergePR(work.PRNumber)
 
 	agent.CleanupDone(ctx)
 
@@ -507,30 +499,22 @@ func TestIntegration_ClosedPRRetriggers(t *testing.T) {
 		slog.Default(),
 	)
 
-	// First run: issue processed, PR created during Claude run
+	// First run: issue processed, agent creates PR
 	gh.addIssue(Issue{Number: 10, Title: "Feature", Body: "Add feature"})
-	var prNum int
-	runner.onClaudeRun = func() {
-		prNum = gh.addPR("ai/issue-10")
-	}
 
 	agent.CleanupDone(ctx)
 	agent.ProcessNewIssues(ctx)
-	runner.onClaudeRun = nil
 
-	if agent.state.ActiveIssues[10].PRNumber != prNum {
+	work := agent.state.ActiveIssues[10]
+	if work == nil || work.PRNumber == 0 {
 		t.Fatal("PR should be tracked")
 	}
+	prNum := work.PRNumber
 
 	// PR gets closed (rejected)
 	gh.closePR(prNum)
 
 	// Next cycle: cleanup removes it, then processNewIssues picks it up again
-	var prNum2 int
-	runner.onClaudeRun = func() {
-		prNum2 = gh.addPR("ai/issue-10")
-	}
-
 	agent.CleanupDone(ctx)
 
 	if _, exists := agent.state.ActiveIssues[10]; exists {
@@ -539,12 +523,15 @@ func TestIntegration_ClosedPRRetriggers(t *testing.T) {
 
 	agent.ProcessNewIssues(ctx)
 
-	work := agent.state.ActiveIssues[10]
+	work = agent.state.ActiveIssues[10]
 	if work == nil {
 		t.Fatal("issue 10 should be re-processed after closed PR")
 	}
-	if work.PRNumber != prNum2 {
-		t.Errorf("expected new PR %d, got %d", prNum2, work.PRNumber)
+	if work.PRNumber == 0 {
+		t.Error("expected new PR to be created")
+	}
+	if work.PRNumber == prNum {
+		t.Error("expected a different PR number after retrigger")
 	}
 }
 
@@ -567,14 +554,10 @@ func TestIntegration_ReviewerWhitelist(t *testing.T) {
 		slog.Default(),
 	)
 
-	// Setup: issue with open PR (created during Claude run)
+	// Setup: issue with open PR (agent creates PR)
 	gh.addIssue(Issue{Number: 50, Title: "Fix", Body: "broken"})
-	var prNum int
-	runner.onClaudeRun = func() {
-		prNum = gh.addPR("ai/issue-50")
-	}
 	agent.ProcessNewIssues(ctx)
-	runner.onClaudeRun = nil
+	prNum := agent.state.ActiveIssues[50].PRNumber
 
 	// Non-whitelisted user comments — should be ignored
 	gh.addReviewComment(prNum, "random-bot", "do something", "fix.go", 1)
@@ -636,15 +619,11 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 		slog.Default(),
 	)
 
-	// Setup: issue with open PR (created during Claude run)
+	// Setup: issue with open PR (agent creates PR)
 	gh.addIssue(Issue{Number: 77, Title: "Add feature", Body: "new feature"})
-	runner.onClaudeRun = func() {
-		gh.addPR("ai/issue-77")
-	}
 
 	agent.CleanupDone(ctx)
 	agent.ProcessNewIssues(ctx)
-	runner.onClaudeRun = nil
 
 	work := agent.state.ActiveIssues[77]
 	if work == nil {
@@ -755,15 +734,11 @@ func TestIntegration_SyncWorktreePullsManualCommits(t *testing.T) {
 		slog.Default(),
 	)
 
-	// Create issue and PR (created during Claude run)
+	// Create issue and PR (agent creates PR)
 	gh.addIssue(Issue{Number: 88, Title: "Sync test", Body: "test sync"})
-	runner.onClaudeRun = func() {
-		gh.addPR("ai/issue-88")
-	}
 
 	agent.CleanupDone(ctx)
 	agent.ProcessNewIssues(ctx)
-	runner.onClaudeRun = nil
 
 	work := agent.state.ActiveIssues[88]
 	if work == nil {

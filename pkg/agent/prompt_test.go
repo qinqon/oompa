@@ -13,31 +13,22 @@ func TestBuildImplementationPrompt(t *testing.T) {
 		Labels: []string{"good-for-ai"},
 	}
 
-	prompt := buildImplementationPrompt(issue, "", "owner", "repo")
+	prompt := buildImplementationPrompt(issue, "owner", "repo")
 
 	checks := []string{
 		"#42",
 		"Fix nil pointer in handler",
 		"The handler crashes when input is nil.",
-		"/kind",
-		"Fixes #42",
-		"release-note",
 		"<user-provided-content>",
 		"</user-provided-content>",
 		"untrusted user input",
-		"--repo owner/repo",
+		"Do NOT commit",
 	}
 
 	for _, want := range checks {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
-	}
-
-	// With signed-off-by
-	prompt = buildImplementationPrompt(issue, "Test User <test@example.com>", "owner", "repo")
-	if !strings.Contains(prompt, "Signed-off-by: Test User <test@example.com>") {
-		t.Error("prompt missing Signed-off-by when provided")
 	}
 }
 
@@ -65,7 +56,7 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		},
 	}
 
-	prompt := buildReviewResponsePrompt(work, comments, nil, "", "owner", "repo")
+	prompt := buildReviewResponsePrompt(work, comments, nil, "owner", "repo")
 
 	checks := []string{
 		"reviewer1",
@@ -83,6 +74,7 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		"<user-provided-content>",
 		"</user-provided-content>",
 		"untrusted user input",
+		"Do NOT commit",
 	}
 
 	for _, want := range checks {
