@@ -29,12 +29,16 @@ RUN npm install -g @anthropic-ai/claude-code
 # Copy the agent binary
 COPY --from=builder /ai-agent /usr/local/bin/ai-agent
 
+# Create non-root user
+RUN useradd -m -s /bin/bash agent
+
 # Configure gh as git credential helper
 RUN gh auth setup-git 2>/dev/null || true
 
 # Work directory for clones and worktrees
-RUN mkdir -p /work
+RUN mkdir -p /work && chown agent:agent /work
 VOLUME /work
 
+USER agent
 ENTRYPOINT ["ai-agent"]
 CMD ["--clone-dir", "/work"]
