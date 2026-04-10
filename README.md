@@ -15,116 +15,73 @@ Claude never merges; a human must approve and merge every PR.
 
 ## Loop flow
 
-```plantuml
-@startuml
-title github-issue-resolver — Main Loop
+```mermaid
+flowchart TD
+    Start([Start]) --> Cleanup
 
-start
+    subgraph Cleanup [CleanupDone]
+        C1[Iterate active issues] --> C2{PR merged\nor closed?}
+        C2 -- yes --> C3[Remove worktree\nRemove from state]
+        C2 -- no --> C4[Skip]
+    end
 
-repeat
+    Cleanup --> NewIssues
 
-  partition "CleanupDone" {
-    :Iterate active issues in state;
-    while (more issues?) is (yes)
-      :Get PR state from GitHub;
-      if (PR merged or closed?) then (yes)
-        :Remove worktree;
-        :Remove from state;
-      endif
-    endwhile (no)
-  }
+    subgraph NewIssues [ProcessNewIssues]
+        N1[List issues with label] --> N2{Already\ntracked?}
+        N2 -- yes --> N3[Skip]
+        N2 -- no --> N4["Post 'working on it' comment\nClone repo & create worktree\nBranch: ai/issue-N"]
+        N4 --> N5[Run Claude to implement fix]
+        N5 --> N6{Claude\nsucceeded?}
+        N6 -- yes --> N7[Find PR created by Claude\nTrack as pr-open]
+        N6 -- no --> N8["Add ai-failed label\nComment with error\nTrack as failed"]
+    end
 
-  partition "ProcessNewIssues" {
-    :List issues with configured label;
-    while (more issues?) is (yes)
-      if (already tracked?) then (yes)
-        :Skip;
-      else (no)
-        :Post "working on it" comment;
-        :Ensure repo is cloned;
-        :Create worktree + branch\n""ai/issue-<N>"";
-        :Run Claude to implement fix;
-        if (Claude succeeded?) then (yes)
-          :Find PR created by Claude;
-          :Track issue as **pr-open**;
-        else (no)
-          :Add **ai-failed** label;
-          :Comment with error;
-          :Track issue as **failed**;
-        endif
-      endif
-    endwhile (no)
-  }
+    NewIssues --> Reviews
 
-  partition "ProcessReviewComments" {
-    :Iterate open PRs;
-    while (more PRs?) is (yes)
-      :Fetch review comments since last seen;
-      :Filter: allowed reviewers only,\nskip bot's own, skip already replied;
-      if (new comments?) then (yes)
-        :React with 👀 to each comment;
-        :Sync worktree;
-        :Run Claude to address comments;
-        :Post fallback reply for\nany unanswered comment;
-      endif
-    endwhile (no)
-  }
+    subgraph Reviews [ProcessReviewComments]
+        R1[Iterate open PRs] --> R2[Fetch new review comments\nFilter by allowed reviewers]
+        R2 --> R3{New\ncomments?}
+        R3 -- no --> R4[Skip]
+        R3 -- yes --> R5["React with :eyes: to each\nSync worktree"]
+        R5 --> R6[Run Claude to address comments]
+        R6 --> R7[Post fallback reply for\nunanswered comments]
+    end
 
-  partition "ProcessConflicts" {
-    :Iterate open PRs;
-    while (more PRs?) is (yes)
-      :Check PR mergeable state;
-      if (state is dirty?) then (yes)
-        :Sync worktree;
-        :Try **git rebase origin/main**;
-        if (rebase succeeded?) then (yes)
-          :Push with --force-with-lease;
-          :Comment: resolved by rebase;
-        else (no)
-          :Abort rebase;
-          :Run Claude to resolve conflicts;
-          if (Claude pushed new commits?) then (yes)
-            :Comment: conflicts resolved;
-          else (no)
-            :Comment: human intervention needed;
-          endif
-        endif
-      endif
-    endwhile (no)
-  }
+    Reviews --> Conflicts
 
-  partition "ProcessCIFailures" {
-    :Iterate open PRs;
-    while (more PRs?) is (yes)
-      if (fix attempts >= 3?) then (yes)
-        :Comment: human intervention needed;
-      else (no)
-        :Get check runs for HEAD SHA;
-        if (completed failures found?) then (yes)
-          :Fetch logs for failing checks;
-          :Sync worktree;
-          :Run Claude to investigate;
-          if (Claude says UNRELATED?) then (yes)
-            :Comment: failure unrelated to PR;
-          else (no)
-            if (Claude pushed a fix?) then (yes)
-              :Comment: pushed a fix;
-            else (no)
-              :Comment: could not fix;
-            endif
-          endif
-          :Increment fix attempts;
-        endif
-      endif
-    endwhile (no)
-  }
+    subgraph Conflicts [ProcessConflicts]
+        CF1[Iterate open PRs] --> CF2{Merge state\ndirty?}
+        CF2 -- no --> CF3[Skip]
+        CF2 -- yes --> CF4[Sync worktree\nTry git rebase origin/main]
+        CF4 --> CF5{Rebase\nsucceeded?}
+        CF5 -- yes --> CF6[Push with --force-with-lease\nComment: resolved by rebase]
+        CF5 -- no --> CF7[Abort rebase\nRun Claude to resolve]
+        CF7 --> CF8{Claude pushed\nnew commits?}
+        CF8 -- yes --> CF9[Comment: conflicts resolved]
+        CF8 -- no --> CF10[Comment: human intervention needed]
+    end
 
-backward: Sleep(**poll-interval**);
-repeat while (not --one-shot\nand not interrupted?) is (continue)
+    Conflicts --> CI
 
-stop
+    subgraph CI [ProcessCIFailures]
+        CI1[Iterate open PRs] --> CI2{Fix attempts\n>= 3?}
+        CI2 -- yes --> CI3[Comment: human intervention needed]
+        CI2 -- no --> CI4[Get check runs for HEAD]
+        CI4 --> CI5{Completed\nfailures?}
+        CI5 -- no --> CI6[Skip]
+        CI5 -- yes --> CI7[Fetch failing check logs\nSync worktree\nRun Claude to investigate]
+        CI7 --> CI8{Claude says\nUNRELATED?}
+        CI8 -- yes --> CI9[Comment: failure unrelated to PR]
+        CI8 -- no --> CI10{Claude\npushed fix?}
+        CI10 -- yes --> CI11[Comment: pushed a fix]
+        CI10 -- no --> CI12[Comment: could not fix]
+    end
 
-@enduml
+    CI --> OneShot{--one-shot?}
+    OneShot -- yes --> Stop([Stop])
+    OneShot -- no --> Sleep["Sleep(poll-interval)"]
+    Sleep --> Cleanup
 ```
 
 ## Prerequisites
