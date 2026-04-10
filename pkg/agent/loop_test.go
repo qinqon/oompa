@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
+	"time"
 )
 
 // mockGitHubClient implements GitHubClient for testing.
@@ -114,6 +115,10 @@ func (m *mockGitHubClient) GetPRMergeable(_ context.Context, _, _ string, _ int)
 
 func (m *mockGitHubClient) GetPRReviews(_ context.Context, _, _ string, _ int, _ int64) ([]PRReview, error) {
 	return nil, nil
+}
+
+func (m *mockGitHubClient) GetPRHeadCommitDate(_ context.Context, _, _ string, _ int) (time.Time, error) {
+	return time.Time{}, nil
 }
 
 func (m *mockGitHubClient) CreatePR(_ context.Context, _, _, _, _, _, _ string) (int, error) {

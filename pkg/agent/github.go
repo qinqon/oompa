@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v84/github"
 )
@@ -30,6 +31,7 @@ type GitHubClient interface {
 	UnassignIssue(ctx context.Context, owner, repo string, issueNumber int, user string) error
 	GetPRMergeable(ctx context.Context, owner, repo string, prNumber int) (string, error)
 	GetPRReviews(ctx context.Context, owner, repo string, prNumber int, sinceID int64) ([]PRReview, error)
+	GetPRHeadCommitDate(ctx context.Context, owner, repo string, prNumber int) (time.Time, error)
 	CreatePR(ctx context.Context, owner, repo, title, body, head, base string) (int, error)
 }
 
@@ -318,13 +320,27 @@ func (g *GoGitHubClient) GetPRReviews(ctx context.Context, owner, repo string, p
 			continue
 		}
 		reviews = append(reviews, PRReview{
-			ID:    r.GetID(),
-			User:  r.GetUser().GetLogin(),
-			State: r.GetState(),
-			Body:  body,
+			ID:          r.GetID(),
+			User:        r.GetUser().GetLogin(),
+			State:       r.GetState(),
+			Body:        body,
+			SubmittedAt: r.GetSubmittedAt().Time,
 		})
 	}
 	return reviews, nil
+}
+
+func (g *GoGitHubClient) GetPRHeadCommitDate(ctx context.Context, owner, repo string, prNumber int) (time.Time, error) {
+	pr, _, err := g.client.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("getting PR: %w", err)
+	}
+	sha := pr.GetHead().GetSHA()
+	commit, _, err := g.client.Repositories.GetCommit(ctx, owner, repo, sha, nil)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("getting commit: %w", err)
+	}
+	return commit.GetCommit().GetCommitter().GetDate().Time, nil
 }
 
 func (g *GoGitHubClient) CreatePR(ctx context.Context, owner, repo, title, body, head, base string) (int, error) {

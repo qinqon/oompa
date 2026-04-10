@@ -51,10 +51,11 @@ type IssueWork struct {
 
 // PRReview represents a GitHub pull request review (approve, request changes, comment).
 type PRReview struct {
-	ID    int64
-	User  string
-	State string // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
-	Body  string
+	ID          int64
+	User        string
+	State       string // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
+	Body        string
+	SubmittedAt time.Time
 }
 
 // CheckRun represents a GitHub Actions check run.

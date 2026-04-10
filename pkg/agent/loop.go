@@ -232,18 +232,23 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 
 		// Filter reviews: skip bot-posted, only whitelisted reviewers, skip already-addressed
 		var humanReviews []PRReview
-		for _, r := range reviews {
-			if strings.Contains(r.Body, botMarker) {
-				continue
+		if len(reviews) > 0 {
+			// Get the PR head commit date to determine if reviews were already addressed
+			headCommitDate, _ := a.gh.GetPRHeadCommitDate(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+
+			for _, r := range reviews {
+				if strings.Contains(r.Body, botMarker) {
+					continue
+				}
+				if !a.isAllowedReviewer(r.User) {
+					continue
+				}
+				// Skip reviews that were submitted before the latest push
+				if !headCommitDate.IsZero() && r.SubmittedAt.Before(headCommitDate) {
+					continue
+				}
+				humanReviews = append(humanReviews, r)
 			}
-			if !a.isAllowedReviewer(r.User) {
-				continue
-			}
-			// Skip reviews that were already addressed (ack comment exists)
-			if a.hasExistingBotComment(ctx, work.PRNumber, fmt.Sprintf("review-%d", r.ID)) {
-				continue
-			}
-			humanReviews = append(humanReviews, r)
 		}
 
 		if len(humanComments) == 0 && len(humanReviews) == 0 {
@@ -303,22 +308,6 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		// Update acknowledgment comments for review bodies with the result
-		for _, r := range humanReviews {
-			ackMarker := fmt.Sprintf("<!-- review-%d -->", r.ID)
-			result := fmt.Sprintf("Addressed review from @%s", r.User)
-			if hasChanges {
-				result += " in the latest push."
-			} else {
-				result += " — no code changes needed."
-			}
-			result += fmt.Sprintf("\n\n%s\n%s", ackMarker, botMarker)
-			// If the ack comment already exists, it will be found by hasExistingBotComment
-			// and the review won't be reprocessed. Post as a new comment if the ack was
-			// already posted (it was posted before Claude ran).
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, result)
-		}
-
 		// Update last seen comment ID
 		for _, c := range humanComments {
 			if c.ID > work.LastCommentID {
@@ -326,12 +315,6 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		// Update last seen review ID
-		for _, r := range humanReviews {
-			if r.ID > work.LastReviewID {
-				work.LastReviewID = r.ID
-			}
-		}
 	}
 }
 

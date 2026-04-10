@@ -203,6 +203,10 @@ func (f *fakeGitHubClient) GetPRReviews(_ context.Context, _, _ string, _ int, _
 	return nil, nil
 }
 
+func (f *fakeGitHubClient) GetPRHeadCommitDate(_ context.Context, _, _ string, _ int) (time.Time, error) {
+	return time.Time{}, nil
+}
+
 func (f *fakeGitHubClient) CreatePR(_ context.Context, _, _, _, _, head, _ string) (int, error) {
 	// Extract branch from "owner:branch" format if needed
 	branch := head
