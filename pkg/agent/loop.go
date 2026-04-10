@@ -130,7 +130,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			CreatedAt:    time.Now(),
 		}
 
-		prompt := buildImplementationPrompt(issue, a.cfg.SignedOffBy, a.cfg.Owner, a.cfg.Repo)
+		prompt := buildImplementationPrompt(issue, a.cfg.Owner, a.cfg.Repo)
 		_, err = runClaude(ctx, a.runner, worktreePath, prompt, a.cfg, a.logger, false)
 		if err != nil {
 			a.logger.Error("claude failed", "issue", issue.Number, "error", err)
@@ -146,13 +146,34 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 
 		_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
 
-		// Find the PR created by Claude
-		prs, err = a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubHeadOwner, branchName)
+		// Commit, push, and create PR
+		if a.hasUncommittedChanges(ctx, worktreePath) {
+			commitMsg := fmt.Sprintf("%s\n\nFixes: https://github.com/%s/%s/issues/%d",
+				issue.Title, a.cfg.Owner, a.cfg.Repo, issue.Number)
+			if err := a.gitCommitAll(ctx, worktreePath, commitMsg); err != nil {
+				a.logger.Error("failed to commit", "issue", issue.Number, "error", err)
+				continue
+			}
+		}
+
+		if err := a.gitPush(ctx, worktreePath, true); err != nil {
+			a.logger.Error("failed to push", "issue", issue.Number, "error", err)
+			continue
+		}
+
+		prTitle := issue.Title
+		prBody := fmt.Sprintf("Fixes #%d\n\n%s", issue.Number, botMarker)
+		head := branchName
+		if a.cfg.GitHubHeadOwner != a.cfg.Owner {
+			head = fmt.Sprintf("%s:%s", a.cfg.GitHubHeadOwner, branchName)
+		}
+		prNumber, err := a.gh.CreatePR(ctx, a.cfg.Owner, a.cfg.Repo, prTitle, prBody, head, "main")
 		if err != nil {
-			a.logger.Error("failed to list PRs", "issue", issue.Number, "error", err)
-		} else if len(prs) > 0 {
-			work.PRNumber = prs[0].Number
+			a.logger.Error("failed to create PR", "issue", issue.Number, "error", err)
+		} else {
+			work.PRNumber = prNumber
 			work.Status = "pr-open"
+			a.logger.Info("created PR", "issue", issue.Number, "pr", prNumber)
 		}
 
 		a.state.ActiveIssues[issue.Number] = work
@@ -240,16 +261,22 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		prompt := buildReviewResponsePrompt(*work, humanComments, humanReviews, a.cfg.SignedOffBy, a.cfg.Owner, a.cfg.Repo)
+		prompt := buildReviewResponsePrompt(*work, humanComments, humanReviews, a.cfg.Owner, a.cfg.Repo)
 		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to address review", "pr", work.PRNumber, "error", err)
 			continue
 		}
 
-		// Check if Claude made any code changes by looking for uncommitted or amended changes
-		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", "origin/main")
-		hasChanges := len(strings.TrimSpace(string(diffOut))) > 0
+		// Amend and push if Claude made changes
+		hasChanges := a.hasUncommittedChanges(ctx, work.WorktreePath)
+		if hasChanges {
+			if err := a.gitAmendAll(ctx, work.WorktreePath); err != nil {
+				a.logger.Error("failed to amend commit", "pr", work.PRNumber, "error", err)
+			} else if err := a.gitPush(ctx, work.WorktreePath, true); err != nil {
+				a.logger.Error("failed to push", "pr", work.PRNumber, "error", err)
+			}
+		}
 
 		// Post fallback reply for inline comments Claude didn't reply to
 		updatedComments, _ := a.gh.GetPRReviewComments(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, 0)
@@ -374,7 +401,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", "origin/main")
 		diff := string(diffOut)
 
-		prompt := buildCIFixPrompt(*work, failures, diff, a.cfg.SignedOffBy)
+		prompt := buildCIFixPrompt(*work, failures, diff)
 		result, err := runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to investigate CI", "pr", work.PRNumber, "error", err)
@@ -395,15 +422,26 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		newSHA, _ := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
-		if newSHA == headSHA {
-			a.logger.Warn("Claude said RELATED but made no changes", "pr", work.PRNumber)
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("CI is failing on commit %s. Investigated but could not push a fix.\n\n%s", shortSHA(headSHA), botMarker))
-		} else {
-			a.logger.Info("CI failure is related, Claude pushed a fix", "pr", work.PRNumber)
+		// Claude said RELATED — amend and push if there are changes
+		pushed := false
+		if a.hasUncommittedChanges(ctx, work.WorktreePath) {
+			if err := a.gitAmendAll(ctx, work.WorktreePath); err != nil {
+				a.logger.Error("failed to amend commit for CI fix", "pr", work.PRNumber, "error", err)
+			} else if err := a.gitPush(ctx, work.WorktreePath, true); err != nil {
+				a.logger.Error("failed to push CI fix", "pr", work.PRNumber, "error", err)
+			} else {
+				pushed = true
+			}
+		}
+
+		if pushed {
+			a.logger.Info("CI failure is related, pushed a fix", "pr", work.PRNumber)
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
 				fmt.Sprintf("CI was failing on commit %s. Pushed a fix.\n\n%s", shortSHA(headSHA), botMarker))
+		} else {
+			a.logger.Warn("Claude said RELATED but no changes to push", "pr", work.PRNumber)
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+				fmt.Sprintf("CI is failing on commit %s. Investigated but could not push a fix.\n\n%s", shortSHA(headSHA), botMarker))
 		}
 		work.CIFixAttempts++
 		work.LastCIStatus = "failure"
@@ -469,7 +507,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort")
 		a.logger.Info("automatic rebase failed, invoking Claude to resolve conflicts", "pr", work.PRNumber, "stderr", string(stderr))
 
-		prompt := buildConflictResolutionPrompt(*work, a.cfg.SignedOffBy)
+		prompt := buildConflictResolutionPrompt(*work)
 		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to resolve conflicts", "pr", work.PRNumber, "error", err)
@@ -478,9 +516,9 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			continue
 		}
 
-		// Check if Claude actually resolved and pushed
-		newSHA, _ := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
-		if newSHA == headSHA {
+		// Push the rebased branch
+		if err := a.gitPush(ctx, work.WorktreePath, true); err != nil {
+			a.logger.Error("failed to push after conflict resolution", "pr", work.PRNumber, "error", err)
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
 				fmt.Sprintf("PR has merge conflicts on commit %s. Attempted to resolve automatically but failed. Human intervention needed.\n\n%s", shortSHA(headSHA), botMarker))
 		} else {
@@ -554,6 +592,65 @@ func (a *Agent) alreadyCheckedCI(ctx context.Context, prNumber int, sha string) 
 		}
 	}
 	return false
+}
+
+// hasUncommittedChanges returns true if the worktree has staged or unstaged changes.
+func (a *Agent) hasUncommittedChanges(ctx context.Context, worktreePath string) bool {
+	out, _, _ := a.runner.Run(ctx, worktreePath, "git", "status", "--porcelain")
+	return len(strings.TrimSpace(string(out))) > 0
+}
+
+// gitCommitAll stages all changes and creates a new commit with the configured author and signed-off-by.
+func (a *Agent) gitCommitAll(ctx context.Context, worktreePath, message string) error {
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "add", "-A"); err != nil {
+		return fmt.Errorf("git add: %w (stderr: %s)", err, string(stderr))
+	}
+
+	commitMsg := message
+	if a.cfg.SignedOffBy != "" {
+		commitMsg += fmt.Sprintf("\n\nSigned-off-by: %s", a.cfg.SignedOffBy)
+	}
+
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "-m", commitMsg); err != nil {
+		return fmt.Errorf("git commit: %w (stderr: %s)", err, string(stderr))
+	}
+	return nil
+}
+
+// gitAmendAll stages all changes and amends the current commit.
+func (a *Agent) gitAmendAll(ctx context.Context, worktreePath string) error {
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "add", "-A"); err != nil {
+		return fmt.Errorf("git add: %w (stderr: %s)", err, string(stderr))
+	}
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "--amend", "--no-edit"); err != nil {
+		return fmt.Errorf("git commit --amend: %w (stderr: %s)", err, string(stderr))
+	}
+	return nil
+}
+
+// gitPush pushes the current branch to the push remote.
+func (a *Agent) gitPush(ctx context.Context, worktreePath string, force bool) error {
+	pushRemote := "origin"
+	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
+		pushRemote = wtm.PushRemote()
+	}
+
+	// Get the current branch name for the refspec
+	branchOut, _, err := a.runner.Run(ctx, worktreePath, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return fmt.Errorf("getting branch name: %w", err)
+	}
+	branch := strings.TrimSpace(string(branchOut))
+
+	args := []string{"push", pushRemote, "HEAD:" + branch}
+	if force {
+		args = append(args, "--force-with-lease")
+	}
+
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", args...); err != nil {
+		return fmt.Errorf("git push: %w (stderr: %s)", err, string(stderr))
+	}
+	return nil
 }
 
 // isAllowedReviewer returns true if the user is in the reviewers whitelist.
