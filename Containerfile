@@ -41,6 +41,9 @@ RUN mkdir -p /work && chown agent:agent /work
 VOLUME /work
 
 USER agent
-RUN git config --global --add safe.directory '*'
+RUN git config --global --add safe.directory '*' \
+    && git config --global credential.helper '!gh auth token' \
+    && git config --global init.defaultBranch main
+ENV GIT_TERMINAL_PROMPT=0
 ENTRYPOINT ["ai-agent"]
 CMD ["--clone-dir", "/work"]
