@@ -30,17 +30,17 @@ RUN npm install -g @anthropic-ai/claude-code
 # Copy the agent binary
 COPY --from=builder /ai-agent /usr/local/bin/ai-agent
 
-# Create non-root user
-RUN useradd -m -s /bin/bash agent
+# Use the existing non-root node user (UID 1000)
+# This matches the host UID when using --userns=keep-id
 
 # Configure gh as git credential helper
 RUN gh auth setup-git 2>/dev/null || true
 
 # Work directory for clones and worktrees
-RUN mkdir -p /work && chown agent:agent /work
+RUN mkdir -p /work && chown node:node /work
 VOLUME /work
 
-USER agent
+USER node
 RUN git config --global --add safe.directory '*' \
     && git config --global credential.helper '!gh auth token' \
     && git config --global init.defaultBranch main
