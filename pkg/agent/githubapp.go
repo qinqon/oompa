@@ -45,7 +45,7 @@ func NewGitHubAppAuth(appID, installationID int64, privateKeyPath string) (*GitH
 	slug := app.GetSlug()
 	login := fmt.Sprintf("%s[bot]", slug)
 	name := app.GetName()
-	email := fmt.Sprintf("%d+%s[bot]@users.noreply.github.com", appID, slug)
+	email := fmt.Sprintf("%d+%s@users.noreply.github.com", appID, slug)
 
 	return &GitHubAppAuth{
 		Client:    client,
