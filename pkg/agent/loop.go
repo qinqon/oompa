@@ -252,9 +252,8 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 
 		a.logger.Info("addressing review feedback", "pr", work.PRNumber, "comments", len(humanComments), "reviews", len(humanReviews))
 
-		// Pull latest changes (someone may have pushed manual commits)
-		if err := a.worktrees.SyncWorktree(ctx, work.WorktreePath); err != nil {
-			a.logger.Error("failed to sync worktree", "pr", work.PRNumber, "error", err)
+		if err := a.ensureWorktreeReady(ctx, work); err != nil {
+			a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
 			continue
 		}
 
@@ -398,9 +397,8 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 
 		a.logger.Info("CI failing, investigating", "pr", work.PRNumber, "failures", len(failures), "attempt", work.CIFixAttempts+1)
 
-		// Pull latest changes
-		if err := a.worktrees.SyncWorktree(ctx, work.WorktreePath); err != nil {
-			a.logger.Error("failed to sync worktree", "pr", work.PRNumber, "error", err)
+		if err := a.ensureWorktreeReady(ctx, work); err != nil {
+			a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
 			continue
 		}
 
@@ -482,9 +480,8 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 
 		a.logger.Info("PR has merge conflicts, attempting rebase", "pr", work.PRNumber)
 
-		// Sync worktree and try a simple rebase first
-		if err := a.worktrees.SyncWorktree(ctx, work.WorktreePath); err != nil {
-			a.logger.Error("failed to sync worktree", "pr", work.PRNumber, "error", err)
+		if err := a.ensureWorktreeReady(ctx, work); err != nil {
+			a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
 			continue
 		}
 
@@ -599,6 +596,22 @@ func (a *Agent) alreadyCheckedCI(ctx context.Context, prNumber int, sha string) 
 		}
 	}
 	return false
+}
+
+// ensureWorktreeReady ensures the repo is cloned and the worktree exists for the given work item.
+// If the worktree was lost (e.g. after a restart with a fresh volume), it recreates it.
+func (a *Agent) ensureWorktreeReady(ctx context.Context, work *IssueWork) error {
+	if err := a.worktrees.EnsureRepoCloned(ctx); err != nil {
+		return err
+	}
+	worktreePath, err := a.worktrees.CreateWorktree(ctx, work.BranchName)
+	if err != nil {
+		return err
+	}
+	work.WorktreePath = worktreePath
+
+	// Pull the latest from the push remote
+	return a.worktrees.SyncWorktree(ctx, worktreePath)
 }
 
 // hasUncommittedChanges returns true if the worktree has staged or unstaged changes.
