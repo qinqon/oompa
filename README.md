@@ -8,7 +8,8 @@ A single long-running Go binary that automatically resolves GitHub issues using 
 2. **Implement** — creates a git worktree, runs Claude Code (`claude -p`) to produce a fix.
 3. **Open PR** — pushes the branch and creates a pull request linked to the issue.
 4. **Address reviews** — picks up reviewer comments, runs Claude again to iterate.
-5. **Handle failures** — detects CI failures and merge conflicts, asks Claude to fix them.
+5. **Rebase conflicts** — detects PRs with merge conflicts, attempts an automatic rebase, and falls back to Claude if that fails.
+6. **Handle CI failures** — detects CI failures and asks Claude to fix them.
 
 Claude never merges; a human must approve and merge every PR.
 
@@ -43,7 +44,6 @@ export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
 | `--repo` | `AI_AGENT_REPO` | `openperouter` | GitHub repo name |
 | `--label` | `AI_AGENT_LABEL` | `good-for-ai` | Issue label to watch |
 | `--clone-dir` | `AI_AGENT_CLONE_DIR` | `~/ai-agent-work` | Working directory for clones and worktrees |
-| `--state-path` | `AI_AGENT_STATE_PATH` | `~/.ai-agent-state.json` | State file location |
 | `--poll-interval` | `AI_AGENT_POLL_INTERVAL` | `2m` | How often to poll GitHub |
 | `--log-level` | `AI_AGENT_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 | `--log-file` | `AI_AGENT_LOG_FILE` | stderr | Write logs to a file instead of stderr |
@@ -57,7 +57,7 @@ export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
 
 ## State
 
-The agent persists its state to a JSON file (default `~/.ai-agent-state.json`) so it can resume after restarts. Each tracked issue records its worktree path, branch, PR number, review progress, and status.
+The agent is stateless on disk. On every startup it rebuilds its state from GitHub by scanning labeled issues and matching PRs, so there is nothing to back up or migrate.
 
 ## Testing
 
