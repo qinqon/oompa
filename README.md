@@ -16,26 +16,19 @@ Claude never merges; a human must approve and merge every PR.
 ## Loop flow
 
 ```mermaid
-flowchart TD
-    Start([Poll cycle]) --> Cleanup
-    Cleanup[Remove worktrees for\nmerged / closed PRs] --> Issues
-    Issues[Pick up new labeled issues\nCreate worktree + run Claude\nOpen PR] --> Reviews
-    Reviews[Address new review comments\nRun Claude + reply] --> Conflicts
-    Conflicts[Rebase dirty PRs\nor invoke Claude to resolve] --> CI
-    CI[Investigate CI failures\nRun Claude to fix or skip] --> OneShot{one-shot?}
-    OneShot -- yes --> Stop([Done])
-    OneShot -- no --> Sleep[/Sleep poll-interval/]
-    Sleep --> Start
+flowchart LR
+    A([Poll]) --> B[Cleanup] --> C[New Issues] --> D[Reviews] --> E[Conflicts] --> F[CI Failures] --> G{one-shot?}
+    G -- no --> A
+    G -- yes --> H([Done])
 
-    style Start fill:#4a90d9,stroke:#2a6cb6,color:#fff
-    style Cleanup fill:#f4f1de,stroke:#c9c4a6,color:#333
-    style Issues fill:#81b29a,stroke:#5a8a72,color:#fff
-    style Reviews fill:#f2cc8f,stroke:#d4a54a,color:#333
-    style Conflicts fill:#e07a5f,stroke:#b8563f,color:#fff
-    style CI fill:#3d405b,stroke:#2b2d40,color:#fff
-    style Sleep fill:#f4f1de,stroke:#c9c4a6,color:#333
-    style OneShot fill:#f4f1de,stroke:#c9c4a6,color:#333
-    style Stop fill:#4a90d9,stroke:#2a6cb6,color:#fff
+    style A fill:#4a90d9,stroke:#2a6cb6,color:#fff
+    style B fill:#f4f1de,stroke:#c9c4a6,color:#333
+    style C fill:#81b29a,stroke:#5a8a72,color:#fff
+    style D fill:#f2cc8f,stroke:#d4a54a,color:#333
+    style E fill:#e07a5f,stroke:#b8563f,color:#fff
+    style F fill:#3d405b,stroke:#2b2d40,color:#fff
+    style G fill:#f4f1de,stroke:#c9c4a6,color:#333
+    style H fill:#4a90d9,stroke:#2a6cb6,color:#fff
 ```
 
 ## Prerequisites
