@@ -83,7 +83,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 						if a.cfg.GitHubHeadOwner != a.cfg.Owner {
 							head = fmt.Sprintf("%s:%s", a.cfg.GitHubHeadOwner, work.BranchName)
 						}
-						prBody := fmt.Sprintf("Fixes #%d\n\n%s", issue.Number, botMarker)
+						prBody := a.buildPRBody(ctx, work.WorktreePath, issue.Number)
 						prNumber, err := a.gh.CreatePR(ctx, a.cfg.Owner, a.cfg.Repo, issue.Title, prBody, head, "main")
 						if err != nil {
 							a.logger.Error("failed to create PR", "issue", issue.Number, "error", err)
@@ -183,7 +183,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		}
 
 		prTitle := issue.Title
-		prBody := fmt.Sprintf("Fixes #%d\n\n%s", issue.Number, botMarker)
+		prBody := a.buildPRBody(ctx, worktreePath, issue.Number)
 		head := branchName
 		if a.cfg.GitHubHeadOwner != a.cfg.Owner {
 			head = fmt.Sprintf("%s:%s", a.cfg.GitHubHeadOwner, branchName)
@@ -600,6 +600,20 @@ func (a *Agent) alreadyCheckedCI(ctx context.Context, prNumber int, sha string) 
 		}
 	}
 	return false
+}
+
+// buildPRBody constructs a PR description from the git log of the branch.
+func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumber int) string {
+	// Get commit messages since origin/main
+	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", "origin/main..HEAD", "--format=%B---")
+	commitMessages := strings.TrimSpace(string(logOut))
+
+	body := fmt.Sprintf("Fixes #%d\n\n", issueNumber)
+	if commitMessages != "" {
+		body += commitMessages + "\n\n"
+	}
+	body += botMarker
+	return body
 }
 
 // ensureWorktreeReady ensures the repo is cloned and the worktree exists for the given work item.
