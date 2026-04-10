@@ -261,6 +261,15 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
+		// Post acknowledgment for review bodies
+		for _, r := range humanReviews {
+			ackMarker := fmt.Sprintf("<!-- review-%d -->", r.ID)
+			if !a.hasExistingBotComment(ctx, work.PRNumber, ackMarker) {
+				ack := fmt.Sprintf("Addressing review from @%s...\n\n%s\n%s", r.User, ackMarker, botMarker)
+				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, ack)
+			}
+		}
+
 		prompt := buildReviewResponsePrompt(*work, humanComments, humanReviews, a.cfg.Owner, a.cfg.Repo)
 		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
@@ -299,18 +308,20 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		// Post fallback reply for review bodies as an issue comment
+		// Update acknowledgment comments for review bodies with the result
 		for _, r := range humanReviews {
-			if !a.hasExistingBotComment(ctx, work.PRNumber, fmt.Sprintf("review-%d", r.ID)) {
-				fallback := fmt.Sprintf("Addressed review from @%s", r.User)
-				if hasChanges {
-					fallback += " in the latest push."
-				} else {
-					fallback += " — no code changes needed."
-				}
-				fallback += fmt.Sprintf("\n\n<!-- review-%d -->\n%s", r.ID, botMarker)
-				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, fallback)
+			ackMarker := fmt.Sprintf("<!-- review-%d -->", r.ID)
+			result := fmt.Sprintf("Addressed review from @%s", r.User)
+			if hasChanges {
+				result += " in the latest push."
+			} else {
+				result += " — no code changes needed."
 			}
+			result += fmt.Sprintf("\n\n%s\n%s", ackMarker, botMarker)
+			// If the ack comment already exists, it will be found by hasExistingBotComment
+			// and the review won't be reprocessed. Post as a new comment if the ack was
+			// already posted (it was posted before Claude ran).
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, result)
 		}
 
 		// Update last seen comment ID
