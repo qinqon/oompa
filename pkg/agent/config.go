@@ -27,6 +27,6 @@ type Config struct {
 
 	// GitHub App authentication (alternative to GITHUB_TOKEN)
 	GitHubAppID             int64
-	GitHubAppPrivateKeyPath string
+	GitHubAppPrivateKey     []byte
 	GitHubAppInstallationID int64
 }

@@ -21,9 +21,9 @@ type GitHubAppAuth struct {
 // NewGitHubAppAuth creates a GitHub client and token provider from GitHub App credentials.
 // It uses the App's private key to generate JWTs and exchange them for installation tokens.
 // The returned TokenFunc provides short-lived installation tokens (valid ~1 hour, auto-refreshed).
-func NewGitHubAppAuth(appID, installationID int64, privateKeyPath string) (*GitHubAppAuth, error) {
+func NewGitHubAppAuth(appID, installationID int64, privateKey []byte) (*GitHubAppAuth, error) {
 	// Create app-level transport (JWT) to fetch app metadata
-	appTransport, err := ghinstallation.NewAppsTransportKeyFromFile(http.DefaultTransport, appID, privateKeyPath)
+	appTransport, err := ghinstallation.NewAppsTransport(http.DefaultTransport, appID, privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("creating app transport: %w", err)
 	}
@@ -35,7 +35,7 @@ func NewGitHubAppAuth(appID, installationID int64, privateKeyPath string) (*GitH
 	}
 
 	// Create installation-level transport (auto-refreshing installation tokens)
-	itr, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, appID, installationID, privateKeyPath)
+	itr, err := ghinstallation.New(http.DefaultTransport, appID, installationID, privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("creating installation transport: %w", err)
 	}
