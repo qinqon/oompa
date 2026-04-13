@@ -14,7 +14,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ca-certificates \
     curl \
+    make \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Go (matches kubernetes-nmstate requirements)
+ARG GO_VERSION=1.25.0
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Install gh CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -26,6 +32,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
+
+# Install ai-helpers plugins (code-review, git, jira, etc.)
+RUN git clone --depth 1 https://github.com/openshift-eng/ai-helpers /opt/ai-helpers
 
 # Copy the agent binary
 COPY --from=builder /ai-agent /usr/local/bin/ai-agent
