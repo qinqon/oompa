@@ -171,6 +171,22 @@ func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, headOwn
 	if headOwner != "" {
 		head = fmt.Sprintf("%s:%s", headOwner, branch)
 	}
+
+	prs, err := g.listPRsByHead(ctx, owner, repo, head, branch)
+	if err != nil {
+		return nil, err
+	}
+	if len(prs) > 0 || headOwner == "" {
+		return prs, nil
+	}
+
+	// Retry without owner prefix — GitHub's head filter doesn't match
+	// when the fork repo has a different name than the base repo
+	// (e.g. head from kubernetes-nmstate-ci against kubernetes-nmstate).
+	return g.listPRsByHead(ctx, owner, repo, branch, branch)
+}
+
+func (g *GoGitHubClient) listPRsByHead(ctx context.Context, owner, repo, head, branch string) ([]PR, error) {
 	opts := &github.PullRequestListOptions{
 		Head:  head,
 		State: "all",
