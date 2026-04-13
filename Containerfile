@@ -46,13 +46,13 @@ COPY --from=builder /ai-agent /usr/local/bin/ai-agent
 RUN gh auth setup-git 2>/dev/null || true
 
 # Work directory for clones and worktrees
-RUN mkdir -p /work && chown node:node /work
+RUN mkdir -p /work && chmod 777 /work
 VOLUME /work
 
-USER node
-RUN git config --global --add safe.directory '*' \
-    && git config --global credential.helper '!gh auth token' \
-    && git config --global init.defaultBranch main
+# Set git config system-wide so it works with any UID (OpenShift assigns random UIDs)
+RUN git config --system --add safe.directory '*' \
+    && git config --system credential.helper '!gh auth token' \
+    && git config --system init.defaultBranch main
 ENV GIT_TERMINAL_PROMPT=0
 ENTRYPOINT ["ai-agent"]
 CMD ["--clone-dir", "/work"]
