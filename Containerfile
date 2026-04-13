@@ -45,6 +45,10 @@ COPY --from=builder /ai-agent /usr/local/bin/ai-agent
 # Configure gh as git credential helper
 RUN gh auth setup-git 2>/dev/null || true
 
+# Create a home directory writable by any UID (OpenShift assigns random UIDs in the root group)
+RUN mkdir -p /home/agent && chmod 775 /home/agent && chown 1000:0 /home/agent
+ENV HOME=/home/agent
+
 # Work directory for clones and worktrees
 RUN mkdir -p /work && chmod 777 /work
 VOLUME /work
