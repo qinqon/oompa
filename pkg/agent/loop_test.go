@@ -647,7 +647,7 @@ func TestProcessCIFailures_SkipsPendingCI(t *testing.T) {
 	}
 }
 
-func TestProcessCIFailures_CreatesFlakYIssueWhenUnrelated(t *testing.T) {
+func TestProcessCIFailures_CreatesFlakyIssueWhenUnrelated(t *testing.T) {
 	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
@@ -688,7 +688,7 @@ func TestProcessCIFailures_CreatesFlakYIssueWhenUnrelated(t *testing.T) {
 	}
 }
 
-func TestProcessCIFailures_SkipsFlakYIssueWhenDisabled(t *testing.T) {
+func TestProcessCIFailures_SkipsFlakyIssueWhenDisabled(t *testing.T) {
 	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
