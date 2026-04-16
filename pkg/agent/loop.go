@@ -397,8 +397,15 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		// Check if we already investigated this SHA by looking for a bot comment
+		// Check if we already investigated this SHA (in-memory dedup)
+		if work.LastCheckedCISHA == headSHA {
+			continue
+		}
+
+		// Fallback: check if we already investigated this SHA by looking for a bot comment
+		// (handles state recovery after restarts)
 		if a.alreadyCheckedCI(ctx, work.PRNumber, headSHA) {
+			work.LastCheckedCISHA = headSHA
 			continue
 		}
 
@@ -449,18 +456,26 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			a.logger.Error("claude failed to investigate CI", "pr", work.PRNumber, "error", err)
 			work.CIFixAttempts++
 			work.LastCIStatus = "failure"
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("CI investigation failed for commit %s: %v\n\n%s", shortSHA(headSHA), err, botMarker))
+			work.LastCheckedCISHA = headSHA
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+				fmt.Sprintf("CI investigation failed for commit %s: %v\n\n%s", shortSHA(headSHA), err, botMarker)); err != nil {
+				a.logger.Error("failed to post CI investigation error comment", "pr", work.PRNumber, "error", err)
+			}
 			continue
 		}
 
-		if strings.HasPrefix(strings.TrimSpace(result.Result), "UNRELATED") {
+		// Strip markdown formatting (bold, italic) before checking prefix
+		cleaned := strings.TrimLeft(strings.TrimSpace(result.Result), "*_")
+		if strings.HasPrefix(cleaned, "UNRELATED") {
 			a.logger.Info("CI failure is unrelated to PR changes", "pr", work.PRNumber)
-			explanation := strings.TrimPrefix(strings.TrimSpace(result.Result), "UNRELATED")
+			explanation := strings.TrimPrefix(cleaned, "UNRELATED")
 			explanation = strings.TrimSpace(explanation)
 			comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(headSHA), explanation, botMarker)
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, comment)
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, comment); err != nil {
+				a.logger.Error("failed to post CI unrelated comment", "pr", work.PRNumber, "error", err)
+			}
 			work.LastCIStatus = "unrelated-failure"
+			work.LastCheckedCISHA = headSHA
 
 			// Create a flaky CI issue if configured
 			if a.cfg.CreateFlakyIssues {
@@ -479,8 +494,10 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 				} else {
 					a.logger.Info("created flaky CI issue", "issue", issueNum)
 					// Update the PR comment to reference the created issue
-					_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-						fmt.Sprintf("Opened issue #%d to track this flaky test.\n\n%s", issueNum, botMarker))
+					if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+						fmt.Sprintf("Opened issue #%d to track this flaky test.\n\n%s", issueNum, botMarker)); err != nil {
+						a.logger.Error("failed to post flaky issue reference comment", "pr", work.PRNumber, "error", err)
+					}
 				}
 			}
 
@@ -501,15 +518,20 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 
 		if pushed {
 			a.logger.Info("CI failure is related, pushed a fix", "pr", work.PRNumber)
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("CI was failing on commit %s. Pushed a fix.\n\n%s", shortSHA(headSHA), botMarker))
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+				fmt.Sprintf("CI was failing on commit %s. Pushed a fix.\n\n%s", shortSHA(headSHA), botMarker)); err != nil {
+				a.logger.Error("failed to post CI fix comment", "pr", work.PRNumber, "error", err)
+			}
 		} else {
 			a.logger.Warn("Claude said RELATED but no changes to push", "pr", work.PRNumber)
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("CI is failing on commit %s. Investigated but could not push a fix.\n\n%s", shortSHA(headSHA), botMarker))
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+				fmt.Sprintf("CI is failing on commit %s. Investigated but could not push a fix.\n\n%s", shortSHA(headSHA), botMarker)); err != nil {
+				a.logger.Error("failed to post CI investigation comment", "pr", work.PRNumber, "error", err)
+			}
 		}
 		work.CIFixAttempts++
 		work.LastCIStatus = "failure"
+		work.LastCheckedCISHA = headSHA
 	}
 }
 
