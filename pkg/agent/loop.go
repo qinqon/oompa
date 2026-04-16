@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -559,6 +560,70 @@ func (a *Agent) CleanupDone(ctx context.Context) {
 		}
 
 		delete(a.state.ActiveIssues, issueNum)
+	}
+}
+
+// HasWatchedPRs returns true if the agent is configured to watch specific PRs.
+func (a *Agent) HasWatchedPRs() bool {
+	return len(a.cfg.WatchPRs) > 0
+}
+
+// ShouldRunReaction returns true if the given reaction type should be executed.
+// If cfg.Reactions is empty, all reactions are enabled.
+// Valid reaction names: "reviews", "ci", "conflicts".
+func (a *Agent) ShouldRunReaction(reaction string) bool {
+	if len(a.cfg.Reactions) == 0 {
+		return true
+	}
+	for _, r := range a.cfg.Reactions {
+		if r == reaction {
+			return true
+		}
+	}
+	return false
+}
+
+// BootstrapWatchedPRs creates IssueWork entries for directly-specified PR numbers.
+// Called each poll cycle to ensure watched PRs are tracked in state.
+func (a *Agent) BootstrapWatchedPRs(ctx context.Context) {
+	for _, prNumber := range a.cfg.WatchPRs {
+		// Check if already tracked by any key
+		alreadyTracked := false
+		for _, work := range a.state.ActiveIssues {
+			if work.PRNumber == prNumber {
+				alreadyTracked = true
+				break
+			}
+		}
+		if alreadyTracked {
+			continue
+		}
+
+		pr, err := a.gh.GetPR(ctx, a.cfg.Owner, a.cfg.Repo, prNumber)
+		if err != nil {
+			a.logger.Error("failed to get watched PR details", "pr", prNumber, "error", err)
+			continue
+		}
+
+		if pr.Merged || pr.State == "closed" {
+			a.logger.Info("skipping watched PR (already closed/merged)", "pr", prNumber, "state", pr.State)
+			continue
+		}
+
+		branchName := pr.Head
+		worktreePath := filepath.Join(a.cfg.CloneDir, "worktrees", branchName)
+
+		work := &IssueWork{
+			IssueTitle:   pr.Title,
+			WorktreePath: worktreePath,
+			BranchName:   branchName,
+			PRNumber:     prNumber,
+			Status:       "pr-open",
+			CreatedAt:    time.Now(),
+		}
+
+		a.state.ActiveIssues[prNumber] = work
+		a.logger.Info("bootstrapped watched PR", "pr", prNumber, "branch", branchName, "title", pr.Title)
 	}
 }
 

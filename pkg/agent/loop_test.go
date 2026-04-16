@@ -129,6 +129,15 @@ func (m *mockGitHubClient) HasLinkedPR(_ context.Context, _, _ string, _ int) (b
 	return false, nil
 }
 
+func (m *mockGitHubClient) GetPR(_ context.Context, _, _ string, prNumber int) (PR, error) {
+	for _, p := range m.prs {
+		if p.Number == prNumber {
+			return p, nil
+		}
+	}
+	return PR{}, fmt.Errorf("PR %d not found", prNumber)
+}
+
 func (m *mockGitHubClient) AssignIssue(_ context.Context, _, _ string, _ int, _ string) error {
 	return nil
 }
@@ -610,5 +619,124 @@ func TestProcessCIFailures_SkipsPendingCI(t *testing.T) {
 
 	if len(runner.calls) != 0 {
 		t.Error("should not invoke claude while CI is still running")
+	}
+}
+
+func TestShouldRunReaction_EmptyAllowsAll(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	// No reactions configured — all should be allowed
+	for _, reaction := range []string{"reviews", "ci", "conflicts"} {
+		if !agent.ShouldRunReaction(reaction) {
+			t.Errorf("expected %q to be allowed with empty Reactions", reaction)
+		}
+	}
+}
+
+func TestShouldRunReaction_Filtered(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.Reactions = []string{"ci", "conflicts"}
+
+	if !agent.ShouldRunReaction("ci") {
+		t.Error("expected 'ci' to be allowed")
+	}
+	if !agent.ShouldRunReaction("conflicts") {
+		t.Error("expected 'conflicts' to be allowed")
+	}
+	if agent.ShouldRunReaction("reviews") {
+		t.Error("expected 'reviews' to be filtered out")
+	}
+}
+
+func TestBootstrapWatchedPRs_HappyPath(t *testing.T) {
+	gh := &mockGitHubClient{
+		prs: []PR{
+			{Number: 123, Title: "Fix login", State: "open", Head: "fix-login"},
+			{Number: 456, Title: "Add tests", State: "open", Head: "add-tests"},
+		},
+	}
+	agent := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.WatchPRs = []int{123, 456}
+
+	agent.BootstrapWatchedPRs(context.Background())
+
+	if len(agent.state.ActiveIssues) != 2 {
+		t.Fatalf("expected 2 tracked PRs, got %d", len(agent.state.ActiveIssues))
+	}
+
+	work := agent.state.ActiveIssues[123]
+	if work == nil {
+		t.Fatal("PR 123 not tracked")
+	}
+	if work.PRNumber != 123 {
+		t.Errorf("expected PRNumber 123, got %d", work.PRNumber)
+	}
+	if work.BranchName != "fix-login" {
+		t.Errorf("expected branch 'fix-login', got %q", work.BranchName)
+	}
+	if work.Status != "pr-open" {
+		t.Errorf("expected status 'pr-open', got %q", work.Status)
+	}
+	if work.IssueTitle != "Fix login" {
+		t.Errorf("expected title 'Fix login', got %q", work.IssueTitle)
+	}
+
+	work2 := agent.state.ActiveIssues[456]
+	if work2 == nil {
+		t.Fatal("PR 456 not tracked")
+	}
+	if work2.BranchName != "add-tests" {
+		t.Errorf("expected branch 'add-tests', got %q", work2.BranchName)
+	}
+}
+
+func TestBootstrapWatchedPRs_SkipsClosedPR(t *testing.T) {
+	gh := &mockGitHubClient{
+		prs: []PR{
+			{Number: 123, Title: "Old PR", State: "closed", Merged: true, Head: "old-branch"},
+		},
+	}
+	agent := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.WatchPRs = []int{123}
+
+	agent.BootstrapWatchedPRs(context.Background())
+
+	if len(agent.state.ActiveIssues) != 0 {
+		t.Error("should not track closed/merged PRs")
+	}
+}
+
+func TestBootstrapWatchedPRs_SkipsAlreadyTracked(t *testing.T) {
+	gh := &mockGitHubClient{
+		prs: []PR{
+			{Number: 123, Title: "Fix login", State: "open", Head: "fix-login"},
+		},
+	}
+	agent := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.WatchPRs = []int{123}
+
+	// Pre-populate state
+	agent.state.ActiveIssues[123] = &IssueWork{
+		PRNumber: 123,
+		Status:   "pr-open",
+	}
+
+	agent.BootstrapWatchedPRs(context.Background())
+
+	// Should still have exactly 1 entry (not duplicated)
+	if len(agent.state.ActiveIssues) != 1 {
+		t.Errorf("expected 1 tracked PR, got %d", len(agent.state.ActiveIssues))
+	}
+}
+
+func TestHasWatchedPRs(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+
+	if agent.HasWatchedPRs() {
+		t.Error("expected false with no watched PRs")
+	}
+
+	agent.cfg.WatchPRs = []int{123}
+	if !agent.HasWatchedPRs() {
+		t.Error("expected true with watched PRs")
 	}
 }

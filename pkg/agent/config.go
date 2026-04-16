@@ -24,6 +24,8 @@ type Config struct {
 	GitAuthorName   string   // git commit author name
 	GitAuthorEmail  string   // git commit author email
 	Reviewers       []string // whitelist of users/bots whose reviews to address
+	WatchPRs        []int    // PR numbers to monitor directly (bypasses issue discovery)
+	Reactions       []string // which reactions to run: "reviews", "ci", "conflicts" (empty = all)
 
 	// GitHub App authentication (alternative to GITHUB_TOKEN)
 	GitHubAppID             int64

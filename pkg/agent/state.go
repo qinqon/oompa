@@ -96,5 +96,42 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 		state.ActiveIssues[issue.Number] = work
 	}
 
+	// Bootstrap state for watched PRs
+	for _, prNumber := range cfg.WatchPRs {
+		alreadyTracked := false
+		for _, work := range state.ActiveIssues {
+			if work.PRNumber == prNumber {
+				alreadyTracked = true
+				break
+			}
+		}
+		if alreadyTracked {
+			continue
+		}
+
+		pr, err := gh.GetPR(ctx, cfg.Owner, cfg.Repo, prNumber)
+		if err != nil {
+			logger.Warn("failed to get watched PR details", "pr", prNumber, "error", err)
+			continue
+		}
+
+		if pr.Merged || pr.State == "closed" {
+			logger.Info("skipping watched PR (already closed/merged)", "pr", prNumber)
+			continue
+		}
+
+		work := &IssueWork{
+			IssueTitle:   pr.Title,
+			WorktreePath: filepath.Join(cloneDir, "worktrees", pr.Head),
+			BranchName:   pr.Head,
+			PRNumber:     prNumber,
+			Status:       "pr-open",
+			CreatedAt:    time.Now(),
+		}
+
+		state.ActiveIssues[prNumber] = work
+		logger.Info("recovered watched PR state", "pr", prNumber, "branch", pr.Head)
+	}
+
 	return state
 }

@@ -220,6 +220,16 @@ func (f *fakeGitHubClient) CreatePR(_ context.Context, _, _, _, _, head, _ strin
 	return f.state.addPR(branch), nil
 }
 
+func (f *fakeGitHubClient) GetPR(_ context.Context, _, _ string, prNumber int) (PR, error) {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	pr, ok := f.state.prs[prNumber]
+	if !ok {
+		return PR{}, fmt.Errorf("PR %d not found", prNumber)
+	}
+	return *pr, nil
+}
+
 func (f *fakeGitHubClient) AssignIssue(_ context.Context, _, _ string, _ int, _ string) error {
 	return nil
 }

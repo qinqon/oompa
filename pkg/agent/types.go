@@ -23,6 +23,7 @@ type ReviewComment struct {
 // PR represents a GitHub pull request.
 type PR struct {
 	Number int
+	Title  string
 	State  string
 	Merged bool
 	Head   string
