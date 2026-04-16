@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +28,7 @@ func parseConfig() agent.Config {
 	flag.StringVar(&cfg.Owner, "owner", envOrDefault("AI_AGENT_OWNER", "openperouter"), "GitHub repo owner")
 	flag.StringVar(&cfg.Repo, "repo", envOrDefault("AI_AGENT_REPO", "openperouter"), "GitHub repo name")
 	flag.StringVar(&cfg.Label, "label", envOrDefault("AI_AGENT_LABEL", "good-for-ai"), "Issue label to watch")
-	flag.StringVar(&cfg.CloneDir, "clone-dir", envOrDefault("AI_AGENT_CLONE_DIR", os.ExpandEnv("$HOME/ai-agent-work")), "Clone/worktree directory")
+	flag.StringVar(&cfg.CloneDir, "clone-dir", envOrDefault("AI_AGENT_CLONE_DIR", "/tmp/github-issue-resolver-agent-work"), "Base directory for clones (owner/repo appended automatically)")
 	flag.DurationVar(&cfg.PollInterval, "poll-interval", parseDuration(envOrDefault("AI_AGENT_POLL_INTERVAL", "2m")), "Poll frequency")
 	flag.StringVar(&cfg.VertexRegion, "vertex-region", os.Getenv("CLOUD_ML_REGION"), "GCP Vertex AI region")
 	flag.StringVar(&cfg.VertexProject, "vertex-project", os.Getenv("ANTHROPIC_VERTEX_PROJECT_ID"), "GCP project ID for Vertex")
@@ -72,6 +73,9 @@ func parseConfig() agent.Config {
 	flag.Int64Var(&ghAppInstallationID, "github-app-installation-id", ghAppInstallationID, "GitHub App installation ID")
 
 	flag.Parse()
+
+	// Structure clone dir as <base>/<owner>/<repo> so multiple projects can share --clone-dir
+	cfg.CloneDir = filepath.Join(cfg.CloneDir, cfg.Owner, cfg.Repo)
 
 	cfg.GitHubAppID = ghAppID
 	cfg.GitHubAppInstallationID = ghAppInstallationID
