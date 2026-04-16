@@ -151,8 +151,8 @@ func TestEnsureRepoCloned_AlreadyCloned(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected 2 calls (get-url, fetch), got %d", len(runner.calls))
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected 3 calls (get-url, fetch, symbolic-ref), got %d", len(runner.calls))
 	}
 
 	if runner.calls[0].Args[0] != "remote" || runner.calls[0].Args[1] != "get-url" {
@@ -160,6 +160,9 @@ func TestEnsureRepoCloned_AlreadyCloned(t *testing.T) {
 	}
 	if runner.calls[1].Args[0] != "fetch" {
 		t.Errorf("expected 'git fetch', got %v", runner.calls[1].Args)
+	}
+	if runner.calls[2].Args[0] != "symbolic-ref" {
+		t.Errorf("expected 'git symbolic-ref', got %v", runner.calls[2].Args)
 	}
 }
 
@@ -178,8 +181,8 @@ func TestEnsureRepoCloned_URLMismatch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(runner.calls) != 3 {
-		t.Fatalf("expected 3 calls (get-url, set-url, fetch), got %d", len(runner.calls))
+	if len(runner.calls) != 4 {
+		t.Fatalf("expected 4 calls (get-url, set-url, fetch, symbolic-ref), got %d", len(runner.calls))
 	}
 
 	if runner.calls[0].Args[0] != "remote" || runner.calls[0].Args[1] != "get-url" {
@@ -190,6 +193,9 @@ func TestEnsureRepoCloned_URLMismatch(t *testing.T) {
 	}
 	if runner.calls[2].Args[0] != "fetch" {
 		t.Errorf("expected 'git fetch', got %v", runner.calls[2].Args)
+	}
+	if runner.calls[3].Args[0] != "symbolic-ref" {
+		t.Errorf("expected 'git symbolic-ref', got %v", runner.calls[3].Args)
 	}
 }
 
@@ -204,12 +210,14 @@ func TestEnsureRepoCloned_Fresh(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(runner.calls))
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 calls (clone, symbolic-ref), got %d", len(runner.calls))
 	}
 
-	call := runner.calls[0]
-	if call.Name != "git" || call.Args[0] != "clone" {
-		t.Errorf("expected 'git clone', got %q %v", call.Name, call.Args)
+	if runner.calls[0].Name != "git" || runner.calls[0].Args[0] != "clone" {
+		t.Errorf("expected 'git clone', got %q %v", runner.calls[0].Name, runner.calls[0].Args)
+	}
+	if runner.calls[1].Args[0] != "symbolic-ref" {
+		t.Errorf("expected 'git symbolic-ref', got %v", runner.calls[1].Args)
 	}
 }

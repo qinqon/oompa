@@ -24,6 +24,7 @@ type GitWorktreeManager struct {
 	forkURL        string // fork repo URL (added as "fork" remote for pushing)
 	gitAuthorName  string // override git user.name in worktrees
 	gitAuthorEmail string // override git user.email in worktrees
+	defaultBranch  string // detected from origin HEAD (e.g. "main", "master")
 }
 
 // NewGitWorktreeManager creates a new worktree manager.
@@ -35,6 +36,33 @@ func NewGitWorktreeManager(runner CommandRunner, cloneDir, repoURL, forkURL stri
 		cloneDir: cloneDir,
 		repoURL:  repoURL,
 		forkURL:  forkURL,
+	}
+}
+
+// DefaultBranch returns the detected default branch of the upstream repo (e.g. "main", "master").
+// Falls back to "main" if not yet detected.
+func (g *GitWorktreeManager) DefaultBranch() string {
+	if g.defaultBranch != "" {
+		return g.defaultBranch
+	}
+	return "main"
+}
+
+// OriginDefaultBranch returns "origin/<default-branch>" (e.g. "origin/main", "origin/master").
+func (g *GitWorktreeManager) OriginDefaultBranch() string {
+	return "origin/" + g.DefaultBranch()
+}
+
+// detectDefaultBranch discovers the default branch from origin's HEAD.
+func (g *GitWorktreeManager) detectDefaultBranch(ctx context.Context) {
+	out, _, err := g.runner.Run(ctx, g.cloneDir, "git", "symbolic-ref", "refs/remotes/origin/HEAD")
+	if err != nil {
+		return
+	}
+	// Output is like "refs/remotes/origin/master"
+	ref := strings.TrimSpace(string(out))
+	if branch := strings.TrimPrefix(ref, "refs/remotes/origin/"); branch != ref {
+		g.defaultBranch = branch
 	}
 }
 
@@ -53,6 +81,7 @@ func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
 			return fmt.Errorf("git fetch origin: %w (stderr: %s)", err, string(stderr))
 		}
 		g.ensureForkRemote(ctx)
+		g.detectDefaultBranch(ctx)
 		return nil
 	}
 
@@ -62,6 +91,7 @@ func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
 	}
 	g.ensureForkRemote(ctx)
 	g.configureGitIdentity(ctx, g.cloneDir)
+	g.detectDefaultBranch(ctx)
 	return nil
 }
 
@@ -120,7 +150,7 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 	g.runner.Run(ctx, g.cloneDir, "git", "worktree", "prune")
 	g.runner.Run(ctx, g.cloneDir, "git", "branch", "-D", branchName)
 
-	_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "worktree", "add", "-b", branchName, worktreePath, "origin/main")
+	_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "worktree", "add", "-b", branchName, worktreePath, g.OriginDefaultBranch())
 	if err != nil {
 		return "", fmt.Errorf("git worktree add: %w (stderr: %s)", err, string(stderr))
 	}

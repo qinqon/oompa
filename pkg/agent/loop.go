@@ -407,7 +407,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		}
 
 		// Get PR diff to help Claude determine if failure is related
-		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", "origin/main")
+		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", a.originDefaultBranch())
 		diff := string(diffOut)
 
 		prompt := buildCIFixPrompt(*work, failures, diff)
@@ -503,11 +503,11 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			continue
 		}
 
-		// Fetch all remotes and try automatic rebase against origin/main (upstream)
+		// Fetch all remotes and try automatic rebase against the upstream default branch
 		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all")
 
 		// Try automatic rebase
-		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "origin/main")
+		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", a.originDefaultBranch())
 		if rebaseErr == nil {
 			// Rebase succeeded, force push
 			pushRemote := "origin"
@@ -529,7 +529,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort")
 		a.logger.Info("automatic rebase failed, invoking Claude to resolve conflicts", "pr", work.PRNumber, "stderr", string(stderr))
 
-		prompt := buildConflictResolutionPrompt(*work)
+		prompt := buildConflictResolutionPrompt(*work, a.originDefaultBranch())
 		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to resolve conflicts", "pr", work.PRNumber, "error", err)
@@ -688,10 +688,18 @@ func (a *Agent) pushRemoteName() string {
 	return "origin"
 }
 
+// originDefaultBranch returns "origin/<default-branch>" (e.g. "origin/main", "origin/master").
+func (a *Agent) originDefaultBranch() string {
+	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
+		return wtm.OriginDefaultBranch()
+	}
+	return "origin/main"
+}
+
 // buildPRBody constructs a PR description from the git log of the branch.
 func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumber int) string {
-	// Get commit messages since origin/main
-	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", "origin/main..HEAD", "--format=%B---")
+	// Get commit messages since the upstream default branch
+	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%B---")
 	commitMessages := strings.TrimSpace(string(logOut))
 
 	body := fmt.Sprintf("Fixes #%d\n\n", issueNumber)
