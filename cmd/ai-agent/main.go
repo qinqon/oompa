@@ -25,8 +25,8 @@ func envOrDefault(key, def string) string {
 func parseConfig() agent.Config {
 	cfg := agent.Config{}
 
-	flag.StringVar(&cfg.Owner, "owner", envOrDefault("AI_AGENT_OWNER", "openperouter"), "GitHub repo owner")
-	flag.StringVar(&cfg.Repo, "repo", envOrDefault("AI_AGENT_REPO", "openperouter"), "GitHub repo name")
+	var repoFlag string
+	flag.StringVar(&repoFlag, "repo", envOrDefault("AI_AGENT_REPO", ""), "GitHub repo as owner/repo (e.g. ovn-kubernetes/ovn-kubernetes)")
 	flag.StringVar(&cfg.Label, "label", envOrDefault("AI_AGENT_LABEL", "good-for-ai"), "Issue label to watch")
 	flag.StringVar(&cfg.CloneDir, "clone-dir", envOrDefault("AI_AGENT_CLONE_DIR", "/tmp/github-issue-resolver-agent-work"), "Base directory for clones (owner/repo appended automatically)")
 	flag.DurationVar(&cfg.PollInterval, "poll-interval", parseDuration(envOrDefault("AI_AGENT_POLL_INTERVAL", "2m")), "Poll frequency")
@@ -49,9 +49,8 @@ func parseConfig() agent.Config {
 	var logFile string
 	flag.StringVar(&logFile, "log-file", os.Getenv("AI_AGENT_LOG_FILE"), "Log file path (default: stderr)")
 
-	// Fork flags
-	flag.StringVar(&cfg.ForkOwner, "fork-owner", os.Getenv("AI_AGENT_FORK_OWNER"), "Owner of the fork repo for pushing (empty = push to upstream)")
-	flag.StringVar(&cfg.ForkRepo, "fork-repo", os.Getenv("AI_AGENT_FORK_REPO"), "Name of the fork repo (empty = same as --repo)")
+	var forkFlag string
+	flag.StringVar(&forkFlag, "fork", envOrDefault("AI_AGENT_FORK", ""), "Fork repo as owner/repo for pushing (e.g. qinqon/ovn-kubernetes)")
 
 	// Identity flags (optional, auto-detected from auth when not set)
 	flag.StringVar(&cfg.GitHubUser, "github-user", os.Getenv("GITHUB_USER"), "GitHub username (e.g. myapp[bot])")
@@ -73,6 +72,30 @@ func parseConfig() agent.Config {
 	flag.Int64Var(&ghAppInstallationID, "github-app-installation-id", ghAppInstallationID, "GitHub App installation ID")
 
 	flag.Parse()
+
+	// Parse --repo owner/repo
+	if repoFlag == "" {
+		fmt.Fprintln(os.Stderr, "--repo is required (format: owner/repo)")
+		os.Exit(1)
+	}
+	if parts := strings.SplitN(repoFlag, "/", 2); len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		fmt.Fprintf(os.Stderr, "invalid --repo %q: must be owner/repo\n", repoFlag)
+		os.Exit(1)
+	} else {
+		cfg.Owner = parts[0]
+		cfg.Repo = parts[1]
+	}
+
+	// Parse --fork owner/repo
+	if forkFlag != "" {
+		if parts := strings.SplitN(forkFlag, "/", 2); len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			fmt.Fprintf(os.Stderr, "invalid --fork %q: must be owner/repo\n", forkFlag)
+			os.Exit(1)
+		} else {
+			cfg.ForkOwner = parts[0]
+			cfg.ForkRepo = parts[1]
+		}
+	}
 
 	// Structure clone dir as <base>/<owner>/<repo> so multiple projects can share --clone-dir
 	cfg.CloneDir = filepath.Join(cfg.CloneDir, cfg.Owner, cfg.Repo)
