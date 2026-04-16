@@ -24,6 +24,7 @@ type mockGitHubClient struct {
 	prsAfterNCalls int      // only return PRs after this many ListPRsByHead calls
 	prsCallCount   int
 	mergeableState string   // mergeable state to return from GetPRMergeable (default: "clean")
+	prBehind       bool     // whether IsPRBehind returns true
 
 	listIssuesErr error
 }
@@ -140,6 +141,10 @@ func (m *mockGitHubClient) GetPR(_ context.Context, _, _ string, prNumber int) (
 		}
 	}
 	return PR{}, fmt.Errorf("PR %d not found", prNumber)
+}
+
+func (m *mockGitHubClient) IsPRBehind(_ context.Context, _, _ string, _ int) (bool, error) {
+	return m.prBehind, nil
 }
 
 func (m *mockGitHubClient) AssignIssue(_ context.Context, _, _ string, _ int, _ string) error {
@@ -765,6 +770,62 @@ func TestProcessConflicts_RebasesWhenBehind(t *testing.T) {
 	}
 	if rebaseCalls == 0 {
 		t.Error("expected git rebase to be called for behind PR")
+	}
+}
+
+func TestProcessConflicts_RebasesWhenUnstableButBehind(t *testing.T) {
+	gh := &mockGitHubClient{
+		mergeableState: "unstable",
+		prBehind:       true,
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessConflicts(context.Background())
+
+	var rebaseCalls int
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
+			rebaseCalls++
+		}
+	}
+	if rebaseCalls == 0 {
+		t.Error("expected git rebase to be called for unstable+behind PR")
+	}
+}
+
+func TestProcessConflicts_SkipsUnstableNotBehind(t *testing.T) {
+	gh := &mockGitHubClient{
+		mergeableState: "unstable",
+		prBehind:       false,
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessConflicts(context.Background())
+
+	for _, c := range runner.calls {
+		if c.Name == "git" {
+			t.Errorf("should not run git commands for unstable+not-behind PR, got: git %v", c.Args)
+		}
 	}
 }
 

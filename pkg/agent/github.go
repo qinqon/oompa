@@ -35,6 +35,7 @@ type GitHubClient interface {
 	CreatePR(ctx context.Context, owner, repo, title, body, head, base string) (int, error)
 	HasLinkedPR(ctx context.Context, owner, repo string, issueNumber int) (bool, error)
 	GetPR(ctx context.Context, owner, repo string, prNumber int) (PR, error)
+	IsPRBehind(ctx context.Context, owner, repo string, prNumber int) (bool, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -410,6 +411,23 @@ func (g *GoGitHubClient) GetPR(ctx context.Context, owner, repo string, prNumber
 		Merged: pr.GetMerged(),
 		Head:   pr.GetHead().GetRef(),
 	}, nil
+}
+
+func (g *GoGitHubClient) IsPRBehind(ctx context.Context, owner, repo string, prNumber int) (bool, error) {
+	pr, _, err := g.client.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return false, fmt.Errorf("getting PR: %w", err)
+	}
+
+	base := pr.GetBase().GetRef()
+	headLabel := pr.GetHead().GetLabel() // "owner:branch"
+
+	comparison, _, err := g.client.Repositories.CompareCommits(ctx, owner, repo, base, headLabel, nil)
+	if err != nil {
+		return false, fmt.Errorf("comparing commits: %w", err)
+	}
+
+	return comparison.GetBehindBy() > 0, nil
 }
 
 // GetAuthenticatedUser returns the login, name, and email of the authenticated user.

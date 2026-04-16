@@ -474,18 +474,29 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 
 		a.logger.Debug("PR mergeable state", "pr", work.PRNumber, "state", mergeState)
 
-		// "dirty" = has merge conflicts, "behind" = needs rebase (no conflicts)
-		if mergeState != "dirty" && mergeState != "behind" {
+		needsRebase := mergeState == "dirty" || mergeState == "behind"
+
+		// When mergeable_state is something else (e.g. "unstable"), it may mask
+		// the branch being behind. Use the compare API as a fallback.
+		if !needsRebase {
+			behind, err := a.gh.IsPRBehind(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+			if err != nil {
+				a.logger.Warn("failed to check if PR is behind", "pr", work.PRNumber, "error", err)
+			}
+			needsRebase = behind
+		}
+
+		if !needsRebase {
 			continue
 		}
 
 		// Check if we already posted a conflict comment for the current HEAD
 		headSHA, _ := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
-		if headSHA != "" && a.hasExistingBotComment(ctx, work.PRNumber, "conflict") && a.hasExistingBotComment(ctx, work.PRNumber, shortSHA(headSHA)) {
+		if headSHA != "" && a.hasExistingBotComment(ctx, work.PRNumber, "rebase") && a.hasExistingBotComment(ctx, work.PRNumber, shortSHA(headSHA)) {
 			continue
 		}
 
-		a.logger.Info("PR has merge conflicts, attempting rebase", "pr", work.PRNumber)
+		a.logger.Info("PR needs rebase, attempting", "pr", work.PRNumber, "mergeable_state", mergeState)
 
 		if err := a.ensureWorktreeReady(ctx, work); err != nil {
 			a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
@@ -509,7 +520,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			} else {
 				a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
 				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-					fmt.Sprintf("Merge conflicts on commit %s resolved by rebasing on main.\n\n%s", shortSHA(headSHA), botMarker))
+					fmt.Sprintf("Rebased commit %s on main and pushed.\n\n%s", shortSHA(headSHA), botMarker))
 			}
 			continue
 		}
@@ -523,7 +534,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		if err != nil {
 			a.logger.Error("claude failed to resolve conflicts", "pr", work.PRNumber, "error", err)
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("PR has merge conflicts on commit %s. Attempted to resolve automatically but failed. Human intervention needed.\n\n%s", shortSHA(headSHA), botMarker))
+				fmt.Sprintf("Rebase failed on commit %s. Attempted to resolve conflicts automatically but failed. Human intervention needed.\n\n%s", shortSHA(headSHA), botMarker))
 			continue
 		}
 
@@ -531,10 +542,10 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		if err := a.gitPush(ctx, work.WorktreePath, true); err != nil {
 			a.logger.Error("failed to push after conflict resolution", "pr", work.PRNumber, "error", err)
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("PR has merge conflicts on commit %s. Attempted to resolve automatically but failed. Human intervention needed.\n\n%s", shortSHA(headSHA), botMarker))
+				fmt.Sprintf("Rebase failed on commit %s. Attempted to resolve conflicts automatically but failed. Human intervention needed.\n\n%s", shortSHA(headSHA), botMarker))
 		} else {
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("Merge conflicts on commit %s resolved and pushed.\n\n%s", shortSHA(headSHA), botMarker))
+				fmt.Sprintf("Rebased commit %s on main and pushed (conflicts resolved).\n\n%s", shortSHA(headSHA), botMarker))
 		}
 	}
 }
