@@ -49,6 +49,8 @@ func parseConfig() agent.Config {
 	var logFile string
 	flag.StringVar(&logFile, "log-file", os.Getenv("AI_AGENT_LOG_FILE"), "Log file path (default: stderr)")
 
+	flag.BoolVar(&cfg.CreateFlakyIssues, "create-flaky-issues", envOrDefault("AI_AGENT_CREATE_FLAKY_ISSUES", "") == "true", "Create issues for unrelated CI failures (opt-in)")
+
 	var forkFlag string
 	flag.StringVar(&forkFlag, "fork", envOrDefault("AI_AGENT_FORK", ""), "Fork repo as owner/repo for pushing (e.g. qinqon/ovn-kubernetes)")
 

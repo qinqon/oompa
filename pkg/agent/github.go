@@ -36,6 +36,7 @@ type GitHubClient interface {
 	HasLinkedPR(ctx context.Context, owner, repo string, issueNumber int) (bool, error)
 	GetPR(ctx context.Context, owner, repo string, prNumber int) (PR, error)
 	IsPRBehind(ctx context.Context, owner, repo string, prNumber int) (bool, error)
+	CreateIssue(ctx context.Context, owner, repo, title, body string, labels []string) (int, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -428,6 +429,19 @@ func (g *GoGitHubClient) IsPRBehind(ctx context.Context, owner, repo string, prN
 	}
 
 	return comparison.GetBehindBy() > 0, nil
+}
+
+func (g *GoGitHubClient) CreateIssue(ctx context.Context, owner, repo, title, body string, labels []string) (int, error) {
+	req := &github.IssueRequest{
+		Title:  &title,
+		Body:   &body,
+		Labels: &labels,
+	}
+	issue, _, err := g.client.Issues.Create(ctx, owner, repo, req)
+	if err != nil {
+		return 0, fmt.Errorf("creating issue: %w", err)
+	}
+	return issue.GetNumber(), nil
 }
 
 // GetAuthenticatedUser returns the login, name, and email of the authenticated user.

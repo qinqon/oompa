@@ -34,6 +34,7 @@ type GitHubClient interface {
 | `AddPRCommentReaction` | `client.Reactions.CreatePullRequestCommentReaction()` |
 | `GetPR` | `client.PullRequests.Get()`, returns `PR{Number, Title, State, Merged, Head}` |
 | `GetAuthenticatedUser` | `client.Users.Get("")`, returns name + email with login/noreply fallbacks |
+| `CreateIssue` | `client.Issues.Create()`, creates a new issue with title, body, and labels |
 
 ## Additional Methods (on concrete type, not interface)
 
@@ -55,3 +56,4 @@ Use `net/http/httptest` with canned JSON responses. Point go-github client at te
 - `TestListPRsByHead` -- filters by branch
 - `TestGetAuthenticatedUser_WithNameAndEmail` -- returns name and email
 - `TestGetAuthenticatedUser_FallbackToLogin` -- falls back to login and noreply email
+- `TestCreateIssue` -- creates an issue and returns its number

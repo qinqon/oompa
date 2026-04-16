@@ -20,11 +20,13 @@ type mockGitHubClient struct {
 	removedLabels  []string
 	addedReactions []string
 	checkRuns      []CheckRun
-	prHeadSHAs     []string // returns these in sequence; if empty returns "abc123"
-	prsAfterNCalls int      // only return PRs after this many ListPRsByHead calls
-	prsCallCount   int
-	mergeableState string   // mergeable state to return from GetPRMergeable (default: "clean")
-	prBehind       bool     // whether IsPRBehind returns true
+	prHeadSHAs      []string // returns these in sequence; if empty returns "abc123"
+	prsAfterNCalls  int      // only return PRs after this many ListPRsByHead calls
+	prsCallCount    int
+	mergeableState  string   // mergeable state to return from GetPRMergeable (default: "clean")
+	prBehind        bool     // whether IsPRBehind returns true
+	createdIssues   []Issue  // tracks issues created via CreateIssue
+	nextIssueNumber int      // next issue number to return (defaults to 1)
 
 	listIssuesErr error
 }
@@ -153,6 +155,21 @@ func (m *mockGitHubClient) AssignIssue(_ context.Context, _, _ string, _ int, _ 
 
 func (m *mockGitHubClient) UnassignIssue(_ context.Context, _, _ string, _ int, _ string) error {
 	return nil
+}
+
+func (m *mockGitHubClient) CreateIssue(_ context.Context, _, _ string, title, body string, labels []string) (int, error) {
+	if m.nextIssueNumber == 0 {
+		m.nextIssueNumber = 1
+	}
+	issueNum := m.nextIssueNumber
+	m.nextIssueNumber++
+	m.createdIssues = append(m.createdIssues, Issue{
+		Number: issueNum,
+		Title:  title,
+		Body:   body,
+		Labels: labels,
+	})
+	return issueNum, nil
 }
 
 // mockWorktreeManager implements WorktreeManager for testing.
@@ -627,6 +644,81 @@ func TestProcessCIFailures_SkipsPendingCI(t *testing.T) {
 
 	if len(runner.calls) != 0 {
 		t.Error("should not invoke claude while CI is still running")
+	}
+}
+
+func TestProcessCIFailures_CreatesFlakyIssueWhenUnrelated(t *testing.T) {
+	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
+		},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = true // Enable flaky issue creation
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Check that a flaky issue was created
+	if len(gh.createdIssues) != 1 {
+		t.Fatalf("expected 1 created issue, got %d", len(gh.createdIssues))
+	}
+	issue := gh.createdIssues[0]
+	if issue.Title != "Flaky CI: integration-tests" {
+		t.Errorf("expected title 'Flaky CI: integration-tests', got %q", issue.Title)
+	}
+	if len(issue.Labels) != 1 || issue.Labels[0] != "flaky-test" {
+		t.Errorf("expected labels ['flaky-test'], got %v", issue.Labels)
+	}
+
+	// Check that a comment was added to the PR
+	if len(gh.addedComments) != 2 {
+		t.Fatalf("expected 2 comments (unrelated + issue link), got %d", len(gh.addedComments))
+	}
+}
+
+func TestProcessCIFailures_SkipsFlakyIssueWhenDisabled(t *testing.T) {
+	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
+		},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = false // Disabled by default
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Check that no flaky issue was created
+	if len(gh.createdIssues) != 0 {
+		t.Errorf("expected 0 created issues when feature is disabled, got %d", len(gh.createdIssues))
+	}
+
+	// Check that only one comment was added (the unrelated notice)
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 comment (unrelated notice), got %d", len(gh.addedComments))
 	}
 }
 

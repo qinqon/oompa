@@ -242,6 +242,19 @@ func (f *fakeGitHubClient) IsPRBehind(_ context.Context, _, _ string, _ int) (bo
 	return false, nil
 }
 
+func (f *fakeGitHubClient) CreateIssue(_ context.Context, _, _ string, title, body string, labels []string) (int, error) {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	issueNum := len(f.state.issues) + 1
+	f.state.issues = append(f.state.issues, Issue{
+		Number: issueNum,
+		Title:  title,
+		Body:   body,
+		Labels: labels,
+	})
+	return issueNum, nil
+}
+
 // initBareRepo creates a bare repo and a working clone for the agent to use.
 // Returns (cloneDir, cleanup).
 func initBareRepo(t *testing.T) string {
