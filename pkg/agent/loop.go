@@ -214,6 +214,8 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		prNumber, err := a.gh.CreatePR(ctx, a.cfg.Owner, a.cfg.Repo, prTitle, prBody, prHead, a.defaultBranch())
 		if err != nil {
 			a.logger.Error("failed to create PR", "issue", issue.Number, "error", err)
+			// Clean up the remote branch to avoid orphaned branches
+			a.deleteRemoteBranch(ctx, worktreePath, branchName)
 			work.Status = "failed"
 			a.state.ActiveIssues[issue.Number] = work
 			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
@@ -797,6 +799,20 @@ func (a *Agent) gitAmendAll(ctx context.Context, worktreePath string) error {
 		return fmt.Errorf("git commit --amend: %w (stderr: %s)", err, string(stderr))
 	}
 	return nil
+}
+
+// deleteRemoteBranch removes a branch from the push remote.
+func (a *Agent) deleteRemoteBranch(ctx context.Context, worktreePath, branchName string) {
+	pushRemote := "origin"
+	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
+		pushRemote = wtm.PushRemote()
+	}
+	_, stderr, err := a.runner.Run(ctx, worktreePath, "git", "push", pushRemote, "--delete", branchName)
+	if err != nil {
+		a.logger.Warn("failed to delete remote branch", "branch", branchName, "error", err, "stderr", string(stderr))
+	} else {
+		a.logger.Info("deleted remote branch", "branch", branchName)
+	}
 }
 
 // gitPush pushes the current branch to the push remote.
