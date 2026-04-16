@@ -4,20 +4,21 @@
 
 ```go
 type Config struct {
-    Owner         string
-    Repo          string
-    Label         string
-    CloneDir      string
-    StatePath     string
-    PollInterval  time.Duration
-    VertexRegion  string
-    VertexProject string
-    LogLevel      string
-    DryRun        bool
-    SignedOffBy   string
-    Reviewers     []string // whitelist of users/bots whose reviews to address
-    WatchPRs      []int    // PR numbers to monitor directly (bypasses issue discovery)
-    Reactions     []string // which reactions to run: "reviews", "ci", "conflicts" (empty = all)
+    Owner             string
+    Repo              string
+    Label             string
+    CloneDir          string
+    StatePath         string
+    PollInterval      time.Duration
+    VertexRegion      string
+    VertexProject     string
+    LogLevel          string
+    DryRun            bool
+    SignedOffBy       string
+    Reviewers         []string // whitelist of users/bots whose reviews to address
+    WatchPRs          []int    // PR numbers to monitor directly (bypasses issue discovery)
+    Reactions         []string // which reactions to run: "reviews", "ci", "conflicts" (empty = all)
+    CreateFlakyIssues bool     // when true, create issues for unrelated CI failures (opt-in)
 }
 ```
 
@@ -38,6 +39,7 @@ type Config struct {
 | `AI_AGENT_REVIEWERS` | `--reviewers` | (empty = all) | Comma-separated whitelist of users/bots whose reviews to address |
 | `AI_AGENT_WATCH_PRS` | `--watch-prs` | (empty) | Comma-separated PR numbers to monitor directly (bypasses issue discovery) |
 | `AI_AGENT_REACTIONS` | `--reactions` | (empty = all) | Comma-separated list of reactions to run: `reviews`, `ci`, `conflicts` |
+| `AI_AGENT_CREATE_FLAKY_ISSUES` | `--create-flaky-issues` | `false` | When true, create issues for unrelated CI failures (opt-in) |
 
 Config from env vars (`AI_AGENT_*`) with flag overrides, read in `main()`.
 

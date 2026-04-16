@@ -461,6 +461,29 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(headSHA), explanation, botMarker)
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, comment)
 			work.LastCIStatus = "unrelated-failure"
+
+			// Create a flaky CI issue if configured
+			if a.cfg.CreateFlakyIssues {
+				issueTitle := fmt.Sprintf("Flaky CI: %s", failures[0].Name)
+				issueBody := fmt.Sprintf("A CI failure was detected that appears unrelated to PR changes.\n\n"+
+					"**Detected in PR**: #%d\n"+
+					"**Commit**: %s\n"+
+					"**Failed check**: %s\n\n"+
+					"**Analysis**:\n%s\n\n"+
+					"**Check output**:\n```\n%s\n```\n\n"+
+					"%s",
+					work.PRNumber, shortSHA(headSHA), failures[0].Name, explanation, failures[0].Output, botMarker)
+				issueNum, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{"flaky-test"})
+				if err != nil {
+					a.logger.Error("failed to create flaky CI issue", "error", err)
+				} else {
+					a.logger.Info("created flaky CI issue", "issue", issueNum)
+					// Update the PR comment to reference the created issue
+					_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+						fmt.Sprintf("Opened issue #%d to track this flaky test.\n\n%s", issueNum, botMarker))
+				}
+			}
+
 			continue
 		}
 

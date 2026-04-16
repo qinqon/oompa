@@ -351,3 +351,40 @@ func TestGetAuthenticatedUser_FallbackToLogin(t *testing.T) {
 		t.Errorf("expected noreply email fallback, got %q", email)
 	}
 }
+
+func TestCreateIssue(t *testing.T) {
+	var receivedTitle, receivedBody string
+	var receivedLabels []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
+		var req github.IssueRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		receivedTitle = req.GetTitle()
+		receivedBody = req.GetBody()
+		receivedLabels = *req.Labels
+		issue := &github.Issue{
+			Number: github.Ptr(123),
+			Title:  req.Title,
+			Body:   req.Body,
+		}
+		json.NewEncoder(w).Encode(issue)
+	})
+
+	gh := setupTestClient(t, mux)
+	issueNum, err := gh.CreateIssue(context.Background(), "owner", "repo", "Test Issue", "Test body", []string{"flaky-test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if issueNum != 123 {
+		t.Errorf("expected issue number 123, got %d", issueNum)
+	}
+	if receivedTitle != "Test Issue" {
+		t.Errorf("expected title 'Test Issue', got %q", receivedTitle)
+	}
+	if receivedBody != "Test body" {
+		t.Errorf("expected body 'Test body', got %q", receivedBody)
+	}
+	if len(receivedLabels) != 1 || receivedLabels[0] != "flaky-test" {
+		t.Errorf("expected labels ['flaky-test'], got %v", receivedLabels)
+	}
+}
