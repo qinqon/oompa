@@ -472,7 +472,10 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			continue
 		}
 
-		if mergeState != "dirty" {
+		a.logger.Debug("PR mergeable state", "pr", work.PRNumber, "state", mergeState)
+
+		// "dirty" = has merge conflicts, "behind" = needs rebase (no conflicts)
+		if mergeState != "dirty" && mergeState != "behind" {
 			continue
 		}
 

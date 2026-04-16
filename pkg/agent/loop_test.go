@@ -23,6 +23,7 @@ type mockGitHubClient struct {
 	prHeadSHAs     []string // returns these in sequence; if empty returns "abc123"
 	prsAfterNCalls int      // only return PRs after this many ListPRsByHead calls
 	prsCallCount   int
+	mergeableState string   // mergeable state to return from GetPRMergeable (default: "clean")
 
 	listIssuesErr error
 }
@@ -110,6 +111,9 @@ func (m *mockGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, _ in
 }
 
 func (m *mockGitHubClient) GetPRMergeable(_ context.Context, _, _ string, _ int) (string, error) {
+	if m.mergeableState != "" {
+		return m.mergeableState, nil
+	}
 	return "clean", nil
 }
 
@@ -725,6 +729,68 @@ func TestBootstrapWatchedPRs_SkipsAlreadyTracked(t *testing.T) {
 	// Should still have exactly 1 entry (not duplicated)
 	if len(agent.state.ActiveIssues) != 1 {
 		t.Errorf("expected 1 tracked PR, got %d", len(agent.state.ActiveIssues))
+	}
+}
+
+func TestProcessConflicts_RebasesWhenBehind(t *testing.T) {
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessConflicts(context.Background())
+
+	// Should have attempted a rebase (git fetch + git rebase)
+	var fetchCalls, rebaseCalls int
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "fetch" {
+			fetchCalls++
+		}
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
+			rebaseCalls++
+		}
+	}
+	if fetchCalls == 0 {
+		t.Error("expected git fetch to be called for behind PR")
+	}
+	if rebaseCalls == 0 {
+		t.Error("expected git rebase to be called for behind PR")
+	}
+}
+
+func TestProcessConflicts_SkipsCleanPR(t *testing.T) {
+	gh := &mockGitHubClient{
+		mergeableState: "clean",
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessConflicts(context.Background())
+
+	// Should NOT attempt any git operations
+	for _, c := range runner.calls {
+		if c.Name == "git" {
+			t.Errorf("should not run git commands for clean PR, got: git %v", c.Args)
+		}
 	}
 }
 
