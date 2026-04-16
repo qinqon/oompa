@@ -124,17 +124,17 @@ Do NOT commit, push, or amend — the agent handles that automatically.`, diff)
 	return prompt
 }
 
-func buildConflictResolutionPrompt(work IssueWork) string {
+func buildConflictResolutionPrompt(work IssueWork, originDefaultBranch string) string {
 	return fmt.Sprintf(`PR #%d for issue #%d (%s) has merge conflicts with the main branch.
 
 Instructions:
 1. Run "git fetch origin" to get the latest changes
-2. Run "git rebase origin/main" to rebase on top of the latest main branch
+2. Run "git rebase %s" to rebase on top of the latest main branch
 3. Resolve any merge conflicts that arise:
    - Understand the intent of both the PR changes and the upstream changes
    - Keep the PR's functionality intact while incorporating upstream changes
 4. Run "make lint" and "make test" to verify the resolved code still works
 
 Do NOT push — the agent handles that automatically.`,
-		work.PRNumber, work.IssueNumber, work.IssueTitle)
+		work.PRNumber, work.IssueNumber, work.IssueTitle, originDefaultBranch)
 }
