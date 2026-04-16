@@ -4,29 +4,30 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
 
 // mockGitHubClient implements GitHubClient for testing.
 type mockGitHubClient struct {
-	issues        []Issue
-	prComments    []ReviewComment
-	issueComments []ReviewComment
-	prState       string
-	prs           []PR
-	addedComments  []string
-	addedLabels    []string
-	removedLabels  []string
-	addedReactions []string
-	checkRuns      []CheckRun
+	issues          []Issue
+	prComments      []ReviewComment
+	issueComments   []ReviewComment
+	prState         string
+	prs             []PR
+	addedComments   []string
+	addedLabels     []string
+	removedLabels   []string
+	addedReactions  []string
+	checkRuns       []CheckRun
 	prHeadSHAs      []string // returns these in sequence; if empty returns "abc123"
 	prsAfterNCalls  int      // only return PRs after this many ListPRsByHead calls
 	prsCallCount    int
-	mergeableState  string   // mergeable state to return from GetPRMergeable (default: "clean")
-	prBehind        bool     // whether IsPRBehind returns true
-	createdIssues   []Issue  // tracks issues created via CreateIssue
-	nextIssueNumber int      // next issue number to return (defaults to 1)
+	mergeableState  string  // mergeable state to return from GetPRMergeable (default: "clean")
+	prBehind        bool    // whether IsPRBehind returns true
+	createdIssues   []Issue // tracks issues created via CreateIssue
+	nextIssueNumber int     // next issue number to return (defaults to 1)
 
 	listIssuesErr error
 }
@@ -956,5 +957,70 @@ func TestHasWatchedPRs(t *testing.T) {
 	agent.cfg.WatchPRs = []int{123}
 	if !agent.HasWatchedPRs() {
 		t.Error("expected true with watched PRs")
+	}
+}
+func TestProcessNewIssues_SquashesCommits(t *testing.T) {
+	claudeResult := streamResultJSON(ClaudeResult{Result: "Fixed it"})
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 42, Title: "Fix the bug", Body: "broken"}},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.SignedOffBy = "Test User <test@example.com>"
+	agent.ProcessNewIssues(context.Background())
+
+	// Verify git reset --soft was called to squash commits
+	foundReset := false
+	foundCommit := false
+	foundForcePush := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) >= 2 {
+			if c.Args[0] == "reset" && c.Args[1] == "--soft" {
+				foundReset = true
+				// Should reset to origin/main
+				if len(c.Args) >= 3 && c.Args[2] != "origin/main" {
+					t.Errorf("expected reset to origin/main, got %v", c.Args)
+				}
+			}
+			if c.Args[0] == "commit" && c.Args[1] == "-m" {
+				foundCommit = true
+				// Verify commit message includes issue number
+				if len(c.Args) >= 3 {
+					commitMsg := c.Args[2]
+					if !strings.Contains(commitMsg, "Fix #42") {
+						t.Errorf("expected commit message to contain 'Fix #42', got: %s", commitMsg)
+					}
+					if !strings.Contains(commitMsg, "Signed-off-by") {
+						t.Errorf("expected commit message to contain 'Signed-off-by', got: %s", commitMsg)
+					}
+				}
+			}
+			if c.Args[0] == "push" {
+				// Should be force push after squashing
+				hasForce := false
+				for _, arg := range c.Args {
+					if arg == "--force" {
+						hasForce = true
+						foundForcePush = true
+						break
+					}
+				}
+				if !hasForce {
+					t.Error("expected force push after squashing commits")
+				}
+			}
+		}
+	}
+
+	if !foundReset {
+		t.Error("expected git reset --soft to be called for commit squashing")
+	}
+	if !foundCommit {
+		t.Error("expected git commit to be called after squashing")
+	}
+	if !foundForcePush {
+		t.Error("expected git push --force after squashing")
 	}
 }

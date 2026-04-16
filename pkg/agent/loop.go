@@ -192,8 +192,20 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			continue
 		}
 
-		// Push the branch
-		if err := a.gitPush(ctx, worktreePath, false); err != nil {
+		// Squash all commits into a single commit before pushing
+		if err := a.gitSquashCommits(ctx, worktreePath, issue.Number, issue.Title); err != nil {
+			a.logger.Error("failed to squash commits", "issue", issue.Number, "error", err)
+			work.Status = "failed"
+			a.state.ActiveIssues[issue.Number] = work
+			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
+			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, "ai-failed")
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number,
+				fmt.Sprintf("AI agent failed to squash commits: %v\n\n%s", err, botMarker))
+			continue
+		}
+
+		// Push the branch (force push because squashing rewrites history)
+		if err := a.gitPush(ctx, worktreePath, true); err != nil {
 			a.logger.Error("failed to push branch", "issue", issue.Number, "error", err)
 			work.Status = "failed"
 			a.state.ActiveIssues[issue.Number] = work
@@ -846,6 +858,37 @@ func (a *Agent) gitAmendAll(ctx context.Context, worktreePath string) error {
 	return nil
 }
 
+// gitSquashCommits squashes all commits since the origin default branch into a single commit.
+func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issueNumber int, issueTitle string) error {
+	// Get all commit messages since origin default branch
+	logOut, _, err := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%B")
+	if err != nil {
+		return fmt.Errorf("getting commit messages: %w", err)
+	}
+	commitMessages := strings.TrimSpace(string(logOut))
+
+	// Reset to origin default branch while keeping changes staged
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "reset", "--soft", a.originDefaultBranch()); err != nil {
+		return fmt.Errorf("git reset --soft: %w (stderr: %s)", err, string(stderr))
+	}
+
+	// Create a single commit with a meaningful message
+	commitMsg := fmt.Sprintf("Fix #%d: %s", issueNumber, issueTitle)
+	if commitMessages != "" {
+		// Include original commit messages in the body
+		commitMsg += "\n\n" + commitMessages
+	}
+	if a.cfg.SignedOffBy != "" {
+		commitMsg += fmt.Sprintf("\n\nSigned-off-by: %s", a.cfg.SignedOffBy)
+	}
+
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "-m", commitMsg); err != nil {
+		return fmt.Errorf("git commit after squash: %w (stderr: %s)", err, string(stderr))
+	}
+
+	return nil
+}
+
 // deleteRemoteBranch removes a branch from the push remote.
 func (a *Agent) deleteRemoteBranch(ctx context.Context, worktreePath, branchName string) {
 	pushRemote := "origin"
@@ -898,3 +941,4 @@ func (a *Agent) isAllowedReviewer(user string) bool {
 	}
 	return false
 }
+
