@@ -34,6 +34,7 @@ type GitHubClient interface {
 	GetPRHeadCommitDate(ctx context.Context, owner, repo string, prNumber int) (time.Time, error)
 	CreatePR(ctx context.Context, owner, repo, title, body, head, base string) (int, error)
 	HasLinkedPR(ctx context.Context, owner, repo string, issueNumber int) (bool, error)
+	GetPR(ctx context.Context, owner, repo string, prNumber int) (PR, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -206,6 +207,7 @@ func (g *GoGitHubClient) listPRsByHead(ctx context.Context, owner, repo, head, b
 		}
 		prs = append(prs, PR{
 			Number: p.GetNumber(),
+			Title:  p.GetTitle(),
 			State:  p.GetState(),
 			Merged: p.GetMerged(),
 			Head:   p.GetHead().GetRef(),
@@ -394,6 +396,20 @@ func (g *GoGitHubClient) HasLinkedPR(ctx context.Context, owner, repo string, is
 		}
 	}
 	return false, nil
+}
+
+func (g *GoGitHubClient) GetPR(ctx context.Context, owner, repo string, prNumber int) (PR, error) {
+	pr, _, err := g.client.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return PR{}, fmt.Errorf("getting PR: %w", err)
+	}
+	return PR{
+		Number: pr.GetNumber(),
+		Title:  pr.GetTitle(),
+		State:  pr.GetState(),
+		Merged: pr.GetMerged(),
+		Head:   pr.GetHead().GetRef(),
+	}, nil
 }
 
 // GetAuthenticatedUser returns the login, name, and email of the authenticated user.

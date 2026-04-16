@@ -39,6 +39,12 @@ func parseConfig() agent.Config {
 	var reviewers string
 	flag.StringVar(&reviewers, "reviewers", os.Getenv("AI_AGENT_REVIEWERS"), "Comma-separated whitelist of users/bots whose reviews to address (empty = all)")
 
+	var watchPRs string
+	flag.StringVar(&watchPRs, "watch-prs", os.Getenv("AI_AGENT_WATCH_PRS"), "Comma-separated PR numbers to monitor directly (bypasses issue discovery)")
+
+	var reactions string
+	flag.StringVar(&reactions, "reactions", os.Getenv("AI_AGENT_REACTIONS"), "Comma-separated list of reactions to run: reviews, ci, conflicts (empty = all)")
+
 	var logFile string
 	flag.StringVar(&logFile, "log-file", os.Getenv("AI_AGENT_LOG_FILE"), "Log file path (default: stderr)")
 
@@ -90,6 +96,36 @@ func parseConfig() agent.Config {
 			if r != "" {
 				cfg.Reviewers = append(cfg.Reviewers, r)
 			}
+		}
+	}
+
+	if watchPRs != "" {
+		for _, s := range strings.Split(watchPRs, ",") {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			n, err := strconv.Atoi(s)
+			if err != nil || n <= 0 {
+				fmt.Fprintf(os.Stderr, "invalid PR number in --watch-prs: %q\n", s)
+				os.Exit(1)
+			}
+			cfg.WatchPRs = append(cfg.WatchPRs, n)
+		}
+	}
+
+	if reactions != "" {
+		validReactions := map[string]bool{"reviews": true, "ci": true, "conflicts": true}
+		for _, r := range strings.Split(reactions, ",") {
+			r = strings.TrimSpace(r)
+			if r == "" {
+				continue
+			}
+			if !validReactions[r] {
+				fmt.Fprintf(os.Stderr, "invalid reaction type %q: valid values are reviews, ci, conflicts\n", r)
+				os.Exit(1)
+			}
+			cfg.Reactions = append(cfg.Reactions, r)
 		}
 	}
 
@@ -306,9 +342,21 @@ func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 		logger.Error("failed to refresh GitHub token", "error", err)
 	}
 	a.CleanupDone(ctx)
-	a.ProcessNewIssues(ctx)
-	a.ProcessReviewComments(ctx)
-	a.ProcessConflicts(ctx)
-	a.ProcessCIFailures(ctx)
+
+	if a.HasWatchedPRs() {
+		a.BootstrapWatchedPRs(ctx)
+	} else {
+		a.ProcessNewIssues(ctx)
+	}
+
+	if a.ShouldRunReaction("reviews") {
+		a.ProcessReviewComments(ctx)
+	}
+	if a.ShouldRunReaction("conflicts") {
+		a.ProcessConflicts(ctx)
+	}
+	if a.ShouldRunReaction("ci") {
+		a.ProcessCIFailures(ctx)
+	}
 	logger.Debug("poll cycle complete")
 }

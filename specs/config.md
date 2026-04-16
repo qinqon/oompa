@@ -16,6 +16,8 @@ type Config struct {
     DryRun        bool
     SignedOffBy   string
     Reviewers     []string // whitelist of users/bots whose reviews to address
+    WatchPRs      []int    // PR numbers to monitor directly (bypasses issue discovery)
+    Reactions     []string // which reactions to run: "reviews", "ci", "conflicts" (empty = all)
 }
 ```
 
@@ -34,6 +36,8 @@ type Config struct {
 | `ANTHROPIC_VERTEX_PROJECT_ID` | `--vertex-project` | (required) | GCP project ID for Vertex |
 | `AI_AGENT_SIGNED_OFF_BY` | `--signed-off-by` | (GitHub user) | Signed-off-by for commits. Defaults to authenticated GitHub user's name and email |
 | `AI_AGENT_REVIEWERS` | `--reviewers` | (empty = all) | Comma-separated whitelist of users/bots whose reviews to address |
+| `AI_AGENT_WATCH_PRS` | `--watch-prs` | (empty) | Comma-separated PR numbers to monitor directly (bypasses issue discovery) |
+| `AI_AGENT_REACTIONS` | `--reactions` | (empty = all) | Comma-separated list of reactions to run: `reviews`, `ci`, `conflicts` |
 
 Config from env vars (`AI_AGENT_*`) with flag overrides, read in `main()`.
 

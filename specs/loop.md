@@ -19,8 +19,14 @@ type Agent struct {
 - `(a *Agent) ProcessNewIssues(ctx)` -- find labeled issues, create worktrees, run Claude, create PRs
 - `(a *Agent) ProcessReviewComments(ctx)` -- check for new review comments, run Claude to address them
 - `(a *Agent) isAllowedReviewer(user string) bool` -- checks if user is in reviewers whitelist (empty = allow all)
+- `(a *Agent) HasWatchedPRs() bool` -- returns true if `cfg.WatchPRs` is non-empty
+- `(a *Agent) ShouldRunReaction(reaction string) bool` -- returns true if `cfg.Reactions` is empty (all enabled) or contains the given reaction name
+- `(a *Agent) BootstrapWatchedPRs(ctx)` -- creates IssueWork entries for directly-specified PR numbers (calls `GetPR` to fetch details, skips merged/closed/already-tracked)
 
 Main loop lives in `cmd/ai-agent/main.go`, calls these methods sequentially. CleanupDone runs first so that closed/merged PRs are removed from state before ProcessNewIssues checks for new work.
+
+### Watch mode
+When `--watch-prs` is set, `BootstrapWatchedPRs` runs instead of `ProcessNewIssues`. The `--reactions` flag controls which processing phases run (reviews, ci, conflicts). Both flags can be used independently or together.
 
 ### ProcessNewIssues behavior
 - Skips issues already in state (unless `prNumber == 0` and status is `implementing`, in which case it re-checks for the PR)
@@ -47,3 +53,9 @@ All interfaces mocked:
 - `TestCleanupDone_MergedPR` -- removes worktree, deletes from state
 - `TestCleanupDone_ClosedPR` -- removes worktree, deletes from state
 - `TestCleanupDone_OpenPR` -- no action
+- `TestShouldRunReaction_EmptyAllowsAll` -- empty Reactions allows all reaction types
+- `TestShouldRunReaction_Filtered` -- only configured reactions are allowed
+- `TestBootstrapWatchedPRs_HappyPath` -- creates IssueWork entries for open watched PRs
+- `TestBootstrapWatchedPRs_SkipsClosedPR` -- does not track merged/closed PRs
+- `TestBootstrapWatchedPRs_SkipsAlreadyTracked` -- does not duplicate existing entries
+- `TestHasWatchedPRs` -- returns false when empty, true when configured

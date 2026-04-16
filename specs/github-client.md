@@ -15,6 +15,7 @@ type GitHubClient interface {
     RemoveLabel(ctx context.Context, owner, repo string, issueNumber int, label string) error
     ListPRsByHead(ctx context.Context, owner, repo, branch string) ([]PR, error)
     AddPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error
+    GetPR(ctx context.Context, owner, repo string, prNumber int) (PR, error)
 }
 ```
 
@@ -31,6 +32,7 @@ type GitHubClient interface {
 | `RemoveLabel` | `client.Issues.RemoveLabelForIssue()` |
 | `ListPRsByHead` | `client.PullRequests.List()` with `Head: branch` (no owner prefix — works for same-repo and fork PRs) |
 | `AddPRCommentReaction` | `client.Reactions.CreatePullRequestCommentReaction()` |
+| `GetPR` | `client.PullRequests.Get()`, returns `PR{Number, Title, State, Merged, Head}` |
 | `GetAuthenticatedUser` | `client.Users.Get("")`, returns name + email with login/noreply fallbacks |
 
 ## Additional Methods (on concrete type, not interface)
