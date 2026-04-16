@@ -9,7 +9,7 @@ A single long-running Go binary that automatically resolves GitHub issues using 
 3. **Open PR** — pushes the branch and creates a pull request linked to the issue.
 4. **Address reviews** — picks up reviewer comments, runs Claude again to iterate.
 5. **Rebase conflicts** — detects PRs with merge conflicts, attempts an automatic rebase, and falls back to Claude if that fails.
-6. **Handle CI failures** — detects CI failures and asks Claude to fix them.
+6. **Handle CI failures** — detects CI failures and asks Claude to fix them. Optionally creates issues for unrelated CI failures (flaky tests) when `--create-flaky-issues` is enabled.
 
 Claude never merges; a human must approve and merge every PR.
 
@@ -93,6 +93,7 @@ When using GitHub App auth, the agent pushes branches directly to the upstream r
 | `--log-file` | `AI_AGENT_LOG_FILE` | stderr | Write logs to a file instead of stderr |
 | `--signed-off-by` | `AI_AGENT_SIGNED_OFF_BY` | auto-detected | `Signed-off-by` line for commits |
 | `--reviewers` | `AI_AGENT_REVIEWERS` | all | Comma-separated allowlist of reviewers to respond to |
+| `--create-flaky-issues` | `AI_AGENT_CREATE_FLAKY_ISSUES` | `false` | Create issues for unrelated CI failures (opt-in) |
 | `--dry-run` | — | `false` | Log actions without executing them |
 | `--one-shot` | — | `false` | Run one poll cycle and exit |
 | — | `GITHUB_TOKEN` | *required (PAT)* | GitHub personal access token |
