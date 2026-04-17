@@ -128,9 +128,9 @@ func TestSyncWorktree(t *testing.T) {
 		t.Errorf("expected second call 'git rev-parse', got %v", runner.calls[1].Args)
 	}
 
-	// Third call: reset --hard
-	if runner.calls[2].Args[0] != "reset" || runner.calls[2].Args[1] != "--hard" || runner.calls[2].Args[2] != "origin/ai/issue-42" {
-		t.Errorf("expected 'git reset --hard origin/ai/issue-42', got %v", runner.calls[2].Args)
+	// Third call: pull --rebase
+	if runner.calls[2].Args[0] != "pull" || runner.calls[2].Args[1] != "--rebase" || runner.calls[2].Args[2] != "origin" || runner.calls[2].Args[3] != "ai/issue-42" {
+		t.Errorf("expected 'git pull --rebase origin ai/issue-42', got %v", runner.calls[2].Args)
 	}
 }
 

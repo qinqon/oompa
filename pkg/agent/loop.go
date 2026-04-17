@@ -919,7 +919,7 @@ func (a *Agent) gitPush(ctx context.Context, worktreePath string, force bool) er
 
 	args := []string{"push", pushRemote, "HEAD:" + branch}
 	if force {
-		args = append(args, "--force")
+		args = append(args, "--force-with-lease")
 	}
 
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", args...); err != nil {

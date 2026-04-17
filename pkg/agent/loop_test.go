@@ -998,17 +998,17 @@ func TestProcessNewIssues_SquashesCommits(t *testing.T) {
 				}
 			}
 			if c.Args[0] == "push" {
-				// Should be force push after squashing
+				// Should be force-with-lease push after squashing
 				hasForce := false
 				for _, arg := range c.Args {
-					if arg == "--force" {
+					if arg == "--force-with-lease" {
 						hasForce = true
 						foundForcePush = true
 						break
 					}
 				}
 				if !hasForce {
-					t.Error("expected force push after squashing commits")
+					t.Error("expected force-with-lease push after squashing commits")
 				}
 			}
 		}
@@ -1021,6 +1021,6 @@ func TestProcessNewIssues_SquashesCommits(t *testing.T) {
 		t.Error("expected git commit to be called after squashing")
 	}
 	if !foundForcePush {
-		t.Error("expected git push --force after squashing")
+		t.Error("expected git push --force-with-lease after squashing")
 	}
 }
