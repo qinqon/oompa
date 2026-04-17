@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
-func parseConfig() agent.Config {
+func parseConfig() (agent.Config, string) {
 	cfg := agent.Config{}
 
 	var repoFlag string
@@ -53,6 +54,9 @@ func parseConfig() agent.Config {
 
 	var forkFlag string
 	flag.StringVar(&forkFlag, "fork", envOrDefault("AI_AGENT_FORK", ""), "Fork repo as owner/repo for pushing (e.g. qinqon/ovn-kubernetes)")
+
+	var exitOnNewVersion string
+	flag.StringVar(&exitOnNewVersion, "exit-on-new-version", os.Getenv("AI_AGENT_EXIT_ON_NEW_VERSION"), "Exit when a new version is available (format: owner/repo, e.g. qinqon/github-issue-resolver)")
 
 	// Identity flags (optional, auto-detected from auth when not set)
 	flag.StringVar(&cfg.GitHubUser, "github-user", os.Getenv("GITHUB_USER"), "GitHub username (e.g. myapp[bot])")
@@ -158,7 +162,7 @@ func parseConfig() agent.Config {
 		}
 	}
 
-	return cfg
+	return cfg, exitOnNewVersion
 }
 
 func parseDuration(s string) time.Duration {
@@ -198,8 +202,36 @@ func setupLogger(level, logFile string) (*slog.Logger, func()) {
 	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: logLevel})), cleanup
 }
 
+func getCommitSHA() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, s := range info.Settings {
+		if s.Key == "vcs.revision" {
+			return s.Value
+		}
+	}
+	return ""
+}
+
+func shouldExitForNewVersion(ctx context.Context, ghClient *agent.GoGitHubClient, owner, repo, currentSHA string, logger *slog.Logger) bool {
+	latestSHA, err := ghClient.GetDefaultBranchSHA(ctx, owner, repo)
+	if err != nil {
+		logger.Warn("failed to check for new version", "error", err)
+		return false
+	}
+
+	if latestSHA != currentSHA {
+		logger.Info("new version detected, exiting for update", "current", currentSHA, "latest", latestSHA)
+		return true
+	}
+
+	return false
+}
+
 func main() {
-	cfg := parseConfig()
+	cfg, exitOnNewVersion := parseConfig()
 	logger, closeLog := setupLogger(cfg.LogLevel, cfg.LogFile)
 	defer closeLog()
 
@@ -336,6 +368,24 @@ func main() {
 		a.SetTokenFunc(tokenFunc)
 	}
 
+	// Parse exit-on-new-version flag
+	var exitOnNewVersionOwner, exitOnNewVersionRepo string
+	commitSHA := getCommitSHA()
+	if exitOnNewVersion != "" {
+		if parts := strings.SplitN(exitOnNewVersion, "/", 2); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			exitOnNewVersionOwner = parts[0]
+			exitOnNewVersionRepo = parts[1]
+			if commitSHA == "" {
+				logger.Warn("--exit-on-new-version set but no VCS revision found (dev build), version check disabled")
+			} else {
+				logger.Info("version check enabled", "repo", exitOnNewVersion, "current-sha", commitSHA)
+			}
+		} else {
+			logger.Error("invalid --exit-on-new-version format (must be owner/repo)", "value", exitOnNewVersion)
+			os.Exit(1)
+		}
+	}
+
 	logger.Info("starting ai-agent",
 		"owner", cfg.Owner,
 		"repo", cfg.Repo,
@@ -361,6 +411,9 @@ func main() {
 			return
 		case <-ticker.C:
 			runLoop(ctx, a, logger)
+			if exitOnNewVersionOwner != "" && commitSHA != "" && shouldExitForNewVersion(ctx, ghClient, exitOnNewVersionOwner, exitOnNewVersionRepo, commitSHA, logger) {
+				return
+			}
 		}
 	}
 }

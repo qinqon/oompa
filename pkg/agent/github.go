@@ -465,3 +465,17 @@ func (g *GoGitHubClient) GetAuthenticatedUser(ctx context.Context) (login, name,
 
 	return login, name, email, nil
 }
+
+// GetDefaultBranchSHA returns the SHA of the latest commit on the default branch.
+func (g *GoGitHubClient) GetDefaultBranchSHA(ctx context.Context, owner, repo string) (string, error) {
+	commits, _, err := g.client.Repositories.ListCommits(ctx, owner, repo, &github.CommitsListOptions{
+		ListOptions: github.ListOptions{PerPage: 1},
+	})
+	if err != nil {
+		return "", fmt.Errorf("listing commits: %w", err)
+	}
+	if len(commits) == 0 {
+		return "", fmt.Errorf("no commits found for %s/%s", owner, repo)
+	}
+	return commits[0].GetSHA(), nil
+}
