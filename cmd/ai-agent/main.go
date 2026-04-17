@@ -216,7 +216,7 @@ func getCommitSHA() string {
 }
 
 func shouldExitForNewVersion(ctx context.Context, ghClient *agent.GoGitHubClient, owner, repo, currentSHA string, logger *slog.Logger) bool {
-	latestSHA, err := ghClient.GetDefaultBranchSHA(ctx, owner, repo)
+	latestSHA, err := ghClient.GetLatestReleaseSHA(ctx, owner, repo)
 	if err != nil {
 		logger.Warn("failed to check for new version", "error", err)
 		return false

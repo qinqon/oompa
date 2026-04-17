@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o ai-agent-linux-amd64 ./cmd/ai-agent
+          GOOS=linux GOARCH=arm64 go build -o ai-agent-linux-arm64 ./cmd/ai-agent
+          GOOS=darwin GOARCH=amd64 go build -o ai-agent-darwin-amd64 ./cmd/ai-agent
+          GOOS=darwin GOARCH=arm64 go build -o ai-agent-darwin-arm64 ./cmd/ai-agent
+
+      - name: Update latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete existing latest release if it exists
+          gh release delete latest --yes 2>/dev/null || true
+          git tag -d latest 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+
+          # Create new release pointing to this commit
+          gh release create latest \
+            --title "Latest Build ($(echo ${{ github.sha }} | cut -c1-7))" \
+            --notes "Automated release from commit ${{ github.sha }}" \
+            --target ${{ github.sha }} \
+            ai-agent-linux-amd64 \
+            ai-agent-linux-arm64 \
+            ai-agent-darwin-amd64 \
+            ai-agent-darwin-arm64

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/google/go-github/v84/github"
@@ -390,17 +389,18 @@ func TestCreateIssue(t *testing.T) {
 	}
 }
 
-func TestGetDefaultBranchSHA(t *testing.T) {
+func TestGetLatestReleaseSHA(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v3/repos/owner/repo/commits", func(w http.ResponseWriter, r *http.Request) {
-		commits := []*github.RepositoryCommit{
-			{SHA: github.Ptr("abc123def456")},
+	mux.HandleFunc("/api/v3/repos/owner/repo/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		release := &github.RepositoryRelease{
+			TargetCommitish: github.Ptr("abc123def456"),
+			TagName:         github.Ptr("latest"),
 		}
-		json.NewEncoder(w).Encode(commits)
+		json.NewEncoder(w).Encode(release)
 	})
 
 	gh := setupTestClient(t, mux)
-	sha, err := gh.GetDefaultBranchSHA(context.Background(), "owner", "repo")
+	sha, err := gh.GetLatestReleaseSHA(context.Background(), "owner", "repo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -409,18 +409,15 @@ func TestGetDefaultBranchSHA(t *testing.T) {
 	}
 }
 
-func TestGetDefaultBranchSHA_NoCommits(t *testing.T) {
+func TestGetLatestReleaseSHA_NoRelease(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v3/repos/owner/repo/commits", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]*github.RepositoryCommit{})
+	mux.HandleFunc("/api/v3/repos/owner/repo/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
 	})
 
 	gh := setupTestClient(t, mux)
-	_, err := gh.GetDefaultBranchSHA(context.Background(), "owner", "repo")
+	_, err := gh.GetLatestReleaseSHA(context.Background(), "owner", "repo")
 	if err == nil {
-		t.Fatal("expected error for empty commits, got nil")
-	}
-	if !strings.Contains(err.Error(), "no commits found") {
-		t.Errorf("expected 'no commits found' error, got: %v", err)
+		t.Fatal("expected error for no release, got nil")
 	}
 }
