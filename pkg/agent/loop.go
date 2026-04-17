@@ -919,6 +919,8 @@ func (a *Agent) gitPush(ctx context.Context, worktreePath string, force bool) er
 
 	args := []string{"push", pushRemote, "HEAD:" + branch}
 	if force {
+		// Fetch first so --force-with-lease has up-to-date tracking refs
+		a.runner.Run(ctx, worktreePath, "git", "fetch", pushRemote)
 		args = append(args, "--force-with-lease")
 	}
 
