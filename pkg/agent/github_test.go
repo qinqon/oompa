@@ -421,3 +421,87 @@ func TestGetLatestReleaseSHA_NoRelease(t *testing.T) {
 		t.Fatal("expected error for no release, got nil")
 	}
 }
+
+func TestSearchIssues(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/search/issues", func(w http.ResponseWriter, r *http.Request) {
+		result := map[string]any{
+			"total_count": 2,
+			"items": []map[string]any{
+				{
+					"number": 42,
+					"title":  "Flaky CI: integration-tests",
+					"body":   "Test failure",
+					"labels": []map[string]any{
+						{"name": "flaky-test"},
+					},
+				},
+				{
+					"number": 43,
+					"title":  "Flaky CI: e2e-tests",
+					"body":   "Another failure",
+					"labels": []map[string]any{
+						{"name": "flaky-test"},
+					},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(result)
+	})
+
+	gh := setupTestClient(t, mux)
+	issues, err := gh.SearchIssues(context.Background(), "repo:owner/repo is:issue is:open label:flaky-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("expected 2 issues, got %d", len(issues))
+	}
+	if issues[0].Number != 42 {
+		t.Errorf("expected issue 42, got %d", issues[0].Number)
+	}
+	if issues[0].Title != "Flaky CI: integration-tests" {
+		t.Errorf("expected title 'Flaky CI: integration-tests', got %q", issues[0].Title)
+	}
+	if len(issues[0].Labels) != 1 || issues[0].Labels[0] != "flaky-test" {
+		t.Errorf("expected labels ['flaky-test'], got %v", issues[0].Labels)
+	}
+}
+
+func TestSearchIssues_FiltersPullRequests(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/search/issues", func(w http.ResponseWriter, r *http.Request) {
+		result := map[string]any{
+			"total_count": 2,
+			"items": []map[string]any{
+				{
+					"number":       42,
+					"title":        "Flaky CI: integration-tests",
+					"body":         "Test failure",
+					"labels":       []map[string]any{{"name": "flaky-test"}},
+				},
+				{
+					"number":       100,
+					"title":        "Fix flaky test",
+					"body":         "PR description",
+					"pull_request": map[string]any{"url": "https://api.github.com/repos/owner/repo/pulls/100"},
+					"labels":       []map[string]any{{"name": "flaky-test"}},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(result)
+	})
+
+	gh := setupTestClient(t, mux)
+	issues, err := gh.SearchIssues(context.Background(), "repo:owner/repo label:flaky-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should filter out PRs and only return issues
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 issue (PR filtered out), got %d", len(issues))
+	}
+	if issues[0].Number != 42 {
+		t.Errorf("expected issue 42, got %d", issues[0].Number)
+	}
+}

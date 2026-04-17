@@ -255,6 +255,13 @@ func (f *fakeGitHubClient) CreateIssue(_ context.Context, _, _ string, title, bo
 	return issueNum, nil
 }
 
+func (f *fakeGitHubClient) SearchIssues(_ context.Context, _ string) ([]Issue, error) {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	// For integration tests, just return empty results (no existing duplicates)
+	return nil, nil
+}
+
 // initBareRepo creates a bare repo and a working clone for the agent to use.
 // Returns (cloneDir, cleanup).
 func initBareRepo(t *testing.T) string {

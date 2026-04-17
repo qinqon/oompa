@@ -590,6 +590,28 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			// Create a flaky CI issue if configured
 			if a.cfg.CreateFlakyIssues {
 				issueTitle := fmt.Sprintf("Flaky CI: %s", task.failures[0].Name)
+
+				// Search for existing open issues with the same check name
+				searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:flaky-test \"%s\"",
+					a.cfg.Owner, a.cfg.Repo, issueTitle)
+				existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
+
+				var issueNum int
+				if err != nil {
+					a.logger.Warn("failed to search for existing flaky issues", "error", err)
+					// Continue with creation despite search failure
+				} else if len(existingIssues) > 0 {
+					// Issue already exists, reference it instead of creating a duplicate
+					issueNum = existingIssues[0].Number
+					a.logger.Info("found existing flaky CI issue", "issue", issueNum, "check", task.failures[0].Name)
+					if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+						fmt.Sprintf("This appears to be a duplicate of existing flaky test issue #%d.\n\n%s", issueNum, botMarker)); err != nil {
+						a.logger.Error("failed to post existing flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
+					}
+					return
+				}
+
+				// No existing issue found, create a new one
 				issueBody := fmt.Sprintf("A CI failure was detected that appears unrelated to PR changes.\n\n"+
 					"**Detected in PR**: #%d\n"+
 					"**Commit**: %s\n"+
@@ -598,7 +620,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 					"**Check output**:\n```\n%s\n```\n\n"+
 					"%s",
 					task.work.PRNumber, shortSHA(task.headSHA), task.failures[0].Name, explanation, task.failures[0].Output, botMarker)
-				issueNum, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{"flaky-test"})
+				issueNum, err = a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{"flaky-test"})
 				if err != nil {
 					a.logger.Error("failed to create flaky CI issue", "error", err)
 				} else {

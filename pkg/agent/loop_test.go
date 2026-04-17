@@ -28,6 +28,7 @@ type mockGitHubClient struct {
 	prBehind        bool    // whether IsPRBehind returns true
 	createdIssues   []Issue // tracks issues created via CreateIssue
 	nextIssueNumber int     // next issue number to return (defaults to 1)
+	searchResults   []Issue // results to return from SearchIssues
 
 	listIssuesErr error
 }
@@ -171,6 +172,10 @@ func (m *mockGitHubClient) CreateIssue(_ context.Context, _, _ string, title, bo
 		Labels: labels,
 	})
 	return issueNum, nil
+}
+
+func (m *mockGitHubClient) SearchIssues(_ context.Context, _ string) ([]Issue, error) {
+	return m.searchResults, nil
 }
 
 // mockWorktreeManager implements WorktreeManager for testing.
@@ -720,6 +725,91 @@ func TestProcessCIFailures_SkipsFlakyIssueWhenDisabled(t *testing.T) {
 	// Check that only one comment was added (the unrelated notice)
 	if len(gh.addedComments) != 1 {
 		t.Fatalf("expected 1 comment (unrelated notice), got %d", len(gh.addedComments))
+	}
+}
+
+func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
+	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
+		},
+		searchResults: []Issue{
+			{Number: 50, Title: "Flaky CI: integration-tests", Labels: []string{"flaky-test"}},
+		},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = true
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Check that no new issue was created (existing one should be referenced)
+	if len(gh.createdIssues) != 0 {
+		t.Errorf("expected 0 created issues (should reference existing), got %d", len(gh.createdIssues))
+	}
+
+	// Check that comments were added (unrelated notice + duplicate reference)
+	if len(gh.addedComments) != 2 {
+		t.Fatalf("expected 2 comments (unrelated + duplicate reference), got %d", len(gh.addedComments))
+	}
+
+	// Verify the duplicate reference comment
+	if !strings.Contains(gh.addedComments[1], "duplicate of existing flaky test issue #50") {
+		t.Errorf("expected duplicate reference comment, got: %q", gh.addedComments[1])
+	}
+}
+
+func TestProcessCIFailures_CreatesNewFlakyIssueWhenNoDuplicate(t *testing.T) {
+	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
+		},
+		searchResults: []Issue{}, // No existing issues
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = true
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Check that a new issue was created
+	if len(gh.createdIssues) != 1 {
+		t.Fatalf("expected 1 created issue, got %d", len(gh.createdIssues))
+	}
+
+	issue := gh.createdIssues[0]
+	if issue.Title != "Flaky CI: integration-tests" {
+		t.Errorf("expected title 'Flaky CI: integration-tests', got %q", issue.Title)
+	}
+	if len(issue.Labels) != 1 || issue.Labels[0] != "flaky-test" {
+		t.Errorf("expected labels ['flaky-test'], got %v", issue.Labels)
+	}
+
+	// Check that comments were added (unrelated notice + new issue reference)
+	if len(gh.addedComments) != 2 {
+		t.Fatalf("expected 2 comments (unrelated + issue link), got %d", len(gh.addedComments))
 	}
 }
 

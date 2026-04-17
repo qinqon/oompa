@@ -37,6 +37,7 @@ type GitHubClient interface {
 	GetPR(ctx context.Context, owner, repo string, prNumber int) (PR, error)
 	IsPRBehind(ctx context.Context, owner, repo string, prNumber int) (bool, error)
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels []string) (int, error)
+	SearchIssues(ctx context.Context, query string) ([]Issue, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -442,6 +443,31 @@ func (g *GoGitHubClient) CreateIssue(ctx context.Context, owner, repo, title, bo
 		return 0, fmt.Errorf("creating issue: %w", err)
 	}
 	return issue.GetNumber(), nil
+}
+
+func (g *GoGitHubClient) SearchIssues(ctx context.Context, query string) ([]Issue, error) {
+	result, _, err := g.client.Search.Issues(ctx, query, nil)
+	if err != nil {
+		return nil, fmt.Errorf("searching issues: %w", err)
+	}
+
+	var issues []Issue
+	for _, ghIssue := range result.Issues {
+		if ghIssue.IsPullRequest() {
+			continue
+		}
+		var labels []string
+		for _, l := range ghIssue.Labels {
+			labels = append(labels, l.GetName())
+		}
+		issues = append(issues, Issue{
+			Number: ghIssue.GetNumber(),
+			Title:  ghIssue.GetTitle(),
+			Body:   ghIssue.GetBody(),
+			Labels: labels,
+		})
+	}
+	return issues, nil
 }
 
 // GetAuthenticatedUser returns the login, name, and email of the authenticated user.
