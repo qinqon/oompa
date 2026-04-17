@@ -23,6 +23,15 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+func parseIntEnv(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 func parseConfig() (agent.Config, string) {
 	cfg := agent.Config{}
 
@@ -51,6 +60,7 @@ func parseConfig() (agent.Config, string) {
 	flag.StringVar(&logFile, "log-file", os.Getenv("AI_AGENT_LOG_FILE"), "Log file path (default: stderr)")
 
 	flag.BoolVar(&cfg.CreateFlakyIssues, "create-flaky-issues", envOrDefault("AI_AGENT_CREATE_FLAKY_ISSUES", "") == "true", "Create issues for unrelated CI failures (opt-in)")
+	flag.IntVar(&cfg.MaxWorkers, "max-workers", parseIntEnv("AI_AGENT_MAX_WORKERS", 1), "Maximum parallel Claude invocations (default 1 = sequential)")
 
 	var forkFlag string
 	flag.StringVar(&forkFlag, "fork", envOrDefault("AI_AGENT_FORK", ""), "Fork repo as owner/repo for pushing (e.g. qinqon/ovn-kubernetes)")
@@ -349,6 +359,7 @@ func main() {
 		forkURL = fmt.Sprintf("https://github.com/%s/%s.git", cfg.GitHubUser, cfg.Repo)
 	}
 	runner := &agent.ExecRunner{}
+	runner.Env = agent.BuildClaudeEnv(cfg)
 
 	wtm := agent.NewGitWorktreeManager(runner, cfg.CloneDir, repoURL, forkURL)
 	if cfg.GitAuthorName != "" || cfg.GitAuthorEmail != "" {
