@@ -60,6 +60,7 @@ func parseConfig() (agent.Config, string) {
 	flag.StringVar(&logFile, "log-file", os.Getenv("AI_AGENT_LOG_FILE"), "Log file path (default: stderr)")
 
 	flag.BoolVar(&cfg.CreateFlakyIssues, "create-flaky-issues", envOrDefault("AI_AGENT_CREATE_FLAKY_ISSUES", "") == "true", "Create issues for unrelated CI failures (opt-in)")
+	flag.BoolVar(&cfg.OnlyAssigned, "only-assigned", envOrDefault("AI_AGENT_ONLY_ASSIGNED", "") == "true", "Only process issues assigned to the agent user")
 	flag.IntVar(&cfg.MaxWorkers, "max-workers", parseIntEnv("AI_AGENT_MAX_WORKERS", 1), "Maximum parallel Claude invocations (default 1 = sequential)")
 
 	var forkFlag string

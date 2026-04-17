@@ -4,10 +4,11 @@ import "time"
 
 // Issue represents a GitHub issue.
 type Issue struct {
-	Number int
-	Title  string
-	Body   string
-	Labels []string
+	Number    int
+	Title     string
+	Body      string
+	Labels    []string
+	Assignees []string
 }
 
 // ReviewComment represents a comment on a PR or issue.

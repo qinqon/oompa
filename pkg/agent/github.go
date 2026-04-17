@@ -79,11 +79,16 @@ func (g *GoGitHubClient) ListLabeledIssues(ctx context.Context, owner, repo, lab
 		for _, l := range gi.Labels {
 			labels = append(labels, l.GetName())
 		}
+		var assignees []string
+		for _, a := range gi.Assignees {
+			assignees = append(assignees, a.GetLogin())
+		}
 		issues = append(issues, Issue{
-			Number: gi.GetNumber(),
-			Title:  gi.GetTitle(),
-			Body:   gi.GetBody(),
-			Labels: labels,
+			Number:    gi.GetNumber(),
+			Title:     gi.GetTitle(),
+			Body:      gi.GetBody(),
+			Labels:    labels,
+			Assignees: assignees,
 		})
 	}
 	return issues, nil

@@ -161,6 +161,11 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			continue
 		}
 
+		if a.cfg.OnlyAssigned && !issueAssignedTo(issue, a.cfg.GitHubUser) {
+			a.logger.Debug("skipping issue not assigned to agent user", "issue", issue.Number, "user", a.cfg.GitHubUser)
+			continue
+		}
+
 		a.logger.Info("processing new issue", "issue", issue.Number, "title", issue.Title)
 
 		branchName := fmt.Sprintf("ai/issue-%d", issue.Number)
@@ -1039,6 +1044,16 @@ func (a *Agent) gitPush(ctx context.Context, worktreePath string, force bool) er
 		return fmt.Errorf("git push: %w (stderr: %s)", err, string(stderr))
 	}
 	return nil
+}
+
+// issueAssignedTo returns true if the given user is among the issue's assignees.
+func issueAssignedTo(issue Issue, user string) bool {
+	for _, a := range issue.Assignees {
+		if a == user {
+			return true
+		}
+	}
+	return false
 }
 
 // isAllowedReviewer returns true if the user is in the reviewers whitelist.
