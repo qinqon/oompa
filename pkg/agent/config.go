@@ -23,10 +23,11 @@ type Config struct {
 	ForkRepo        string   // name of the fork repo (empty = same as Repo)
 	GitAuthorName   string   // git commit author name
 	GitAuthorEmail  string   // git commit author email
-	Reviewers       []string // whitelist of users/bots whose reviews to address
+	Reviewers         []string // whitelist of users/bots whose reviews to address
 	WatchPRs          []int    // PR numbers to monitor directly (bypasses issue discovery)
 	Reactions         []string // which reactions to run: "reviews", "ci", "conflicts" (empty = all)
 	CreateFlakyIssues bool     // when true, create issues for unrelated CI failures (opt-in)
+	MaxWorkers        int      // maximum number of parallel Claude invocations (default 1 = sequential)
 
 	// GitHub App authentication (alternative to GITHUB_TOKEN)
 	GitHubAppID             int64

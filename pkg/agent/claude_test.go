@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -14,6 +15,7 @@ type commandCall struct {
 }
 
 type mockCommandRunner struct {
+	mu     sync.Mutex
 	calls  []commandCall
 	stdout []byte
 	stderr []byte
@@ -21,8 +23,13 @@ type mockCommandRunner struct {
 }
 
 func (m *mockCommandRunner) Run(_ context.Context, workDir string, name string, args ...string) ([]byte, []byte, error) {
+	m.mu.Lock()
 	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args})
-	return m.stdout, m.stderr, m.err
+	stdout := m.stdout
+	stderr := m.stderr
+	err := m.err
+	m.mu.Unlock()
+	return stdout, stderr, err
 }
 
 // streamResultJSON builds a stream-json result line for testing.

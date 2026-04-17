@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // WorktreeManager manages git worktrees for parallel issue work.
@@ -25,6 +26,7 @@ type GitWorktreeManager struct {
 	gitAuthorName  string // override git user.name in worktrees
 	gitAuthorEmail string // override git user.email in worktrees
 	defaultBranch  string // detected from origin HEAD (e.g. "main", "master")
+	mu             sync.Mutex
 }
 
 // NewGitWorktreeManager creates a new worktree manager.
@@ -67,6 +69,9 @@ func (g *GitWorktreeManager) detectDefaultBranch(ctx context.Context) {
 }
 
 func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	if _, err := os.Stat(filepath.Join(g.cloneDir, ".git")); err == nil {
 		// Verify origin URL matches the configured repo to prevent stale clones
 		urlOut, _, _ := g.runner.Run(ctx, g.cloneDir, "git", "remote", "get-url", "origin")
@@ -136,6 +141,9 @@ func (g *GitWorktreeManager) PushRemote() string {
 }
 
 func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName string) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	worktreePath := filepath.Join(g.cloneDir, "worktrees", branchName)
 
 	// Reuse existing worktree if it's still valid
@@ -160,6 +168,9 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 }
 
 func (g *GitWorktreeManager) SyncWorktree(ctx context.Context, worktreePath string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	// Fetch latest from all remotes
 	_, stderr, err := g.runner.Run(ctx, worktreePath, "git", "fetch", "--all")
 	if err != nil {
@@ -184,6 +195,9 @@ func (g *GitWorktreeManager) SyncWorktree(ctx context.Context, worktreePath stri
 }
 
 func (g *GitWorktreeManager) RemoveWorktree(ctx context.Context, worktreePath string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "worktree", "remove", "--force", worktreePath)
 	if err != nil {
 		return fmt.Errorf("git worktree remove: %w (stderr: %s)", err, string(stderr))

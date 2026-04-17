@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -45,6 +46,12 @@ func (a *Agent) RefreshToken(ctx context.Context) error {
 	}
 	a.cfg.GitHubToken = token
 	os.Setenv("GH_TOKEN", token)
+
+	// Update ExecRunner.Env to pass the new token to Claude invocations
+	if execRunner, ok := a.runner.(*ExecRunner); ok {
+		execRunner.SetGHToken(token)
+	}
+
 	return nil
 }
 
@@ -60,6 +67,65 @@ func NewAgent(gh GitHubClient, runner CommandRunner, worktrees WorktreeManager, 
 	}
 }
 
+// runParallel executes fn for each item in parallel using a bounded worker pool.
+// If maxWorkers <= 1 or len(items) <= 1, runs sequentially.
+func runParallel[T any](ctx context.Context, maxWorkers int, items []T, fn func(context.Context, T)) {
+	if maxWorkers <= 1 || len(items) <= 1 {
+		for _, item := range items {
+			fn(ctx, item)
+		}
+		return
+	}
+
+	workers := maxWorkers
+	if len(items) < workers {
+		workers = len(items)
+	}
+
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+
+	for _, item := range items {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(item T) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn(ctx, item)
+		}(item)
+	}
+
+	wg.Wait()
+}
+
+// Task structs for parallel execution
+type newIssueTask struct {
+	issue        Issue
+	branchName   string
+	worktreePath string
+	work         *IssueWork
+}
+
+type reviewTask struct {
+	work          *IssueWork
+	humanComments []ReviewComment
+	humanReviews  []PRReview
+}
+
+type ciTask struct {
+	work     *IssueWork
+	failures []CheckRun
+	diff     string
+	headSHA  string
+}
+
+type conflictTask struct {
+	work      *IssueWork
+	headSHA   string
+	rebaseErr error
+	stderr    []byte
+}
+
 // ProcessNewIssues finds labeled issues and spawns Claude to implement fixes.
 func (a *Agent) ProcessNewIssues(ctx context.Context) {
 	issues, err := a.gh.ListLabeledIssues(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.Label)
@@ -68,6 +134,8 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		return
 	}
 
+	// Sequential phase: GitHub API calls, state mutations, worktree creation
+	var tasks []newIssueTask
 	for _, issue := range issues {
 		if work, exists := a.state.ActiveIssues[issue.Number]; exists {
 			// Re-check for PR if we lost track of it
@@ -164,90 +232,96 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			Status:       "implementing",
 			CreatedAt:    time.Now(),
 		}
+		a.state.ActiveIssues[issue.Number] = work
 
-		prompt := buildImplementationPrompt(issue, a.cfg.SignedOffBy)
-		_, err = runClaude(ctx, a.runner, worktreePath, prompt, a.cfg, a.logger, false)
+		tasks = append(tasks, newIssueTask{
+			issue:        issue,
+			branchName:   branchName,
+			worktreePath: worktreePath,
+			work:         work,
+		})
+	}
+
+	// Parallel phase: Claude invocations and per-worktree post-processing
+	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task newIssueTask) {
+		prompt := buildImplementationPrompt(task.issue, a.cfg.SignedOffBy)
+		_, err := runClaude(ctx, a.runner, task.worktreePath, prompt, a.cfg, a.logger, false)
 		if err != nil {
-			a.logger.Error("claude failed", "issue", issue.Number, "error", err)
-			work.Status = "failed"
-			a.state.ActiveIssues[issue.Number] = work
-
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number,
+			a.logger.Error("claude failed", "issue", task.issue.Number, "error", err)
+			task.work.Status = "failed"
+			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
+			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
 				fmt.Sprintf("AI agent failed to implement this issue: %v", err))
-			continue
+			return
 		}
 
 		// Check if Claude produced any commits
-		logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--oneline")
+		logOut, _, _ := a.runner.Run(ctx, task.worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--oneline")
 		if len(strings.TrimSpace(string(logOut))) == 0 {
-			a.logger.Warn("claude finished but produced no commits", "issue", issue.Number)
-			work.Status = "failed"
-			a.state.ActiveIssues[issue.Number] = work
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number,
+			a.logger.Warn("claude finished but produced no commits", "issue", task.issue.Number)
+			task.work.Status = "failed"
+			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
+			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
 				fmt.Sprintf("AI agent finished but produced no commits for this issue.\n\n%s", botMarker))
-			continue
+			return
 		}
 
 		// Squash all commits into a single commit before pushing
-		if err := a.gitSquashCommits(ctx, worktreePath, issue.Number, issue.Title); err != nil {
-			a.logger.Error("failed to squash commits", "issue", issue.Number, "error", err)
-			work.Status = "failed"
-			a.state.ActiveIssues[issue.Number] = work
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number,
+		if err := a.gitSquashCommits(ctx, task.worktreePath, task.issue.Number, task.issue.Title); err != nil {
+			a.logger.Error("failed to squash commits", "issue", task.issue.Number, "error", err)
+			task.work.Status = "failed"
+			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
+			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
 				fmt.Sprintf("AI agent failed to squash commits: %v\n\n%s", err, botMarker))
-			continue
+			return
 		}
 
 		// Push the branch (force push because squashing rewrites history)
-		if err := a.gitPush(ctx, worktreePath, true); err != nil {
-			a.logger.Error("failed to push branch", "issue", issue.Number, "error", err)
-			work.Status = "failed"
-			a.state.ActiveIssues[issue.Number] = work
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number,
+		if err := a.gitPush(ctx, task.worktreePath, true); err != nil {
+			a.logger.Error("failed to push branch", "issue", task.issue.Number, "error", err)
+			task.work.Status = "failed"
+			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
+			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
 				fmt.Sprintf("AI agent failed to push branch: %v\n\n%s", err, botMarker))
-			continue
+			return
 		}
 
 		// Create PR
-		prHead := branchName
+		prHead := task.branchName
 		if a.cfg.GitHubHeadOwner != "" && a.cfg.GitHubHeadOwner != a.cfg.Owner {
-			prHead = a.cfg.GitHubHeadOwner + ":" + branchName
+			prHead = a.cfg.GitHubHeadOwner + ":" + task.branchName
 		}
-		prTitle := issue.Title
-		prBody := a.buildPRBody(ctx, worktreePath, issue.Number)
+		prTitle := task.issue.Title
+		prBody := a.buildPRBody(ctx, task.worktreePath, task.issue.Number)
 		prNumber, err := a.gh.CreatePR(ctx, a.cfg.Owner, a.cfg.Repo, prTitle, prBody, prHead, a.defaultBranch())
 		if err != nil {
-			a.logger.Error("failed to create PR", "issue", issue.Number, "error", err)
+			a.logger.Error("failed to create PR", "issue", task.issue.Number, "error", err)
 			// Clean up the remote branch to avoid orphaned branches
-			a.deleteRemoteBranch(ctx, worktreePath, branchName)
-			work.Status = "failed"
-			a.state.ActiveIssues[issue.Number] = work
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number,
+			a.deleteRemoteBranch(ctx, task.worktreePath, task.branchName)
+			task.work.Status = "failed"
+			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
+			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
 				fmt.Sprintf("AI agent failed to create PR: %v\n\n%s", err, botMarker))
-			continue
+			return
 		}
 
-		work.PRNumber = prNumber
-		work.Status = "pr-open"
-		a.logger.Info("created PR", "issue", issue.Number, "pr", prNumber)
+		task.work.PRNumber = prNumber
+		task.work.Status = "pr-open"
+		a.logger.Info("created PR", "issue", task.issue.Number, "pr", prNumber)
 
-		_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, a.cfg.GitHubUser)
-		a.state.ActiveIssues[issue.Number] = work
-	}
+		_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
+	})
 }
 
 // ProcessReviewComments checks for new review comments and review bodies, then runs Claude to address them.
 func (a *Agent) ProcessReviewComments(ctx context.Context) {
+	// Sequential phase: GitHub API calls, state checks, worktree preparation, reactions
+	var tasks []reviewTask
 	for _, work := range a.state.ActiveIssues {
 		if work.PRNumber == 0 || work.Status != "pr-open" {
 			continue
@@ -335,33 +409,41 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
+		tasks = append(tasks, reviewTask{
+			work:          work,
+			humanComments: humanComments,
+			humanReviews:  humanReviews,
+		})
+	}
 
-		prompt := buildReviewResponsePrompt(*work, humanComments, humanReviews, a.cfg.Owner, a.cfg.Repo)
-		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
+	// Parallel phase: Claude invocations and post-processing
+	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task reviewTask) {
+		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, a.cfg.Owner, a.cfg.Repo)
+		_, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
-			a.logger.Error("claude failed to address review", "pr", work.PRNumber, "error", err)
-			continue
+			a.logger.Error("claude failed to address review", "pr", task.work.PRNumber, "error", err)
+			return
 		}
 
 		// Amend and push if Claude made changes
-		hasChanges := a.hasUncommittedChanges(ctx, work.WorktreePath)
+		hasChanges := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
 		if hasChanges {
-			if err := a.gitAmendAll(ctx, work.WorktreePath); err != nil {
-				a.logger.Error("failed to amend commit", "pr", work.PRNumber, "error", err)
-			} else if err := a.gitPush(ctx, work.WorktreePath, true); err != nil {
-				a.logger.Error("failed to push", "pr", work.PRNumber, "error", err)
+			if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
+				a.logger.Error("failed to amend commit", "pr", task.work.PRNumber, "error", err)
+			} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
+				a.logger.Error("failed to push", "pr", task.work.PRNumber, "error", err)
 			}
 		}
 
 		// Post fallback reply for inline comments Claude didn't reply to
-		updatedComments, _ := a.gh.GetPRReviewComments(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, 0)
-		repliedTo = make(map[int64]bool)
+		updatedComments, _ := a.gh.GetPRReviewComments(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, 0)
+		repliedTo := make(map[int64]bool)
 		for _, c := range updatedComments {
 			if c.InReplyToID != 0 && c.User == a.cfg.GitHubUser {
 				repliedTo[c.InReplyToID] = true
 			}
 		}
-		for _, c := range humanComments {
+		for _, c := range task.humanComments {
 			if repliedTo[c.ID] {
 				continue
 			}
@@ -369,25 +451,26 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			if hasChanges {
 				fallback = "Addressed in the latest push.\n\n" + botMarker
 			}
-			if err := a.gh.ReplyToPRComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, c.ID, fallback); err != nil {
+			if err := a.gh.ReplyToPRComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, c.ID, fallback); err != nil {
 				a.logger.Warn("failed to reply to comment", "comment", c.ID, "error", err)
 			}
 		}
 
 		// Update last seen comment ID
-		for _, c := range humanComments {
-			if c.ID > work.LastCommentID {
-				work.LastCommentID = c.ID
+		for _, c := range task.humanComments {
+			if c.ID > task.work.LastCommentID {
+				task.work.LastCommentID = c.ID
 			}
 		}
-
-	}
+	})
 }
 
 const maxCIFixAttempts = 3
 
 // ProcessCIFailures checks CI status for open PRs and invokes Claude to fix failures.
 func (a *Agent) ProcessCIFailures(ctx context.Context) {
+	// Sequential phase: GitHub API calls, state checks, worktree preparation
+	var tasks []ciTask
 	for _, work := range a.state.ActiveIssues {
 		if work.PRNumber == 0 || work.Status != "pr-open" {
 			continue
@@ -462,36 +545,46 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", a.originDefaultBranch())
 		diff := string(diffOut)
 
-		prompt := buildCIFixPrompt(*work, failures, diff)
-		result, err := runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
+		tasks = append(tasks, ciTask{
+			work:     work,
+			failures: failures,
+			diff:     diff,
+			headSHA:  headSHA,
+		})
+	}
+
+	// Parallel phase: Claude invocations and post-processing
+	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task ciTask) {
+		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff)
+		result, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
-			a.logger.Error("claude failed to investigate CI", "pr", work.PRNumber, "error", err)
-			work.CIFixAttempts++
-			work.LastCIStatus = "failure"
-			work.LastCheckedCISHA = headSHA
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("CI investigation failed for commit %s: %v\n\n%s", shortSHA(headSHA), err, botMarker)); err != nil {
-				a.logger.Error("failed to post CI investigation error comment", "pr", work.PRNumber, "error", err)
+			a.logger.Error("claude failed to investigate CI", "pr", task.work.PRNumber, "error", err)
+			task.work.CIFixAttempts++
+			task.work.LastCIStatus = "failure"
+			task.work.LastCheckedCISHA = task.headSHA
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("CI investigation failed for commit %s: %v\n\n%s", shortSHA(task.headSHA), err, botMarker)); err != nil {
+				a.logger.Error("failed to post CI investigation error comment", "pr", task.work.PRNumber, "error", err)
 			}
-			continue
+			return
 		}
 
 		// Strip markdown formatting (bold, italic) before checking prefix
 		cleaned := strings.TrimLeft(strings.TrimSpace(result.Result), "*_")
 		if strings.HasPrefix(cleaned, "UNRELATED") {
-			a.logger.Info("CI failure is unrelated to PR changes", "pr", work.PRNumber)
+			a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
 			explanation := strings.TrimPrefix(cleaned, "UNRELATED")
 			explanation = strings.TrimSpace(explanation)
-			comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(headSHA), explanation, botMarker)
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, comment); err != nil {
-				a.logger.Error("failed to post CI unrelated comment", "pr", work.PRNumber, "error", err)
+			comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(task.headSHA), explanation, botMarker)
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
+				a.logger.Error("failed to post CI unrelated comment", "pr", task.work.PRNumber, "error", err)
 			}
-			work.LastCIStatus = "unrelated-failure"
-			work.LastCheckedCISHA = headSHA
+			task.work.LastCIStatus = "unrelated-failure"
+			task.work.LastCheckedCISHA = task.headSHA
 
 			// Create a flaky CI issue if configured
 			if a.cfg.CreateFlakyIssues {
-				issueTitle := fmt.Sprintf("Flaky CI: %s", failures[0].Name)
+				issueTitle := fmt.Sprintf("Flaky CI: %s", task.failures[0].Name)
 				issueBody := fmt.Sprintf("A CI failure was detected that appears unrelated to PR changes.\n\n"+
 					"**Detected in PR**: #%d\n"+
 					"**Commit**: %s\n"+
@@ -499,58 +592,60 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 					"**Analysis**:\n%s\n\n"+
 					"**Check output**:\n```\n%s\n```\n\n"+
 					"%s",
-					work.PRNumber, shortSHA(headSHA), failures[0].Name, explanation, failures[0].Output, botMarker)
+					task.work.PRNumber, shortSHA(task.headSHA), task.failures[0].Name, explanation, task.failures[0].Output, botMarker)
 				issueNum, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{"flaky-test"})
 				if err != nil {
 					a.logger.Error("failed to create flaky CI issue", "error", err)
 				} else {
 					a.logger.Info("created flaky CI issue", "issue", issueNum)
 					// Update the PR comment to reference the created issue
-					if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+					if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 						fmt.Sprintf("Opened issue #%d to track this flaky test.\n\n%s", issueNum, botMarker)); err != nil {
-						a.logger.Error("failed to post flaky issue reference comment", "pr", work.PRNumber, "error", err)
+						a.logger.Error("failed to post flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
 					}
 				}
 			}
 
-			continue
+			return
 		}
 
 		// Claude said RELATED — amend and push if there are changes
 		pushed := false
-		if a.hasUncommittedChanges(ctx, work.WorktreePath) {
-			if err := a.gitAmendAll(ctx, work.WorktreePath); err != nil {
-				a.logger.Error("failed to amend commit for CI fix", "pr", work.PRNumber, "error", err)
-			} else if err := a.gitPush(ctx, work.WorktreePath, true); err != nil {
-				a.logger.Error("failed to push CI fix", "pr", work.PRNumber, "error", err)
+		if a.hasUncommittedChanges(ctx, task.work.WorktreePath) {
+			if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
+				a.logger.Error("failed to amend commit for CI fix", "pr", task.work.PRNumber, "error", err)
+			} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
+				a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
 			} else {
 				pushed = true
 			}
 		}
 
 		if pushed {
-			a.logger.Info("CI failure is related, pushed a fix", "pr", work.PRNumber)
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("CI was failing on commit %s. Pushed a fix.\n\n%s", shortSHA(headSHA), botMarker)); err != nil {
-				a.logger.Error("failed to post CI fix comment", "pr", work.PRNumber, "error", err)
+			a.logger.Info("CI failure is related, pushed a fix", "pr", task.work.PRNumber)
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("CI was failing on commit %s. Pushed a fix.\n\n%s", shortSHA(task.headSHA), botMarker)); err != nil {
+				a.logger.Error("failed to post CI fix comment", "pr", task.work.PRNumber, "error", err)
 			}
 		} else {
-			a.logger.Warn("Claude said RELATED but no changes to push", "pr", work.PRNumber)
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("CI is failing on commit %s. Investigated but could not push a fix.\n\n%s", shortSHA(headSHA), botMarker)); err != nil {
-				a.logger.Error("failed to post CI investigation comment", "pr", work.PRNumber, "error", err)
+			a.logger.Warn("Claude said RELATED but no changes to push", "pr", task.work.PRNumber)
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("CI is failing on commit %s. Investigated but could not push a fix.\n\n%s", shortSHA(task.headSHA), botMarker)); err != nil {
+				a.logger.Error("failed to post CI investigation comment", "pr", task.work.PRNumber, "error", err)
 			}
 		}
-		work.CIFixAttempts++
-		work.LastCIStatus = "failure"
-		work.LastCheckedCISHA = headSHA
-	}
+		task.work.CIFixAttempts++
+		task.work.LastCIStatus = "failure"
+		task.work.LastCheckedCISHA = task.headSHA
+	})
 }
 
 const maxConflictFixAttempts = 2
 
 // ProcessConflicts checks for merge conflicts and tries to rebase/resolve them.
 func (a *Agent) ProcessConflicts(ctx context.Context) {
+	// Sequential phase: GitHub API calls, state checks, worktree preparation, auto-rebase attempts
+	var tasks []conflictTask
 	for _, work := range a.state.ActiveIssues {
 		if work.PRNumber == 0 || work.Status != "pr-open" {
 			continue
@@ -615,29 +710,39 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			continue
 		}
 
-		// Rebase failed — abort and let Claude try
+		// Rebase failed — abort and add task for Claude to try
 		a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort")
-		a.logger.Info("automatic rebase failed, invoking Claude to resolve conflicts", "pr", work.PRNumber, "stderr", string(stderr))
+		a.logger.Info("automatic rebase failed, will invoke Claude to resolve conflicts", "pr", work.PRNumber, "stderr", string(stderr))
 
-		prompt := buildConflictResolutionPrompt(*work, a.originDefaultBranch())
-		_, err = runClaude(ctx, a.runner, work.WorktreePath, prompt, a.cfg, a.logger, true)
+		tasks = append(tasks, conflictTask{
+			work:      work,
+			headSHA:   headSHA,
+			rebaseErr: rebaseErr,
+			stderr:    stderr,
+		})
+	}
+
+	// Parallel phase: Claude invocations for conflict resolution
+	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task conflictTask) {
+		prompt := buildConflictResolutionPrompt(*task.work, a.originDefaultBranch())
+		_, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
-			a.logger.Error("claude failed to resolve conflicts", "pr", work.PRNumber, "error", err)
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("Rebase failed on commit %s. Attempted to resolve conflicts automatically but failed. Human intervention needed.\n\n%s", shortSHA(headSHA), botMarker))
-			continue
+			a.logger.Error("claude failed to resolve conflicts", "pr", task.work.PRNumber, "error", err)
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("Rebase failed on commit %s. Attempted to resolve conflicts automatically but failed. Human intervention needed.\n\n%s", shortSHA(task.headSHA), botMarker))
+			return
 		}
 
 		// Push the rebased branch
-		if err := a.gitPush(ctx, work.WorktreePath, true); err != nil {
-			a.logger.Error("failed to push after conflict resolution", "pr", work.PRNumber, "error", err)
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("Rebase failed on commit %s. Attempted to resolve conflicts automatically but failed. Human intervention needed.\n\n%s", shortSHA(headSHA), botMarker))
+		if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
+			a.logger.Error("failed to push after conflict resolution", "pr", task.work.PRNumber, "error", err)
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("Rebase failed on commit %s. Attempted to resolve conflicts automatically but failed. Human intervention needed.\n\n%s", shortSHA(task.headSHA), botMarker))
 		} else {
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-				fmt.Sprintf("Rebased commit %s on main and pushed (conflicts resolved).\n\n%s", shortSHA(headSHA), botMarker))
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("Rebased commit %s on main and pushed (conflicts resolved).\n\n%s", shortSHA(task.headSHA), botMarker))
 		}
-	}
+	})
 }
 
 // CleanupDone removes worktrees for merged or closed PRs.
