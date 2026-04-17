@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/go-github/v84/github"
@@ -386,5 +387,40 @@ func TestCreateIssue(t *testing.T) {
 	}
 	if len(receivedLabels) != 1 || receivedLabels[0] != "flaky-test" {
 		t.Errorf("expected labels ['flaky-test'], got %v", receivedLabels)
+	}
+}
+
+func TestGetDefaultBranchSHA(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/commits", func(w http.ResponseWriter, r *http.Request) {
+		commits := []*github.RepositoryCommit{
+			{SHA: github.Ptr("abc123def456")},
+		}
+		json.NewEncoder(w).Encode(commits)
+	})
+
+	gh := setupTestClient(t, mux)
+	sha, err := gh.GetDefaultBranchSHA(context.Background(), "owner", "repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sha != "abc123def456" {
+		t.Errorf("expected SHA 'abc123def456', got %q", sha)
+	}
+}
+
+func TestGetDefaultBranchSHA_NoCommits(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/commits", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]*github.RepositoryCommit{})
+	})
+
+	gh := setupTestClient(t, mux)
+	_, err := gh.GetDefaultBranchSHA(context.Background(), "owner", "repo")
+	if err == nil {
+		t.Fatal("expected error for empty commits, got nil")
+	}
+	if !strings.Contains(err.Error(), "no commits found") {
+		t.Errorf("expected 'no commits found' error, got: %v", err)
 	}
 }
