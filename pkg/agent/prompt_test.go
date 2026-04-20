@@ -73,7 +73,7 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		},
 	}
 
-	prompt := buildReviewResponsePrompt(work, comments, nil, "owner", "repo")
+	prompt := buildReviewResponsePrompt(work, comments, nil, "owner", "repo", "")
 
 	checks := []string{
 		"reviewer1",
@@ -98,5 +98,11 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+
+	// With signed-off-by
+	prompt = buildReviewResponsePrompt(work, comments, nil, "owner", "repo", "Test User <test@example.com>")
+	if !strings.Contains(prompt, "Signed-off-by: Test User <test@example.com>") {
+		t.Error("prompt missing Signed-off-by when provided")
 	}
 }

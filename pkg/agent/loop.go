@@ -428,7 +428,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 
 	// Parallel phase: run Claude, amend/push, post fallback replies
 	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task reviewTask) {
-		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, a.cfg.Owner, a.cfg.Repo)
+		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, a.cfg.Owner, a.cfg.Repo, a.cfg.SignedOffBy)
 		_, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to address review", "pr", task.work.PRNumber, "error", err)
@@ -581,7 +581,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 
 	// Parallel phase: Claude invocations and post-processing
 	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task ciTask) {
-		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff, task.commits)
+		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff, task.commits, a.cfg.SignedOffBy)
 		result, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to investigate CI", "pr", task.work.PRNumber, "error", err)
@@ -806,7 +806,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 
 	// Parallel phase: Claude invocations for conflict resolution
 	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task conflictTask) {
-		prompt := buildConflictResolutionPrompt(*task.work, a.originDefaultBranch())
+		prompt := buildConflictResolutionPrompt(*task.work, a.originDefaultBranch(), a.cfg.SignedOffBy)
 		_, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to resolve conflicts", "pr", task.work.PRNumber, "error", err)
