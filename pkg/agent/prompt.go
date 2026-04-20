@@ -148,9 +148,16 @@ func buildConflictResolutionPrompt(work IssueWork, originDefaultBranch string) s
 Instructions:
 1. Run "git fetch origin" to get the latest changes
 2. Run "git rebase %s" to rebase on top of the latest main branch
-3. Resolve any merge conflicts that arise:
+3. Resolve conflicts WITHIN the rebase flow:
+   - When "git rebase" stops due to conflicts, edit the conflicting files to resolve them
    - Understand the intent of both the PR changes and the upstream changes
    - Keep the PR's functionality intact while incorporating upstream changes
+   - After resolving conflicts in the files, run "git add <resolved-files>"
+   - Then run "git rebase --continue" to continue the rebase
+   - Repeat for each conflicting commit until the rebase completes
+   - CRITICAL: Do NOT run "git rebase --abort"
+   - CRITICAL: Do NOT create new standalone commits on top (no "git commit")
+   - The rebase must complete successfully with the original commit structure preserved
 4. Run "make lint" and "make test" to verify the resolved code still works
 
 Do NOT push — the agent handles that automatically.`,

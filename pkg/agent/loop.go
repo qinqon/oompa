@@ -806,6 +806,10 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 
 	// Parallel phase: Claude invocations for conflict resolution
 	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task conflictTask) {
+		// Get commit count before invoking Claude
+		commitsBefore := a.getPRCommits(ctx, task.work.WorktreePath)
+		commitCountBefore := len(commitsBefore)
+
 		prompt := buildConflictResolutionPrompt(*task.work, a.originDefaultBranch())
 		_, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
@@ -813,6 +817,26 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 				fmt.Sprintf("Rebase failed on commit %s. Attempted to resolve conflicts automatically but failed. Human intervention needed.\n\n%s", shortSHA(task.headSHA), botMarker))
 			return
+		}
+
+		// Verify that no unexpected new commits were created
+		commitsAfter := a.getPRCommits(ctx, task.work.WorktreePath)
+		commitCountAfter := len(commitsAfter)
+
+		if commitCountAfter > commitCountBefore {
+			a.logger.Warn("conflict resolution created new commits instead of resolving within rebase",
+				"pr", task.work.PRNumber,
+				"before", commitCountBefore,
+				"after", commitCountAfter,
+				"new_commits", commitCountAfter-commitCountBefore)
+
+			// Warn user - the improved prompt should prevent this, but if it happens, request human intervention
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("⚠️ Conflict resolution created %d unexpected new commit(s) instead of resolving within the rebase flow.\n\n"+
+					"Expected: %d commits (original structure preserved)\n"+
+					"Got: %d commits (new commits added)\n\n"+
+					"Please review the commit history and manually squash or rebase to preserve the original commit structure.\n\n%s",
+					commitCountAfter-commitCountBefore, commitCountBefore, commitCountAfter, botMarker))
 		}
 
 		// Push the rebased branch
