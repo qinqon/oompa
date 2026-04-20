@@ -1008,16 +1008,29 @@ func (a *Agent) defaultBranch() string {
 
 // buildPRBody constructs a PR description from the git log of the branch.
 func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumber int) string {
-	// Get commit messages since the upstream default branch
-	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%B---")
-	commitMessages := strings.TrimSpace(string(logOut))
+	// Use %b (body only) to skip the commit subject, which would duplicate the "Fixes #N" line.
+	// The --- separator makes multi-commit bodies easier to trim.
+	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%b---")
+	rawBody := strings.TrimSpace(string(logOut))
 
 	body := fmt.Sprintf("Fixes #%d\n\n", issueNumber)
-	if commitMessages != "" {
-		body += commitMessages + "\n\n"
+	if rawBody != "" {
+		body += stripSignedOffBy(rawBody) + "\n\n"
 	}
 	body += botMarker
 	return body
+}
+
+// stripSignedOffBy removes "Signed-off-by: ..." trailer lines from a string.
+func stripSignedOffBy(s string) string {
+	var kept []string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Signed-off-by:") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 // ensureWorktreeReady ensures the repo is cloned and the worktree exists for the given work item.
@@ -1084,11 +1097,12 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 		return fmt.Errorf("git reset --soft: %w (stderr: %s)", err, string(stderr))
 	}
 
-	// Create a single commit with a meaningful message
+	// Create a single commit with a meaningful message.
+	// Strip any Signed-off-by trailers Claude may have added to individual commits
+	// before building the body, then append exactly one canonical trailer at the end.
 	commitMsg := fmt.Sprintf("Fix #%d: %s", issueNumber, issueTitle)
 	if commitMessages != "" {
-		// Include original commit messages in the body
-		commitMsg += "\n\n" + commitMessages
+		commitMsg += "\n\n" + stripSignedOffBy(commitMessages)
 	}
 	if a.cfg.SignedOffBy != "" {
 		commitMsg += fmt.Sprintf("\n\nSigned-off-by: %s", a.cfg.SignedOffBy)
