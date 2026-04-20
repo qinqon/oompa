@@ -30,6 +30,12 @@ type PR struct {
 	Head   string
 }
 
+// Commit represents a Git commit.
+type Commit struct {
+	SHA     string
+	Subject string
+}
+
 // ClaudeResult represents the parsed JSON output from Claude CLI.
 type ClaudeResult struct {
 	Result string `json:"result"`

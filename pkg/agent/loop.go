@@ -110,6 +110,7 @@ type ciTask struct {
 	headSHA  string
 	failures []CheckRun
 	diff     string
+	commits  []Commit
 }
 
 type conflictTask struct {
@@ -555,17 +556,21 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", a.originDefaultBranch())
 		diff := string(diffOut)
 
+		// Get commits in the PR to help Claude identify which commit introduced the failure
+		commits := a.getPRCommits(ctx, work.WorktreePath)
+
 		tasks = append(tasks, ciTask{
 			work:     work,
 			headSHA:  headSHA,
 			failures: failures,
 			diff:     diff,
+			commits:  commits,
 		})
 	}
 
 	// Parallel phase: Claude invocations and post-processing
 	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task ciTask) {
-		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff)
+		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff, task.commits)
 		result, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
 		if err != nil {
 			a.logger.Error("claude failed to investigate CI", "pr", task.work.PRNumber, "error", err)
@@ -641,15 +646,35 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			return
 		}
 
-		// Claude said RELATED — amend and push if there are changes
+		// Claude said RELATED — check if there are fixup commits or uncommitted changes
 		pushed := false
-		if a.hasUncommittedChanges(ctx, task.work.WorktreePath) {
-			if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
-				a.logger.Error("failed to amend commit for CI fix", "pr", task.work.PRNumber, "error", err)
+		hasFixupCommits := a.hasFixupCommits(ctx, task.work.WorktreePath)
+		hasUncommitted := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
+
+		if hasFixupCommits {
+			// Run autosquash rebase to merge fixup commits into their targets
+			if err := a.gitAutosquashRebase(ctx, task.work.WorktreePath); err != nil {
+				a.logger.Error("failed to autosquash fixup commits", "pr", task.work.PRNumber, "error", err)
 			} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 				a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
 			} else {
 				pushed = true
+			}
+		} else if hasUncommitted {
+			// Only amend HEAD if this is a single-commit PR
+			// For multi-commit PRs, Claude should have created fixup commits
+			if len(task.commits) > 1 {
+				a.logger.Error("CI fix produced uncommitted changes for multi-commit PR but no fixup commits", "pr", task.work.PRNumber, "commits", len(task.commits))
+				// Don't amend HEAD — this would attach the fix to the wrong commit
+			} else {
+				// For single-commit PRs, amending HEAD is correct
+				if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
+					a.logger.Error("failed to amend commit for CI fix", "pr", task.work.PRNumber, "error", err)
+				} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
+					a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
+				} else {
+					pushed = true
+				}
 			}
 		}
 
@@ -1064,6 +1089,52 @@ func (a *Agent) gitPush(ctx context.Context, worktreePath string, force bool) er
 
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", args...); err != nil {
 		return fmt.Errorf("git push: %w (stderr: %s)", err, string(stderr))
+	}
+	return nil
+}
+
+// getPRCommits returns the list of commits in the PR (commits between origin default branch and HEAD).
+func (a *Agent) getPRCommits(ctx context.Context, worktreePath string) []Commit {
+	logOut, _, err := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%H %s")
+	if err != nil {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(logOut)), "\n")
+	commits := make([]Commit, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		commits = append(commits, Commit{
+			SHA:     parts[0],
+			Subject: parts[1],
+		})
+	}
+	return commits
+}
+
+// hasFixupCommits returns true if there are any fixup commits in the current branch.
+func (a *Agent) hasFixupCommits(ctx context.Context, worktreePath string) bool {
+	logOut, _, err := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%s")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(logOut), "fixup!")
+}
+
+// gitAutosquashRebase performs an interactive rebase with autosquash to merge fixup commits.
+func (a *Agent) gitAutosquashRebase(ctx context.Context, worktreePath string) error {
+	// Set GIT_SEQUENCE_EDITOR to cat so rebase doesn't wait for interactive input
+	_, stderr, err := a.runner.Run(ctx, worktreePath, "sh", "-c",
+		fmt.Sprintf("GIT_SEQUENCE_EDITOR=cat git rebase -i --autosquash %s", a.originDefaultBranch()))
+	if err != nil {
+		return fmt.Errorf("git rebase --autosquash: %w (stderr: %s)", err, string(stderr))
 	}
 	return nil
 }
