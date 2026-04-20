@@ -100,3 +100,34 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildConflictResolutionPrompt(t *testing.T) {
+	work := IssueWork{
+		IssueNumber: 42,
+		IssueTitle:  "Fix nil pointer in handler",
+		PRNumber:    100,
+	}
+
+	prompt := buildConflictResolutionPrompt(work, "origin/main")
+
+	checks := []string{
+		"PR #100",
+		"issue #42",
+		"Fix nil pointer in handler",
+		"merge conflicts",
+		"git fetch origin",
+		"git rebase origin/main",
+		"git add",
+		"git rebase --continue",
+		"Do NOT run \"git rebase --abort\"",
+		"Do NOT create new standalone commits",
+		"original commit structure preserved",
+		"Do NOT push",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
