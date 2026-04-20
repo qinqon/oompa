@@ -84,3 +84,44 @@ func TestBuildStateFromGitHub_SkipsNewIssues(t *testing.T) {
 		t.Error("new issues without PRs should not be in recovered state")
 	}
 }
+
+func TestBuildStateFromGitHub_WatchPRsSkipsLabeledIssues(t *testing.T) {
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 123, Title: "Labeled issue", Labels: []string{"good-for-ai"}}},
+		prs: []PR{
+			{Number: 299, State: "open", Head: "ai/issue-123"},
+			{Number: 313, State: "open", Head: "kube-linter", Title: "Watched PR"},
+		},
+	}
+	cfg := Config{
+		Owner:    "owner",
+		Repo:     "repo",
+		Label:    "good-for-ai",
+		WatchPRs: []int{313}, // Only watch PR 313
+	}
+
+	state := BuildStateFromGitHub(context.Background(), gh, cfg, "/tmp/clone", slog.Default())
+
+	// Should only contain the watched PR, not the labeled issue's PR
+	if len(state.ActiveIssues) != 1 {
+		t.Errorf("expected 1 issue in state, got %d", len(state.ActiveIssues))
+	}
+
+	work, ok := state.ActiveIssues[313]
+	if !ok {
+		t.Fatal("expected watched PR 313 in state")
+	}
+	if work.PRNumber != 313 {
+		t.Errorf("expected PR 313, got %d", work.PRNumber)
+	}
+
+	// PR 299 from the labeled issue should NOT be in state
+	if _, exists := state.ActiveIssues[123]; exists {
+		t.Error("labeled issue 123 should not be in state when watch-prs is configured")
+	}
+	for _, w := range state.ActiveIssues {
+		if w.PRNumber == 299 {
+			t.Error("PR 299 from labeled issue should not be recovered when watch-prs is configured")
+		}
+	}
+}
