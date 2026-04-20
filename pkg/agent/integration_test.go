@@ -27,6 +27,7 @@ type fakeGitHub struct {
 	nextPRNumber   int
 	nextCommentID  int64
 	shaCounter     int
+	prHeadSHAs     map[int]string // prNumber -> current head SHA
 }
 
 func newFakeGitHub() *fakeGitHub {
@@ -35,6 +36,7 @@ func newFakeGitHub() *fakeGitHub {
 		prComments:    make(map[int][]ReviewComment),
 		nextPRNumber:  100,
 		nextCommentID: 1000,
+		prHeadSHAs:    make(map[int]string),
 	}
 }
 
@@ -50,7 +52,18 @@ func (f *fakeGitHub) addPR(branch string) int {
 	num := f.nextPRNumber
 	f.nextPRNumber++
 	f.prs[num] = &PR{Number: num, State: "open", Head: branch}
+	// Assign initial SHA for this PR
+	f.shaCounter++
+	f.prHeadSHAs[num] = fmt.Sprintf("fakesha%d", f.shaCounter)
 	return num
+}
+
+// simulatePush increments the head SHA for a PR (simulates a force push or new commit)
+func (f *fakeGitHub) simulatePush(prNumber int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.shaCounter++
+	f.prHeadSHAs[prNumber] = fmt.Sprintf("fakesha%d", f.shaCounter)
 }
 
 func (f *fakeGitHub) addReviewComment(prNumber int, user, body, path string, line int) int64 {
@@ -181,11 +194,15 @@ func (f *fakeGitHubClient) GetCheckRunLog(_ context.Context, _, _ string, _ int6
 	return "", nil
 }
 
-func (f *fakeGitHubClient) GetPRHeadSHA(_ context.Context, _, _ string, _ int) (string, error) {
+func (f *fakeGitHubClient) GetPRHeadSHA(_ context.Context, _, _ string, prNumber int) (string, error) {
 	f.state.mu.Lock()
 	defer f.state.mu.Unlock()
-	f.state.shaCounter++
-	return fmt.Sprintf("fakesha%d", f.state.shaCounter), nil
+	// Return the current head SHA for this PR (consistent unless simulatePush is called)
+	if sha, ok := f.state.prHeadSHAs[prNumber]; ok {
+		return sha, nil
+	}
+	// PR not found or no SHA set, return a default
+	return "fakesha", nil
 }
 
 func (f *fakeGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, _ int64, _, _ string) (bool, error) {
@@ -849,6 +866,76 @@ func TestIntegration_SyncWorktreePullsManualCommits(t *testing.T) {
 	// Verify the manual commit is now in the worktree
 	if _, err := os.Stat(filepath.Join(work.WorktreePath, "manual.txt")); os.IsNotExist(err) {
 		t.Error("manual.txt should exist in worktree after sync")
+	}
+}
+
+func TestIntegration_CIFailureAfterNewPush(t *testing.T) {
+	ctx := context.Background()
+	cloneDir := initBareRepo(t)
+	gh := newFakeGitHub()
+	ghClient := &fakeGitHubClient{state: gh}
+	runner := &fakeClaudeRunner{}
+
+	bareDir := filepath.Join(filepath.Dir(cloneDir), "repo.git")
+	wtManager := NewGitWorktreeManager(&ExecRunner{}, cloneDir, bareDir, bareDir)
+
+	agent := NewAgent(
+		ghClient,
+		runner,
+		wtManager,
+		NewState(),
+		Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"},
+		slog.Default(),
+	)
+
+	// Setup: issue with open PR (Claude creates PR)
+	gh.addIssue(Issue{Number: 91, Title: "Add feature", Body: "new feature"})
+	runner.onClaudeRun = func() {
+		gh.addPR("ai/issue-91")
+	}
+
+	agent.CleanupDone(ctx)
+	agent.ProcessNewIssues(ctx)
+	runner.onClaudeRun = nil
+
+	work := agent.state.ActiveIssues[91]
+	if work == nil {
+		t.Fatal("issue 91 should be in state")
+	}
+	prNum := work.PRNumber
+
+	// CI fails on initial commit
+	gh.setCheckRuns([]CheckRun{
+		{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "test failed"},
+	})
+
+	// First CI fix attempt
+	agent.ProcessCIFailures(ctx)
+	if agent.state.ActiveIssues[91].CIFixAttempts != 1 {
+		t.Errorf("expected 1 CI fix attempt, got %d", agent.state.ActiveIssues[91].CIFixAttempts)
+	}
+
+	// Simulate a new push to the PR (force push or new commit by human/external process)
+	gh.simulatePush(prNum)
+
+	// CI fails again on the new commit
+	gh.setCheckRuns([]CheckRun{
+		{ID: 2, Name: "test", Status: "completed", Conclusion: "failure", Output: "different test failed"},
+	})
+
+	// Agent should detect new SHA and reset attempts counter, then re-investigate
+	agent.ProcessCIFailures(ctx)
+
+	// Verify that attempts counter was reset to 0 and then incremented to 1 (fresh investigation)
+	if agent.state.ActiveIssues[91].CIFixAttempts != 1 {
+		t.Errorf("expected CI fix attempts to be reset to 1 after new push, got %d", agent.state.ActiveIssues[91].CIFixAttempts)
+	}
+
+	// Verify the agent investigated the new SHA
+	work = agent.state.ActiveIssues[91]
+	currentSHA, _ := ghClient.GetPRHeadSHA(ctx, "owner", "repo", prNum)
+	if work.LastCheckedCISHA != currentSHA {
+		t.Errorf("expected LastCheckedCISHA to be updated to %s, got %s", currentSHA, work.LastCheckedCISHA)
 	}
 }
 
