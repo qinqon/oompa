@@ -24,13 +24,16 @@ func NewState() *State {
 func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, cloneDir string, logger *slog.Logger) *State {
 	state := NewState()
 
-	issues, err := gh.ListLabeledIssues(ctx, cfg.Owner, cfg.Repo, cfg.Label)
-	if err != nil {
-		logger.Error("failed to list issues for state rebuild", "error", err)
-		return state
-	}
+	// Skip labeled issue scanning when --watch-prs is configured
+	// (watch mode bypasses issue discovery)
+	if len(cfg.WatchPRs) == 0 {
+		issues, err := gh.ListLabeledIssues(ctx, cfg.Owner, cfg.Repo, cfg.Label)
+		if err != nil {
+			logger.Error("failed to list issues for state rebuild", "error", err)
+			return state
+		}
 
-	for _, issue := range issues {
+		for _, issue := range issues {
 		branchName := fmt.Sprintf("ai/issue-%d", issue.Number)
 		worktreePath := filepath.Join(cloneDir, "worktrees", branchName)
 
@@ -94,6 +97,7 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 		}
 
 		state.ActiveIssues[issue.Number] = work
+		}
 	}
 
 	// Bootstrap state for watched PRs
