@@ -653,6 +653,19 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			}
 		}
 
+		// After pushing (or not pushing), fetch the current HEAD SHA to update state
+		currentHeadSHA := task.headSHA
+		if pushed {
+			// Get the new HEAD SHA after the push
+			newHeadSHA, err := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber)
+			if err != nil {
+				a.logger.Warn("failed to get new HEAD SHA after push", "pr", task.work.PRNumber, "error", err)
+				// Fall back to old SHA if we can't get the new one
+			} else {
+				currentHeadSHA = newHeadSHA
+			}
+		}
+
 		if pushed {
 			a.logger.Info("CI failure is related, pushed a fix", "pr", task.work.PRNumber)
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
@@ -668,7 +681,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		}
 		task.work.CIFixAttempts++
 		task.work.LastCIStatus = "failure"
-		task.work.LastCheckedCISHA = task.headSHA
+		task.work.LastCheckedCISHA = currentHeadSHA
 	})
 }
 
@@ -892,8 +905,8 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// alreadyCheckedCI returns true if a bot comment mentioning the given SHA
-// already exists on the PR, indicating this commit was already investigated.
+// alreadyCheckedCI returns true if a bot comment about CI investigation mentioning
+// the given SHA already exists on the PR, indicating this commit was already investigated for CI.
 func (a *Agent) alreadyCheckedCI(ctx context.Context, prNumber int, sha string) bool {
 	comments, err := a.gh.GetIssueComments(ctx, a.cfg.Owner, a.cfg.Repo, prNumber, 0)
 	if err != nil {
@@ -901,7 +914,8 @@ func (a *Agent) alreadyCheckedCI(ctx context.Context, prNumber int, sha string) 
 	}
 	short := shortSHA(sha)
 	for _, c := range comments {
-		if strings.Contains(c.Body, botMarker) && strings.Contains(c.Body, short) {
+		// Only match CI-specific comments (not rebase or other comments mentioning the SHA)
+		if strings.Contains(c.Body, botMarker) && strings.Contains(c.Body, short) && strings.Contains(c.Body, "CI") {
 			return true
 		}
 	}

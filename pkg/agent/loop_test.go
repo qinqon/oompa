@@ -813,6 +813,59 @@ func TestProcessCIFailures_CreatesNewFlakyIssueWhenNoDuplicate(t *testing.T) {
 	}
 }
 
+func TestProcessCIFailures_ReinvestigatesAfterNewCommits(t *testing.T) {
+	// Issue #28: Agent should re-investigate CI failures when new commits are pushed,
+	// even if a previous rebase comment mentions the new commit SHA.
+	claudeResult := streamResultJSON(ClaudeResult{Result: "RELATED Fixed CI"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
+		},
+		prHeadSHAs: []string{"abc1234", "def5678"}, // First call returns abc1234, second returns def5678
+		issueComments: []ReviewComment{
+			// Simulate a rebase comment that mentions the new commit
+			{ID: 1, User: "test-bot", Body: "Rebased commit def5678 on main and pushed.\n\n<!-- ai-agent-bot -->"},
+		},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:      42,
+		IssueTitle:       "Fix bug",
+		PRNumber:         100,
+		BranchName:       "ai/issue-42",
+		Status:           "pr-open",
+		WorktreePath:     "/tmp/worktree",
+		LastCheckedCISHA: "abc1234", // Already investigated abc1234
+	}
+
+	// First call: should skip because LastCheckedCISHA matches current HEAD (abc1234)
+	agent.ProcessCIFailures(context.Background())
+	if countClaudeCalls(runner.calls) != 0 {
+		t.Errorf("expected 0 claude calls (same SHA), got %d", countClaudeCalls(runner.calls))
+	}
+
+	// Second call: new commit def5678 pushed (e.g., by a human after rebase)
+	// Even though there's a rebase comment mentioning def5678, the agent should
+	// still investigate CI failures on this new commit
+	agent.ProcessCIFailures(context.Background())
+	if countClaudeCalls(runner.calls) != 1 {
+		t.Errorf("expected 1 claude call (new SHA with CI failure), got %d", countClaudeCalls(runner.calls))
+	}
+}
+
+func countClaudeCalls(calls []commandCall) int {
+	count := 0
+	for _, c := range calls {
+		if c.Name == "claude" {
+			count++
+		}
+	}
+	return count
+}
+
 func TestShouldRunReaction_EmptyAllowsAll(t *testing.T) {
 	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
 	// No reactions configured — all should be allowed
