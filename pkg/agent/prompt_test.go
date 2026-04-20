@@ -108,7 +108,7 @@ func TestBuildConflictResolutionPrompt(t *testing.T) {
 		PRNumber:    100,
 	}
 
-	prompt := buildConflictResolutionPrompt(work, "origin/main")
+	prompt := buildConflictResolutionPrompt(work, "origin/main", "")
 
 	checks := []string{
 		"PR #100",
@@ -129,5 +129,71 @@ func TestBuildConflictResolutionPrompt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+
+	// With signed-off-by
+	prompt = buildConflictResolutionPrompt(work, "origin/main", "Test User <test@example.com>")
+	if !strings.Contains(prompt, "Signed-off-by: Test User <test@example.com>") {
+		t.Error("prompt missing Signed-off-by when provided")
+	}
+}
+
+func TestBuildCIFixPrompt(t *testing.T) {
+	work := IssueWork{
+		IssueNumber: 42,
+		IssueTitle:  "Fix nil pointer in handler",
+		PRNumber:    100,
+	}
+
+	failures := []CheckRun{
+		{
+			Name:       "lint",
+			Conclusion: "failure",
+			Output:     "golangci-lint found issues",
+		},
+	}
+
+	commits := []Commit{
+		{SHA: "abc123def456", Subject: "Fix handler"},
+		{SHA: "def456abc789", Subject: "Add tests"},
+	}
+
+	diff := "handler.go | 10 +++++++---\n"
+
+	// Test without signed-off-by
+	prompt := buildCIFixPrompt(work, failures, diff, commits, "")
+
+	checks := []string{
+		"PR #100",
+		"issue #42",
+		"Fix nil pointer in handler",
+		"Failed checks:",
+		"lint",
+		"golangci-lint found issues",
+		"handler.go",
+		"UNRELATED",
+		"RELATED",
+		"Do NOT push",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+
+	// With signed-off-by (multi-commit PR should include instruction)
+	prompt = buildCIFixPrompt(work, failures, diff, commits, "Test User <test@example.com>")
+	if !strings.Contains(prompt, "Signed-off-by: Test User <test@example.com>") {
+		t.Error("prompt missing Signed-off-by when provided for multi-commit PR")
+	}
+
+	// Single-commit PR should NOT include signed-off-by instruction (no new commits created)
+	singleCommit := []Commit{
+		{SHA: "abc123def456", Subject: "Fix handler"},
+	}
+	prompt = buildCIFixPrompt(work, failures, diff, singleCommit, "Test User <test@example.com>")
+	if strings.Contains(prompt, "Signed-off-by:") {
+		t.Error("prompt should NOT include Signed-off-by for single-commit PR (no new commits)")
 	}
 }
