@@ -75,7 +75,7 @@ Do NOT commit, push, or amend — the agent handles that automatically.`, owner,
 	return prompt
 }
 
-func buildCIFixPrompt(work IssueWork, failures []CheckRun, diff string, commits []Commit) string {
+func buildCIFixPrompt(work IssueWork, failures []CheckRun, diff string, commits []Commit, signedOffBy string) string {
 	prompt := fmt.Sprintf(`CI is failing on PR #%d for issue #%d: %s
 
 <user-provided-content>
@@ -124,12 +124,17 @@ Instructions:
    - Run "make lint" and "make test" locally to verify
    `
 
+	signoff := ""
+	if signedOffBy != "" {
+		signoff = fmt.Sprintf("\n   - Add \"Signed-off-by: %s\" as a trailer in every commit message (do NOT use git commit -s, write it directly in the message)", signedOffBy)
+	}
+
 	if len(commits) > 1 {
 		prompt += `   - IMPORTANT: This PR has multiple commits. You MUST identify which specific commit introduced the breaking change
    - After fixing the code, create a fixup commit targeting the commit that introduced the issue:
      git add <fixed-files>
      git commit --fixup <SHA-of-commit-that-introduced-issue>
-   - Do NOT use "git commit --amend" as that would incorrectly amend the last commit
+   - Do NOT use "git commit --amend" as that would incorrectly amend the last commit` + signoff + `
 `
 	} else {
 		prompt += `   - After fixing the code, stage your changes with "git add" but do NOT commit
@@ -142,7 +147,12 @@ Do NOT push or rebase — the agent handles that automatically.`
 	return prompt
 }
 
-func buildConflictResolutionPrompt(work IssueWork, originDefaultBranch string) string {
+func buildConflictResolutionPrompt(work IssueWork, originDefaultBranch string, signedOffBy string) string {
+	signoff := ""
+	if signedOffBy != "" {
+		signoff = fmt.Sprintf("\n5. Add \"Signed-off-by: %s\" as a trailer in every commit message (do NOT use git commit -s, write it directly in the message)", signedOffBy)
+	}
+
 	return fmt.Sprintf(`PR #%d for issue #%d (%s) has merge conflicts with the main branch.
 
 Instructions:
@@ -158,8 +168,8 @@ Instructions:
    - CRITICAL: Do NOT run "git rebase --abort"
    - CRITICAL: Do NOT create new standalone commits on top (no "git commit")
    - The rebase must complete successfully with the original commit structure preserved
-4. Run "make lint" and "make test" to verify the resolved code still works
+4. Run "make lint" and "make test" to verify the resolved code still works%s
 
 Do NOT push — the agent handles that automatically.`,
-		work.PRNumber, work.IssueNumber, work.IssueTitle, originDefaultBranch)
+		work.PRNumber, work.IssueNumber, work.IssueTitle, originDefaultBranch, signoff)
 }
