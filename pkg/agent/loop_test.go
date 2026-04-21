@@ -869,6 +869,38 @@ func TestProcessCIFailures_ReinvestigatesAfterNewCommits(t *testing.T) {
 	}
 }
 
+func TestProcessCIFailures_SkipsAlreadyReportedAfterRestart(t *testing.T) {
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
+		},
+		issueComments: []ReviewComment{
+			{ID: 1, User: "bot", Body: fmt.Sprintf("CI check failed on commit abc1234 but appears unrelated to this PR's changes.\n\nFlaky test\n\n%s", botMarker)},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+		// LastCheckedCISHA is "" — simulates fresh state after restart
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	if countClaudeCalls(runner.calls) != 0 {
+		t.Errorf("expected 0 claude calls (already reported via comment), got %d", countClaudeCalls(runner.calls))
+	}
+	if agent.state.ActiveIssues[42].LastCheckedCISHA != "abc123" {
+		t.Errorf("expected LastCheckedCISHA to be recovered to abc123, got %q", agent.state.ActiveIssues[42].LastCheckedCISHA)
+	}
+}
+
 func countClaudeCalls(calls []commandCall) int {
 	count := 0
 	for _, c := range calls {
