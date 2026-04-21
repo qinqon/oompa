@@ -12,6 +12,18 @@ BINARY_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 
 mkdir -p "${INSTALL_DIR}"
 
+CHILD_PID=0
+
+cleanup() {
+    if [ "$CHILD_PID" -ne 0 ]; then
+        kill "$CHILD_PID" 2>/dev/null || true
+        wait "$CHILD_PID" 2>/dev/null || true
+    fi
+    exit 0
+}
+
+trap cleanup SIGTERM SIGINT
+
 while true; do
 
     echo "Downloading latest ai-agent binary..."
@@ -29,9 +41,19 @@ while true; do
 
     echo "Starting ai-agent..."
 
-    "${BINARY_PATH}" --exit-on-new-version="${RELEASE_REPO}" "$@" || true
+    "${BINARY_PATH}" --exit-on-new-version="${RELEASE_REPO}" "$@" &
+    CHILD_PID=$!
+    wait "$CHILD_PID"
+    EXIT_CODE=$?
+    CHILD_PID=0
 
-    echo "Agent exited, restarting in 5 seconds..."
+    # If killed by a signal (exit code > 128), propagate instead of restarting
+    if [ "$EXIT_CODE" -gt 128 ]; then
+        echo "Agent killed by signal (exit code $EXIT_CODE), exiting..."
+        exit "$EXIT_CODE"
+    fi
+
+    echo "Agent exited (code $EXIT_CODE), restarting in 5 seconds..."
 
     sleep 5
 
