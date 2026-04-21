@@ -279,6 +279,18 @@ func (f *fakeGitHubClient) SearchIssues(_ context.Context, _ string) ([]Issue, e
 	return nil, nil
 }
 
+func (f *fakeGitHubClient) ListWorkflowRuns(_ context.Context, _, _, _, _ string, _ int) ([]WorkflowRun, error) {
+	return nil, nil
+}
+
+func (f *fakeGitHubClient) ListWorkflowJobs(_ context.Context, _, _ string, _ int64) ([]WorkflowJob, error) {
+	return nil, nil
+}
+
+func (f *fakeGitHubClient) GetWorkflowJobLogs(_ context.Context, _, _ string, _ int64) (string, error) {
+	return "", nil
+}
+
 // initBareRepo creates a bare repo and a working clone for the agent to use.
 // Returns (cloneDir, cleanup).
 func initBareRepo(t *testing.T) string {

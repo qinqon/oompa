@@ -125,3 +125,52 @@ func TestBuildStateFromGitHub_WatchPRsSkipsLabeledIssues(t *testing.T) {
 		}
 	}
 }
+
+func TestState_MarkRunInvestigated(t *testing.T) {
+	s := NewState()
+
+	// Mark a run as investigated
+	s.MarkRunInvestigated("test-job", "run-123")
+
+	// Verify it was marked
+	if !s.IsRunInvestigated("test-job", "run-123") {
+		t.Error("expected run to be marked as investigated")
+	}
+}
+
+func TestState_IsRunInvestigated(t *testing.T) {
+	s := NewState()
+
+	// Initially not investigated
+	if s.IsRunInvestigated("test-job", "run-123") {
+		t.Error("expected run to not be investigated initially")
+	}
+
+	// Mark as investigated
+	s.MarkRunInvestigated("test-job", "run-123")
+
+	// Now it should be investigated
+	if !s.IsRunInvestigated("test-job", "run-123") {
+		t.Error("expected run to be investigated after marking")
+	}
+
+	// Different job should not be investigated
+	if s.IsRunInvestigated("other-job", "run-123") {
+		t.Error("expected different job to not be investigated")
+	}
+
+	// Same job, different run should not be investigated
+	if s.IsRunInvestigated("test-job", "run-456") {
+		t.Error("expected different run to not be investigated")
+	}
+}
+
+func TestNewState_InvestigatedRuns(t *testing.T) {
+	s := NewState()
+	if s.InvestigatedRuns == nil {
+		t.Error("expected InvestigatedRuns to be initialized")
+	}
+	if len(s.InvestigatedRuns) != 0 {
+		t.Errorf("expected empty InvestigatedRuns, got %d", len(s.InvestigatedRuns))
+	}
+}

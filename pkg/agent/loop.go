@@ -895,6 +895,145 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 	}
 }
 
+// ProcessTriageJobs monitors periodic CI jobs for failures and investigates them.
+func (a *Agent) ProcessTriageJobs(ctx context.Context) {
+	if len(a.cfg.TriageJobs) == 0 {
+		return
+	}
+
+	for _, jobURL := range a.cfg.TriageJobs {
+		a.logger.Debug("processing triage job", "url", jobURL)
+
+		// Parse the CI job URL to determine the backend
+		ciSource, err := ParseCIJobURL(jobURL, a.gh)
+		if err != nil {
+			a.logger.Error("failed to parse CI job URL", "url", jobURL, "error", err)
+			continue
+		}
+
+		// Fetch the latest run(s)
+		runs, err := ciSource.ListRecentRuns(ctx, 5)
+		if err != nil {
+			a.logger.Error("failed to list recent runs", "job", ciSource.JobName(), "error", err)
+			continue
+		}
+
+		if len(runs) == 0 {
+			a.logger.Debug("no recent runs found", "job", ciSource.JobName())
+			continue
+		}
+
+		// Process the most recent run
+		latestRun := runs[0]
+
+		// Skip if already investigated
+		if a.state.IsRunInvestigated(ciSource.JobName(), latestRun.ID) {
+			a.logger.Debug("run already investigated", "job", ciSource.JobName(), "runID", latestRun.ID)
+			continue
+		}
+
+		// Skip if the run passed
+		if latestRun.Status == "success" {
+			a.logger.Info("run passed, skipping", "job", ciSource.JobName(), "runID", latestRun.ID)
+			a.state.MarkRunInvestigated(ciSource.JobName(), latestRun.ID)
+			continue
+		}
+
+		a.logger.Info("investigating failed run", "job", ciSource.JobName(), "runID", latestRun.ID, "status", latestRun.Status)
+
+		// Fetch build log
+		buildLog, err := ciSource.FetchLog(ctx, latestRun.ID)
+		if err != nil {
+			a.logger.Error("failed to fetch build log", "job", ciSource.JobName(), "runID", latestRun.ID, "error", err)
+			continue
+		}
+
+		// Truncate log if too large (keep last 50KB to focus on recent failures)
+		const maxLogSize = 50000
+		if len(buildLog) > maxLogSize {
+			buildLog = "...\n[Log truncated, showing last 50KB]\n...\n\n" + buildLog[len(buildLog)-maxLogSize:]
+		}
+
+		// Create a worktree on the default branch for read-only codebase access
+		branchName := fmt.Sprintf("triage/%s", latestRun.ID)
+
+		// Ensure repo is cloned
+		if err := a.worktrees.EnsureRepoCloned(ctx); err != nil {
+			a.logger.Error("failed to ensure repo cloned", "error", err)
+			continue
+		}
+
+		// Create worktree on default branch
+		worktreePath, err := a.worktrees.CreateWorktree(ctx, branchName)
+		if err != nil {
+			a.logger.Error("failed to create triage worktree", "error", err)
+			continue
+		}
+
+		// Checkout the default branch (CreateWorktree creates a new branch, we want default)
+		a.runner.Run(ctx, worktreePath, "git", "checkout", a.defaultBranch())
+
+		// Build the triage prompt
+		prompt := buildPeriodicCITriagePrompt(ciSource.JobName(), latestRun.ID, buildLog, a.cfg.Owner, a.cfg.Repo)
+
+		// Run Claude in the worktree
+		a.logger.Info("running Claude for CI triage", "job", ciSource.JobName(), "runID", latestRun.ID)
+		stdout, stderr, err := a.runner.Run(ctx, worktreePath, "claude", "-p", prompt)
+		if err != nil {
+			a.logger.Error("Claude failed during CI triage", "job", ciSource.JobName(), "runID", latestRun.ID, "error", err, "stderr", string(stderr))
+			_ = a.worktrees.RemoveWorktree(ctx, worktreePath)
+			continue
+		}
+
+		analysis := string(stdout)
+		a.logger.Info("CI triage analysis complete", "job", ciSource.JobName(), "runID", latestRun.ID)
+		a.logger.Debug("analysis output", "output", analysis)
+
+		// If --create-flaky-issues is set, create a GitHub issue with the analysis
+		if a.cfg.CreateFlakyIssues {
+			a.logger.Info("creating issue for CI failure", "job", ciSource.JobName(), "runID", latestRun.ID)
+
+			// Search for existing issues about this job to avoid duplicates
+			searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open in:title \"%s\"", a.cfg.Owner, a.cfg.Repo, ciSource.JobName())
+			existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
+			if err != nil {
+				a.logger.Warn("failed to search for existing issues", "error", err)
+			}
+
+			if len(existingIssues) > 0 {
+				a.logger.Info("found existing issue for this job, skipping issue creation", "job", ciSource.JobName(), "issue", existingIssues[0].Number)
+			} else {
+				// Create a new issue
+				title := fmt.Sprintf("CI Failure: %s", ciSource.JobName())
+				body := fmt.Sprintf(`Periodic CI job **%s** failed in run [%s](%s).
+
+## Analysis
+
+%s
+
+---
+*This issue was automatically created by the AI agent based on CI failure analysis.*
+<!-- ai-agent-triage -->`, ciSource.JobName(), latestRun.ID, latestRun.LogURL, analysis)
+
+				issueNumber, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, title, body, []string{"ci-flake"})
+				if err != nil {
+					a.logger.Error("failed to create issue", "error", err)
+				} else {
+					a.logger.Info("created issue for CI failure", "job", ciSource.JobName(), "issue", issueNumber)
+				}
+			}
+		}
+
+		// Mark the run as investigated
+		a.state.MarkRunInvestigated(ciSource.JobName(), latestRun.ID)
+
+		// Clean up the triage worktree
+		if err := a.worktrees.RemoveWorktree(ctx, worktreePath); err != nil {
+			a.logger.Warn("failed to remove triage worktree", "path", worktreePath, "error", err)
+		}
+	}
+}
+
 // CleanupDone removes worktrees for merged or closed PRs.
 func (a *Agent) CleanupDone(ctx context.Context) {
 	for issueNum, work := range a.state.ActiveIssues {

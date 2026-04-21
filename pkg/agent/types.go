@@ -75,3 +75,27 @@ type CheckRun struct {
 	Conclusion string // success, failure, neutral, cancelled, skipped, timed_out, action_required
 	Output     string // summary/text from the check run
 }
+
+// JobRun represents a CI job run (periodic or triggered).
+type JobRun struct {
+	ID        string    // build ID or run number
+	JobName   string    // human-readable job name
+	Status    string    // success, failure, pending
+	Timestamp time.Time // when the run started
+	LogURL    string    // URL to view logs
+}
+
+// WorkflowRun represents a GitHub Actions workflow run.
+type WorkflowRun struct {
+	ID         int64
+	Status     string // queued, in_progress, completed
+	Conclusion string // success, failure, cancelled, skipped, timed_out, action_required, neutral
+	CreatedAt  time.Time
+	HTMLURL    string
+}
+
+// WorkflowJob represents a GitHub Actions workflow job.
+type WorkflowJob struct {
+	ID   int64
+	Name string
+}

@@ -56,6 +56,9 @@ func parseConfig() (agent.Config, string) {
 	var reactions string
 	flag.StringVar(&reactions, "reactions", os.Getenv("AI_AGENT_REACTIONS"), "Comma-separated list of reactions to run: reviews, ci, conflicts, rebase (empty = all)")
 
+	var triageJobs string
+	flag.StringVar(&triageJobs, "triage-jobs", os.Getenv("AI_AGENT_TRIAGE_JOBS"), "Comma-separated CI job URLs to monitor for periodic job triage")
+
 	var logFile string
 	flag.StringVar(&logFile, "log-file", os.Getenv("AI_AGENT_LOG_FILE"), "Log file path (default: stderr)")
 
@@ -170,6 +173,15 @@ func parseConfig() (agent.Config, string) {
 				os.Exit(1)
 			}
 			cfg.Reactions = append(cfg.Reactions, r)
+		}
+	}
+
+	if triageJobs != "" {
+		for _, url := range strings.Split(triageJobs, ",") {
+			url = strings.TrimSpace(url)
+			if url != "" {
+				cfg.TriageJobs = append(cfg.TriageJobs, url)
+			}
 		}
 	}
 
@@ -455,5 +467,9 @@ func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 	if a.ShouldRunReaction("ci") {
 		a.ProcessCIFailures(ctx)
 	}
+
+	// ProcessTriageJobs is independent of other reactions and runs when triage jobs are configured
+	a.ProcessTriageJobs(ctx)
+
 	logger.Debug("poll cycle complete")
 }

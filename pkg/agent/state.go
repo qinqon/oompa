@@ -10,14 +10,28 @@ import (
 
 // State holds all active issue work in memory.
 type State struct {
-	ActiveIssues map[int]*IssueWork
+	ActiveIssues     map[int]*IssueWork
+	InvestigatedRuns map[string]bool // jobName:runID -> true
 }
 
 // NewState creates an empty state.
 func NewState() *State {
 	return &State{
-		ActiveIssues: make(map[int]*IssueWork),
+		ActiveIssues:     make(map[int]*IssueWork),
+		InvestigatedRuns: make(map[string]bool),
 	}
+}
+
+// MarkRunInvestigated marks a CI job run as investigated.
+func (s *State) MarkRunInvestigated(jobName, runID string) {
+	key := fmt.Sprintf("%s:%s", jobName, runID)
+	s.InvestigatedRuns[key] = true
+}
+
+// IsRunInvestigated checks if a CI job run has already been investigated.
+func (s *State) IsRunInvestigated(jobName, runID string) bool {
+	key := fmt.Sprintf("%s:%s", jobName, runID)
+	return s.InvestigatedRuns[key]
 }
 
 // BuildStateFromGitHub reconstructs state by scanning labeled issues and their PRs.
