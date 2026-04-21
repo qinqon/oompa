@@ -262,11 +262,8 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		if err != nil {
 			a.logger.Error("claude failed", "issue", task.issue.Number, "error", err)
 			task.work.Status = "failed"
-
 			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
 			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
-				fmt.Sprintf("AI agent failed to implement this issue: %v", err))
 			return
 		}
 
@@ -277,8 +274,6 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			task.work.Status = "failed"
 			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
 			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
-				fmt.Sprintf("AI agent finished but produced no commits for this issue.\n\n%s", botMarker))
 			return
 		}
 
@@ -288,8 +283,6 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			task.work.Status = "failed"
 			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
 			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
-				fmt.Sprintf("AI agent failed to squash commits: %v\n\n%s", err, botMarker))
 			return
 		}
 
@@ -299,8 +292,6 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			task.work.Status = "failed"
 			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
 			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
-				fmt.Sprintf("AI agent failed to push branch: %v\n\n%s", err, botMarker))
 			return
 		}
 
@@ -319,8 +310,6 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			task.work.Status = "failed"
 			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
 			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number,
-				fmt.Sprintf("AI agent failed to create PR: %v\n\n%s", err, botMarker))
 			return
 		}
 
@@ -588,10 +577,6 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			task.work.CIFixAttempts++
 			task.work.LastCIStatus = "failure"
 			task.work.LastCheckedCISHA = task.headSHA
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("CI investigation failed for commit %s: %v\n\n%s", shortSHA(task.headSHA), err, botMarker)); err != nil {
-				a.logger.Error("failed to post CI investigation error comment", "pr", task.work.PRNumber, "error", err)
-			}
 			return
 		}
 
@@ -815,7 +800,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		if err != nil {
 			a.logger.Error("claude failed to resolve conflicts", "pr", task.work.PRNumber, "error", err)
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("Rebase failed on commit %s. Attempted to resolve conflicts automatically but failed. Human intervention needed.\n\n%s", shortSHA(task.headSHA), botMarker))
+				fmt.Sprintf("Could not resolve conflicts on commit %s automatically. Human intervention needed.\n\n%s", shortSHA(task.headSHA), botMarker))
 			return
 		}
 
@@ -843,7 +828,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 			a.logger.Error("failed to push after conflict resolution", "pr", task.work.PRNumber, "error", err)
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("Rebase failed on commit %s. Attempted to resolve conflicts automatically but failed. Human intervention needed.\n\n%s", shortSHA(task.headSHA), botMarker))
+				fmt.Sprintf("Could not push conflict resolution for commit %s. Human intervention needed.\n\n%s", shortSHA(task.headSHA), botMarker))
 		} else {
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 				fmt.Sprintf("Rebased commit %s on main and pushed (conflicts resolved).\n\n%s", shortSHA(task.headSHA), botMarker))
