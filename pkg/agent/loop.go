@@ -1246,6 +1246,147 @@ func (a *Agent) gitAutosquashRebase(ctx context.Context, worktreePath string) er
 	return nil
 }
 
+// ProcessTriageJobs monitors periodic CI jobs for failures and investigates them using Claude.
+func (a *Agent) ProcessTriageJobs(ctx context.Context) {
+	if len(a.cfg.TriageJobs) == 0 {
+		return
+	}
+
+	for _, jobURL := range a.cfg.TriageJobs {
+		// Parse the job URL to create the appropriate CI source
+		source, err := ParseJobURL(jobURL, a.gh)
+		if err != nil {
+			a.logger.Error("failed to parse job URL", "url", jobURL, "error", err)
+			continue
+		}
+
+		// Fetch the latest run
+		runs, err := source.ListRecentRuns(ctx, 1)
+		if err != nil {
+			a.logger.Error("failed to list recent runs", "url", jobURL, "error", err)
+			continue
+		}
+
+		if len(runs) == 0 {
+			a.logger.Debug("no runs found for job", "url", jobURL)
+			continue
+		}
+
+		run := runs[0]
+
+		// Skip if already investigated
+		if a.state.IsRunInvestigated(jobURL, run.ID) {
+			a.logger.Debug("run already investigated", "job", run.JobName, "run_id", run.ID)
+			continue
+		}
+
+		// Skip if the run passed
+		if run.Status == "success" {
+			a.logger.Debug("run passed, skipping", "job", run.JobName, "run_id", run.ID)
+			a.state.MarkRunInvestigated(jobURL, run.ID)
+			continue
+		}
+
+		// Skip if the run is still pending
+		if run.Status == "pending" {
+			a.logger.Debug("run still pending, skipping", "job", run.JobName, "run_id", run.ID)
+			continue
+		}
+
+		a.logger.Info("investigating CI job failure", "job", run.JobName, "run_id", run.ID, "status", run.Status)
+
+		// Fetch the build log
+		buildLog, err := source.FetchLog(ctx, run.ID)
+		if err != nil {
+			a.logger.Error("failed to fetch build log", "job", run.JobName, "run_id", run.ID, "error", err)
+			a.state.MarkRunInvestigated(jobURL, run.ID)
+			continue
+		}
+
+		// Create a temporary read-only worktree on the default branch for codebase context
+		if err := a.worktrees.EnsureRepoCloned(ctx); err != nil {
+			a.logger.Error("failed to ensure repo cloned", "error", err)
+			continue
+		}
+
+		// Create a unique worktree for this investigation
+		worktreeBranch := fmt.Sprintf("triage/%s-%s", run.JobName, run.ID)
+		worktreePath, err := a.worktrees.CreateWorktree(ctx, worktreeBranch)
+		if err != nil {
+			a.logger.Error("failed to create worktree for triage", "error", err)
+			a.state.MarkRunInvestigated(jobURL, run.ID)
+			continue
+		}
+
+		// Ensure we clean up the worktree when done
+		defer func(path string) {
+			if err := a.worktrees.RemoveWorktree(ctx, path); err != nil {
+				a.logger.Warn("failed to remove triage worktree", "path", path, "error", err)
+			}
+		}(worktreePath)
+
+		// Run Claude with the triage prompt
+		prompt := buildPeriodicCITriagePrompt(run.JobName, run.ID, buildLog)
+		result, err := runClaude(ctx, a.runner, worktreePath, prompt, a.cfg, a.logger, false)
+		if err != nil {
+			a.logger.Error("claude failed to analyze CI job", "job", run.JobName, "run_id", run.ID, "error", err)
+			a.state.MarkRunInvestigated(jobURL, run.ID)
+			continue
+		}
+
+		a.logger.Info("CI job analysis complete", "job", run.JobName, "run_id", run.ID)
+		a.logger.Info("Analysis result", "analysis", result.Result)
+
+		// Create a GitHub issue if --create-flaky-issues is set
+		if a.cfg.CreateFlakyIssues {
+			// Parse the classification from the result
+			classification := "UNKNOWN"
+			if strings.Contains(result.Result, "**Classification**: FLAKY TEST") || strings.Contains(result.Result, "Classification: FLAKY TEST") {
+				classification = "FLAKY TEST"
+			} else if strings.Contains(result.Result, "**Classification**: INFRASTRUCTURE") || strings.Contains(result.Result, "Classification: INFRASTRUCTURE") {
+				classification = "INFRASTRUCTURE"
+			} else if strings.Contains(result.Result, "**Classification**: CODE BUG") || strings.Contains(result.Result, "Classification: CODE BUG") {
+				classification = "CODE BUG"
+			}
+
+			issueTitle := fmt.Sprintf("Periodic CI failure: %s (run %s)", run.JobName, run.ID)
+
+			// Search for existing issues to avoid duplicates
+			searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:flaky-test \"%s\"",
+				a.cfg.Owner, a.cfg.Repo, run.JobName)
+			existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
+			if err != nil {
+				a.logger.Warn("failed to search for existing issues", "error", err)
+			} else if len(existingIssues) > 0 {
+				a.logger.Info("found existing issue for periodic job failure", "issue", existingIssues[0].Number, "job", run.JobName)
+				a.state.MarkRunInvestigated(jobURL, run.ID)
+				continue
+			}
+
+			// Create the issue
+			issueBody := fmt.Sprintf("A periodic CI job failure was detected and analyzed.\n\n"+
+				"**Job**: %s\n"+
+				"**Run ID**: %s\n"+
+				"**Classification**: %s\n"+
+				"**Log URL**: %s\n\n"+
+				"## Analysis\n\n"+
+				"%s\n\n"+
+				"%s",
+				run.JobName, run.ID, classification, run.LogURL, result.Result, botMarker)
+
+			issueNum, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{"flaky-test"})
+			if err != nil {
+				a.logger.Error("failed to create issue for periodic CI failure", "error", err)
+			} else {
+				a.logger.Info("created issue for periodic CI failure", "issue", issueNum, "job", run.JobName)
+			}
+		}
+
+		// Mark the run as investigated
+		a.state.MarkRunInvestigated(jobURL, run.ID)
+	}
+}
+
 // issueAssignedTo returns true if the given user is among the issue's assignees.
 func issueAssignedTo(issue Issue, user string) bool {
 	for _, a := range issue.Assignees {

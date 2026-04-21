@@ -29,6 +29,7 @@ type Config struct {
 	CreateFlakyIssues bool     // when true, create issues for unrelated CI failures (opt-in)
 	OnlyAssigned      bool     // when true, only process issues assigned to the agent user
 	MaxWorkers        int      // maximum concurrent Claude invocations (1 = sequential, default)
+	TriageJobs        []string // CI job URLs to monitor for failures
 
 	// GitHub App authentication (alternative to GITHUB_TOKEN)
 	GitHubAppID             int64

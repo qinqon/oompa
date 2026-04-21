@@ -10,13 +10,15 @@ import (
 
 // State holds all active issue work in memory.
 type State struct {
-	ActiveIssues map[int]*IssueWork
+	ActiveIssues     map[int]*IssueWork
+	InvestigatedRuns map[string]bool // tracks investigated periodic CI runs by job URL + run ID
 }
 
 // NewState creates an empty state.
 func NewState() *State {
 	return &State{
-		ActiveIssues: make(map[int]*IssueWork),
+		ActiveIssues:     make(map[int]*IssueWork),
+		InvestigatedRuns: make(map[string]bool),
 	}
 }
 
@@ -138,4 +140,16 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 	}
 
 	return state
+}
+
+// MarkRunInvestigated marks a CI run as investigated.
+func (s *State) MarkRunInvestigated(jobURL, runID string) {
+	key := fmt.Sprintf("%s:%s", jobURL, runID)
+	s.InvestigatedRuns[key] = true
+}
+
+// IsRunInvestigated checks if a CI run has already been investigated.
+func (s *State) IsRunInvestigated(jobURL, runID string) bool {
+	key := fmt.Sprintf("%s:%s", jobURL, runID)
+	return s.InvestigatedRuns[key]
 }

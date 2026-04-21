@@ -38,6 +38,9 @@ type GitHubClient interface {
 	IsPRBehind(ctx context.Context, owner, repo string, prNumber int) (bool, error)
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels []string) (int, error)
 	SearchIssues(ctx context.Context, query string) ([]Issue, error)
+	ListWorkflowRuns(ctx context.Context, owner, repo, workflow, event string, limit int) ([]WorkflowRun, error)
+	ListWorkflowJobs(ctx context.Context, owner, repo string, runID int64) ([]WorkflowJob, error)
+	GetWorkflowJobLogs(ctx context.Context, owner, repo string, jobID int64) (string, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -504,4 +507,77 @@ func (g *GoGitHubClient) GetLatestReleaseSHA(ctx context.Context, owner, repo st
 		return "", fmt.Errorf("getting latest release: %w", err)
 	}
 	return release.GetTargetCommitish(), nil
+}
+
+// ListWorkflowRuns lists workflow runs for a given workflow file.
+func (g *GoGitHubClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow, event string, limit int) ([]WorkflowRun, error) {
+	opts := &github.ListWorkflowRunsOptions{
+		Event: event,
+		ListOptions: github.ListOptions{
+			PerPage: limit,
+		},
+	}
+
+	runs, _, err := g.client.Actions.ListWorkflowRunsByFileName(ctx, owner, repo, workflow, opts)
+	if err != nil {
+		return nil, fmt.Errorf("listing workflow runs: %w", err)
+	}
+
+	var workflowRuns []WorkflowRun
+	for _, run := range runs.WorkflowRuns {
+		workflowRuns = append(workflowRuns, WorkflowRun{
+			ID:         run.GetID(),
+			Status:     run.GetStatus(),
+			Conclusion: run.GetConclusion(),
+			CreatedAt:  run.GetCreatedAt().Time,
+			HTMLURL:    run.GetHTMLURL(),
+		})
+	}
+
+	return workflowRuns, nil
+}
+
+// ListWorkflowJobs lists jobs for a given workflow run.
+func (g *GoGitHubClient) ListWorkflowJobs(ctx context.Context, owner, repo string, runID int64) ([]WorkflowJob, error) {
+	jobs, _, err := g.client.Actions.ListWorkflowJobs(ctx, owner, repo, runID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("listing workflow jobs: %w", err)
+	}
+
+	var workflowJobs []WorkflowJob
+	for _, job := range jobs.Jobs {
+		workflowJobs = append(workflowJobs, WorkflowJob{
+			ID:   job.GetID(),
+			Name: job.GetName(),
+		})
+	}
+
+	return workflowJobs, nil
+}
+
+// GetWorkflowJobLogs fetches the logs for a given workflow job.
+func (g *GoGitHubClient) GetWorkflowJobLogs(ctx context.Context, owner, repo string, jobID int64) (string, error) {
+	url, _, err := g.client.Actions.GetWorkflowJobLogs(ctx, owner, repo, jobID, 2)
+	if err != nil {
+		return "", fmt.Errorf("getting job logs URL: %w", err)
+	}
+
+	// The URL is a redirect to the actual log file
+	req, err := http.NewRequestWithContext(ctx, "GET", url.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("creating log request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetching log file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading log body: %w", err)
+	}
+
+	return string(body), nil
 }

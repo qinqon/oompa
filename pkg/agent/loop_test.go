@@ -178,6 +178,18 @@ func (m *mockGitHubClient) SearchIssues(_ context.Context, _ string) ([]Issue, e
 	return m.searchResults, nil
 }
 
+func (m *mockGitHubClient) ListWorkflowRuns(_ context.Context, _, _, _, _ string, _ int) ([]WorkflowRun, error) {
+	return nil, nil
+}
+
+func (m *mockGitHubClient) ListWorkflowJobs(_ context.Context, _, _ string, _ int64) ([]WorkflowJob, error) {
+	return nil, nil
+}
+
+func (m *mockGitHubClient) GetWorkflowJobLogs(_ context.Context, _, _ string, _ int64) (string, error) {
+	return "", nil
+}
+
 // mockWorktreeManager implements WorktreeManager for testing.
 type mockWorktreeManager struct {
 	createdBranches []string
