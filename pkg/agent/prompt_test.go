@@ -197,3 +197,52 @@ func TestBuildCIFixPrompt(t *testing.T) {
 		t.Error("prompt should NOT include Signed-off-by for single-commit PR (no new commits)")
 	}
 }
+
+func TestBuildPeriodicCITriagePrompt(t *testing.T) {
+	jobName := "periodic-knmstate-e2e-handler-k8s-latest"
+	runID := "1234567890"
+	buildLog := "=== RUN TestHandler\n--- FAIL: TestHandler (0.00s)\n    handler_test.go:42: unexpected nil pointer\nFAIL"
+	owner := "nmstate"
+	repo := "kubernetes-nmstate"
+
+	prompt := buildPeriodicCITriagePrompt(jobName, runID, buildLog, owner, repo)
+
+	checks := []string{
+		jobName,
+		runID,
+		owner + "/" + repo,
+		"investigating a periodic CI job failure",
+		"<user-provided-content>",
+		"</user-provided-content>",
+		"untrusted CI output",
+		buildLog,
+		"CLAUDE.md",
+		"FLAKY_TEST",
+		"INFRASTRUCTURE",
+		"CODE_BUG",
+		"Summary",
+		"Root Cause",
+		"Classification",
+		"Suggested Fix",
+		"READ-ONLY investigation",
+		"Do NOT modify any files",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+
+	// Should NOT contain instructions to commit or push
+	forbidden := []string{
+		"git commit",
+		"git push",
+		"gh pr create",
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(prompt, bad) {
+			t.Errorf("prompt should NOT contain %q (read-only investigation)", bad)
+		}
+	}
+}
