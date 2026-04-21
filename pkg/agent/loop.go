@@ -512,7 +512,8 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		// (handles state recovery after restarts)
 		if work.LastCheckedCISHA == "" && a.alreadyCheckedCI(ctx, work.PRNumber, headSHA) {
 			work.LastCheckedCISHA = headSHA
-			// Don't continue here - if CI is failing, we should investigate despite the comment
+			a.logger.Info("CI already investigated for this SHA (found existing comment), skipping", "pr", work.PRNumber, "sha", shortSHA(headSHA))
+			continue
 		}
 
 		runs, err := a.gh.GetCheckRuns(ctx, a.cfg.Owner, a.cfg.Repo, headSHA)
