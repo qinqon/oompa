@@ -25,9 +25,13 @@ Instructions:
 2. Implement the fix for this issue
 3. Run "make lint" and "make test" to verify your changes
 4. Commit your changes with a descriptive message (no trailing period, wrap body at 72 chars)%s
+5. Check if .github/PULL_REQUEST_TEMPLATE.md exists. If it does, fill it in for this PR
+   and write the result to .pr-body.md at the repository root. Start the file with
+   "Fixes #%d" on its own line. Do NOT git add or commit .pr-body.md.
+   If there is no PR template, skip this step.
 
 Do NOT push, create PRs, or amend — the agent handles that automatically.`,
-		issue.Number, issue.Title, issue.Body, signoff)
+		issue.Number, issue.Title, issue.Body, signoff, issue.Number)
 }
 
 func buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, reviews []PRReview, owner, repo string) string {

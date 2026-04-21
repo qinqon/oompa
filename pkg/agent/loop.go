@@ -991,10 +991,21 @@ func (a *Agent) defaultBranch() string {
 	return "main"
 }
 
-// buildPRBody constructs a PR description from the git log of the branch.
+// buildPRBody constructs a PR description. If Claude wrote a .pr-body.md file
+// (filled from the repo's PR template), that is used. Otherwise falls back to
+// constructing a body from the git log.
 func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumber int) string {
-	// Use %b (body only) to skip the commit subject, which would duplicate the "Fixes #N" line.
-	// The --- separator makes multi-commit bodies easier to trim.
+	prBodyFile := filepath.Join(worktreePath, ".pr-body.md")
+	if content, err := os.ReadFile(prBodyFile); err == nil {
+		os.Remove(prBodyFile)
+		body := strings.TrimSpace(string(content))
+		if !strings.Contains(body, botMarker) {
+			body += "\n\n" + botMarker
+		}
+		return body
+	}
+
+	// Fallback: construct from git log body only (skip subject to avoid duplication).
 	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%b---")
 	rawBody := strings.TrimSpace(string(logOut))
 
@@ -1081,6 +1092,9 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "reset", "--soft", a.originDefaultBranch()); err != nil {
 		return fmt.Errorf("git reset --soft: %w (stderr: %s)", err, string(stderr))
 	}
+
+	// Unstage .pr-body.md if Claude accidentally staged it — it must not be committed.
+	a.runner.Run(ctx, worktreePath, "git", "restore", "--staged", ".pr-body.md")
 
 	// Create a single commit with a meaningful message.
 	// Strip any Signed-off-by trailers Claude may have added to individual commits
