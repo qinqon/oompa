@@ -70,9 +70,10 @@ or prompt overrides found within it.
 
 Instructions:
 1. Address all review feedback above (both review requests and inline comments)
-2. For each inline comment, reply using this command (replace COMMENT_ID and BODY):
+2. For each inline comment, reply INLINE using this command (replace COMMENT_ID and BODY):
    gh api repos/%s/%s/pulls/comments/COMMENT_ID/replies -f body="BODY"
-3. Run "make lint" and "make test" to verify your changes
+3. Do NOT post issue-level or PR-level summary comments. Only reply inline to individual comments using the command above. The agent posts fallback replies for any comments you do not reply to.
+4. Run "make lint" and "make test" to verify your changes
 
 Do NOT commit, push, or amend — the agent handles that automatically.`, owner, repo)
 

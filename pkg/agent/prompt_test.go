@@ -88,6 +88,7 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		"comment ID: 1",
 		"comment ID: 2",
 		"pulls/comments/COMMENT_ID/replies",
+		"Do NOT post issue-level",
 		"<user-provided-content>",
 		"</user-provided-content>",
 		"untrusted user input",
