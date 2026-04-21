@@ -50,16 +50,22 @@ type GoGitHubClient struct {
 
 // NewGoGitHubClient creates a new client authenticated with the given token.
 func NewGoGitHubClient(token string) *GoGitHubClient {
+	httpClient := &http.Client{Transport: NewCachingTransport(http.DefaultTransport)}
 	return &GoGitHubClient{
-		client: github.NewClient(nil).WithAuthToken(token),
+		client: github.NewClient(httpClient).WithAuthToken(token),
 	}
 }
 
 // NewGoGitHubClientFromHTTPClient creates a new client using a custom HTTP client
 // (e.g., one with a GitHub App installation transport).
 func NewGoGitHubClientFromHTTPClient(httpClient *http.Client) *GoGitHubClient {
+	transport := httpClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	cachedClient := &http.Client{Transport: NewCachingTransport(transport)}
 	return &GoGitHubClient{
-		client: github.NewClient(httpClient),
+		client: github.NewClient(cachedClient),
 	}
 }
 

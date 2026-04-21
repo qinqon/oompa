@@ -44,6 +44,10 @@ func (g *GoGitHubClient) GetAuthenticatedUser(ctx context.Context) (name, email 
 
 Used at startup to default the `--signed-off-by` value.
 
+## ETag Caching
+
+Both constructors wrap the underlying HTTP transport with `CachingTransport` (see [specs/etag.md](etag.md)). This transparently adds `If-None-Match` headers to GET requests and serves cached responses on `304 Not Modified`, which do not count against GitHub's rate limit.
+
 ## Tests (`github_test.go`)
 
 Use `net/http/httptest` with canned JSON responses. Point go-github client at test server.
