@@ -344,8 +344,8 @@ func TestProcessNewIssues_ClaudeFailure(t *testing.T) {
 	if len(gh.addedLabels) != 1 || gh.addedLabels[0] != "ai-failed" {
 		t.Errorf("expected 'ai-failed' label, got %v", gh.addedLabels)
 	}
-	if len(gh.addedComments) != 2 {
-		t.Errorf("expected 2 comments (in-progress + failure), got %d", len(gh.addedComments))
+	if len(gh.addedComments) != 1 {
+		t.Errorf("expected 1 comment (in-progress only, no error comment), got %d", len(gh.addedComments))
 	}
 
 	work := agent.state.ActiveIssues[42]
