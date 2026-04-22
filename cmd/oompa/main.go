@@ -59,6 +59,9 @@ func parseConfig() (agent.Config, string) {
 	var triageJobs string
 	flag.StringVar(&triageJobs, "triage-jobs", os.Getenv("OOMPA_TRIAGE_JOBS"), "Comma-separated CI job URLs to monitor for periodic job triage")
 
+	var flakyLabels string
+	flag.StringVar(&flakyLabels, "flaky-labels", os.Getenv("OOMPA_FLAKY_LABELS"), "Comma-separated labels to search for flaky test issues (e.g., kind/flake,ci/flaky)")
+
 	var logFile string
 	flag.StringVar(&logFile, "log-file", os.Getenv("OOMPA_LOG_FILE"), "Log file path (default: stderr)")
 
@@ -181,6 +184,15 @@ func parseConfig() (agent.Config, string) {
 			url = strings.TrimSpace(url)
 			if url != "" {
 				cfg.TriageJobs = append(cfg.TriageJobs, url)
+			}
+		}
+	}
+
+	if flakyLabels != "" {
+		for _, label := range strings.Split(flakyLabels, ",") {
+			label = strings.TrimSpace(label)
+			if label != "" {
+				cfg.FlakyLabels = append(cfg.FlakyLabels, label)
 			}
 		}
 	}

@@ -23,10 +23,11 @@ type Config struct {
 	ForkRepo        string   // name of the fork repo (empty = same as Repo)
 	GitAuthorName   string   // git commit author name
 	GitAuthorEmail  string   // git commit author email
-	Reviewers       []string // whitelist of users/bots whose reviews to address
+	Reviewers         []string // whitelist of users/bots whose reviews to address
 	WatchPRs          []int    // PR numbers to monitor directly (bypasses issue discovery)
 	Reactions         []string // which reactions to run: "reviews", "ci", "conflicts" (empty = all)
 	CreateFlakyIssues bool     // when true, create issues for unrelated CI failures (opt-in)
+	FlakyLabels       []string // labels to search for existing flaky test issues (e.g., "kind/flake", "ci/flaky")
 	OnlyAssigned      bool     // when true, only process issues assigned to the agent user
 	MaxWorkers        int      // maximum concurrent Claude invocations (1 = sequential, default)
 	TriageJobs        []string // CI job URLs to monitor for periodic job triage

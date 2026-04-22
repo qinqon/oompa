@@ -19,6 +19,7 @@ type Config struct {
     WatchPRs          []int    // PR numbers to monitor directly (bypasses issue discovery)
     Reactions         []string // which reactions to run: "reviews", "ci", "conflicts" (empty = all)
     CreateFlakyIssues bool     // when true, create issues for unrelated CI failures (opt-in)
+    FlakyLabels       []string // labels to search when cross-referencing flaky test issues (e.g. "kind/flake", "ci/flaky")
 }
 ```
 
@@ -40,6 +41,7 @@ type Config struct {
 | `OOMPA_WATCH_PRS` | `--watch-prs` | (empty) | Comma-separated PR numbers to monitor directly (bypasses issue discovery) |
 | `OOMPA_REACTIONS` | `--reactions` | (empty = all) | Comma-separated list of reactions to run: `reviews`, `ci`, `conflicts` |
 | `OOMPA_CREATE_FLAKY_ISSUES` | `--create-flaky-issues` | `false` | When true, create issues for unrelated CI failures (opt-in) |
+| `OOMPA_FLAKY_LABELS` | `--flaky-labels` | (empty) | Comma-separated labels to search when cross-referencing flaky test issues (e.g. `kind/flake,ci/flaky`) |
 
 Config from env vars (`OOMPA_*`) with flag overrides, read in `main()`.
 

@@ -587,38 +587,78 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
 			explanation := strings.TrimPrefix(cleaned, "UNRELATED")
 			explanation = strings.TrimSpace(explanation)
-			comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(task.headSHA), explanation, botMarker)
+
+			// Search for existing flaky issues if configured or if we're creating flaky issues
+			var existingFlakyIssues []Issue
+			labelsToSearch := a.cfg.FlakyLabels
+			if len(labelsToSearch) == 0 && a.cfg.CreateFlakyIssues {
+				// If creating flaky issues but no labels configured, use default "flaky-test"
+				labelsToSearch = []string{"flaky-test"}
+			}
+			if len(labelsToSearch) > 0 {
+				checkName := task.failures[0].Name
+				for _, label := range labelsToSearch {
+					searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:%s \"%s\" in:title",
+						a.cfg.Owner, a.cfg.Repo, label, checkName)
+					issues, err := a.gh.SearchIssues(ctx, searchQuery)
+					if err != nil {
+						a.logger.Warn("failed to search for flaky issues", "label", label, "error", err)
+						continue
+					}
+					existingFlakyIssues = append(existingFlakyIssues, issues...)
+				}
+			}
+
+			// Build PR comment
+			comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s", shortSHA(task.headSHA), explanation)
+			if len(existingFlakyIssues) > 0 {
+				comment += "\n\nKnown flake(s):"
+				for _, issue := range existingFlakyIssues {
+					comment += fmt.Sprintf("\n- #%d", issue.Number)
+				}
+			}
+			comment += fmt.Sprintf("\n\n%s", botMarker)
+
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
 				a.logger.Error("failed to post CI unrelated comment", "pr", task.work.PRNumber, "error", err)
 			}
+
+			// Comment on each existing flaky issue with PR and CI details
+			if len(existingFlakyIssues) > 0 {
+				ciRunURL := ""
+				for _, f := range task.failures {
+					if f.Name == task.failures[0].Name {
+						// Try to construct a URL to the check run
+						// GitHub check run URL format: https://github.com/owner/repo/actions/runs/RUN_ID
+						// We don't have the workflow run ID here, but we can link to the commit's checks
+						ciRunURL = fmt.Sprintf("https://github.com/%s/%s/commit/%s/checks", a.cfg.Owner, a.cfg.Repo, task.headSHA)
+						break
+					}
+				}
+				flakyComment := fmt.Sprintf("This flake occurred on PR #%d.\n\n**CI run**: %s\n\n%s",
+					task.work.PRNumber, ciRunURL, botMarker)
+				for _, issue := range existingFlakyIssues {
+					if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number, flakyComment); err != nil {
+						a.logger.Error("failed to comment on flaky issue", "issue", issue.Number, "error", err)
+					} else {
+						a.logger.Info("commented on flaky issue", "issue", issue.Number, "pr", task.work.PRNumber)
+					}
+				}
+			}
+
 			task.work.LastCIStatus = "unrelated-failure"
 			task.work.LastCheckedCISHA = task.headSHA
 
-			// Create a flaky CI issue if configured
-			if a.cfg.CreateFlakyIssues {
+			// Create a flaky CI issue if configured and no existing issue was found
+			if a.cfg.CreateFlakyIssues && len(existingFlakyIssues) == 0 {
 				issueTitle := fmt.Sprintf("Flaky CI: %s", task.failures[0].Name)
 
-				// Search for existing open issues with the same check name
-				searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:flaky-test \"%s\"",
-					a.cfg.Owner, a.cfg.Repo, issueTitle)
-				existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
-
-				var issueNum int
-				if err != nil {
-					a.logger.Warn("failed to search for existing flaky issues", "error", err)
-					// Continue with creation despite search failure
-				} else if len(existingIssues) > 0 {
-					// Issue already exists, reference it instead of creating a duplicate
-					issueNum = existingIssues[0].Number
-					a.logger.Info("found existing flaky CI issue", "issue", issueNum, "check", task.failures[0].Name)
-					if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-						fmt.Sprintf("This appears to be a duplicate of existing flaky test issue #%d.\n\n%s", issueNum, botMarker)); err != nil {
-						a.logger.Error("failed to post existing flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
-					}
-					return
+				// Use configured labels or fall back to "flaky-test"
+				labels := a.cfg.FlakyLabels
+				if len(labels) == 0 {
+					labels = []string{"flaky-test"}
 				}
 
-				// No existing issue found, create a new one
 				issueBody := fmt.Sprintf("A CI failure was detected that appears unrelated to PR changes.\n\n"+
 					"**Detected in PR**: #%d\n"+
 					"**Commit**: %s\n"+
@@ -627,7 +667,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 					"**Check output**:\n```\n%s\n```\n\n"+
 					"%s",
 					task.work.PRNumber, shortSHA(task.headSHA), task.failures[0].Name, explanation, task.failures[0].Output, botMarker)
-				issueNum, err = a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{"flaky-test"})
+				issueNum, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, labels)
 				if err != nil {
 					a.logger.Error("failed to create flaky CI issue", "error", err)
 				} else {

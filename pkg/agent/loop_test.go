@@ -772,14 +772,19 @@ func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
 		t.Errorf("expected 0 created issues (should reference existing), got %d", len(gh.createdIssues))
 	}
 
-	// Check that comments were added (unrelated notice + duplicate reference)
+	// Check that comments were added (PR comment with flaky reference + comment on flaky issue)
 	if len(gh.addedComments) != 2 {
-		t.Fatalf("expected 2 comments (unrelated + duplicate reference), got %d", len(gh.addedComments))
+		t.Fatalf("expected 2 comments (PR comment + flaky issue comment), got %d", len(gh.addedComments))
 	}
 
-	// Verify the duplicate reference comment
-	if !strings.Contains(gh.addedComments[1], "duplicate of existing flaky test issue #50") {
-		t.Errorf("expected duplicate reference comment, got: %q", gh.addedComments[1])
+	// Verify the PR comment references the flaky issue
+	if !strings.Contains(gh.addedComments[0], "Known flake(s)") || !strings.Contains(gh.addedComments[0], "#50") {
+		t.Errorf("expected PR comment to reference flaky issue #50, got: %q", gh.addedComments[0])
+	}
+
+	// Verify the comment on the flaky issue references the PR
+	if !strings.Contains(gh.addedComments[1], "This flake occurred on PR #100") {
+		t.Errorf("expected flaky issue comment to reference PR #100, got: %q", gh.addedComments[1])
 	}
 }
 
