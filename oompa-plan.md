@@ -1,4 +1,4 @@
-# Oompa: Automated GitHub Issue Resolution
+# Oompa: Autonomous Code Maintenance Agent
 
 ## Context
 

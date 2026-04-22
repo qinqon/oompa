@@ -1,15 +1,15 @@
 # oompa
 
-A single long-running Go binary that automatically resolves GitHub issues using Claude AI. It polls for issues with a configurable label, invokes Claude Code in headless mode to implement fixes, and opens pull requests — no webhooks or per-issue goroutines required.
+An autonomous AI-powered code maintenance agent. It uses Claude Code to implement fixes, address reviews, resolve merge conflicts, fix CI failures, and triage flaky tests — all without human intervention beyond the final merge.
 
-## How it works
+## What it does
 
-1. **Poll** — watches for open issues tagged with a label (default `good-for-ai`).
-2. **Implement** — creates a git worktree, runs Claude Code (`claude -p`) to produce a fix.
-3. **Open PR** — pushes the branch and creates a pull request linked to the issue.
-4. **Address reviews** — picks up reviewer comments, runs Claude again to iterate.
-5. **Rebase conflicts** — detects PRs with merge conflicts, attempts an automatic rebase, and falls back to Claude if that fails.
-6. **Handle CI failures** — detects CI failures and asks Claude to fix them. Optionally creates issues for unrelated CI failures (flaky tests) when `--create-flaky-issues` is enabled.
+- **Resolve issues** — picks up GitHub issues with a configurable label, implements fixes, and opens pull requests.
+- **Address reviews** — reads reviewer comments and iterates on the code until reviewers are satisfied.
+- **Fix CI failures** — detects failing checks, analyzes logs, and pushes fixes.
+- **Resolve merge conflicts** — attempts an automatic rebase and falls back to Claude when that fails.
+- **Babysit PRs** — monitors specific PRs for any combination of the above (reviews, CI, conflicts, rebase).
+- **Triage periodic CI** — analyzes nightly/scheduled job failures and creates issues with root-cause analysis.
 
 Claude never merges; a human must approve and merge every PR.
 
