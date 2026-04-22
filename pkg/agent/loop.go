@@ -587,9 +587,16 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
 			explanation := strings.TrimPrefix(cleaned, "UNRELATED")
 			explanation = strings.TrimSpace(explanation)
-			comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(task.headSHA), explanation, botMarker)
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
-				a.logger.Error("failed to post CI unrelated comment", "pr", task.work.PRNumber, "error", err)
+
+			// Only post comment if we haven't already reported this SHA as unrelated
+			// This prevents duplicate comments across poll cycles for the same commit
+			if task.work.LastCheckedCISHA != task.headSHA || task.work.LastCIStatus != "unrelated-failure" {
+				comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(task.headSHA), explanation, botMarker)
+				if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
+					a.logger.Error("failed to post CI unrelated comment", "pr", task.work.PRNumber, "error", err)
+				}
+			} else {
+				a.logger.Info("skipping duplicate unrelated comment for same SHA", "pr", task.work.PRNumber, "sha", shortSHA(task.headSHA))
 			}
 			task.work.LastCIStatus = "unrelated-failure"
 			task.work.LastCheckedCISHA = task.headSHA

@@ -911,6 +911,57 @@ func countClaudeCalls(calls []commandCall) int {
 	return count
 }
 
+func TestProcessCIFailures_DeduplicatesUnrelatedComments(t *testing.T) {
+	// Issue #63: Should only post one unrelated comment per SHA, not on every poll cycle
+	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED Flaky test"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
+		},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	// First poll cycle: should investigate and post comment
+	agent.ProcessCIFailures(context.Background())
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 comment on first poll, got %d", len(gh.addedComments))
+	}
+	if !strings.Contains(gh.addedComments[0], "CI check failed on commit abc123 but appears unrelated") {
+		t.Errorf("unexpected comment body: %s", gh.addedComments[0])
+	}
+
+	// Verify state was updated
+	work := agent.state.ActiveIssues[42]
+	if work.LastCheckedCISHA != "abc123" {
+		t.Errorf("expected LastCheckedCISHA to be abc123, got %q", work.LastCheckedCISHA)
+	}
+	if work.LastCIStatus != "unrelated-failure" {
+		t.Errorf("expected LastCIStatus to be unrelated-failure, got %q", work.LastCIStatus)
+	}
+
+	// Second poll cycle: same SHA, CI still failing
+	// Should skip investigation entirely (no Claude call, no comment)
+	agent.ProcessCIFailures(context.Background())
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected still only 1 comment after second poll (no duplicate), got %d", len(gh.addedComments))
+	}
+	// Verify Claude was not called again
+	if countClaudeCalls(runner.calls) != 1 {
+		t.Errorf("expected only 1 claude call total, got %d", countClaudeCalls(runner.calls))
+	}
+}
+
 func TestShouldRunReaction_EmptyAllowsAll(t *testing.T) {
 	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
 	// No reactions configured — all should be allowed
