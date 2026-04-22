@@ -23,7 +23,7 @@ type Agent struct {
 - `(a *Agent) ShouldRunReaction(reaction string) bool` -- returns true if `cfg.Reactions` is empty (all enabled) or contains the given reaction name
 - `(a *Agent) BootstrapWatchedPRs(ctx)` -- creates IssueWork entries for directly-specified PR numbers (calls `GetPR` to fetch details, skips merged/closed/already-tracked)
 
-Main loop lives in `cmd/ai-agent/main.go`, calls these methods sequentially. CleanupDone runs first so that closed/merged PRs are removed from state before ProcessNewIssues checks for new work.
+Main loop lives in `cmd/oompa/main.go`, calls these methods sequentially. CleanupDone runs first so that closed/merged PRs are removed from state before ProcessNewIssues checks for new work.
 
 ### Watch mode
 When `--watch-prs` is set, `BootstrapWatchedPRs` runs instead of `ProcessNewIssues`. The `--reactions` flag controls which processing phases run (reviews, ci, conflicts). Both flags can be used independently or together.

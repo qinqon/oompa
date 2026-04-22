@@ -1,4 +1,4 @@
-# github-issue-resolver
+# oompa
 
 A single long-running Go binary that automatically resolves GitHub issues using Claude AI. It polls for issues with a configurable label, invokes Claude Code in headless mode to implement fixes, and opens pull requests — no webhooks or per-issue goroutines required.
 
@@ -24,7 +24,7 @@ Claude never merges; a human must approve and merge every PR.
 ## Build
 
 ```bash
-go build -o ai-agent ./cmd/ai-agent
+go build -o oompa ./cmd/oompa
 ```
 
 ## Usage
@@ -36,7 +36,7 @@ export GITHUB_TOKEN="ghp_..."
 export CLOUD_ML_REGION="us-east5"
 export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
 
-./ai-agent --owner myorg --repo myrepo
+./oompa --owner myorg --repo myrepo
 ```
 
 ### With a GitHub App
@@ -48,14 +48,14 @@ export GITHUB_APP_INSTALLATION_ID="78901234"
 export CLOUD_ML_REGION="us-east5"
 export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
 
-./ai-agent --owner myorg --repo myrepo
+./oompa --owner myorg --repo myrepo
 ```
 
 ### Setting up a GitHub App
 
 1. Go to your organization's settings: `https://github.com/organizations/<org>/settings/apps/new`
 2. Fill in the basic info:
-   - **App name**: a unique name (e.g. `myorg-issue-resolver`)
+   - **App name**: a unique name (e.g. `myorg-oompa`)
    - **Homepage URL**: your repo or org URL
    - **Webhook**: uncheck "Active" (the agent uses polling, not webhooks)
 3. Set **repository permissions**:
@@ -84,16 +84,16 @@ When using GitHub App auth, the agent pushes branches directly to the upstream r
 
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|
-| `--owner` | `AI_AGENT_OWNER` | `openperouter` | GitHub repo owner |
-| `--repo` | `AI_AGENT_REPO` | `openperouter` | GitHub repo name |
-| `--label` | `AI_AGENT_LABEL` | `good-for-ai` | Issue label to watch |
-| `--clone-dir` | `AI_AGENT_CLONE_DIR` | `~/ai-agent-work` | Working directory for clones and worktrees |
-| `--poll-interval` | `AI_AGENT_POLL_INTERVAL` | `2m` | How often to poll GitHub |
-| `--log-level` | `AI_AGENT_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
-| `--log-file` | `AI_AGENT_LOG_FILE` | stderr | Write logs to a file instead of stderr |
-| `--signed-off-by` | `AI_AGENT_SIGNED_OFF_BY` | auto-detected | `Signed-off-by` line for commits |
-| `--reviewers` | `AI_AGENT_REVIEWERS` | all | Comma-separated allowlist of reviewers to respond to |
-| `--create-flaky-issues` | `AI_AGENT_CREATE_FLAKY_ISSUES` | `false` | Create issues for unrelated CI failures (opt-in) |
+| `--owner` | `OOMPA_OWNER` | `openperouter` | GitHub repo owner |
+| `--repo` | `OOMPA_REPO` | `openperouter` | GitHub repo name |
+| `--label` | `OOMPA_LABEL` | `good-for-ai` | Issue label to watch |
+| `--clone-dir` | `OOMPA_CLONE_DIR` | `~/oompa-work` | Working directory for clones and worktrees |
+| `--poll-interval` | `OOMPA_POLL_INTERVAL` | `2m` | How often to poll GitHub |
+| `--log-level` | `OOMPA_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `--log-file` | `OOMPA_LOG_FILE` | stderr | Write logs to a file instead of stderr |
+| `--signed-off-by` | `OOMPA_SIGNED_OFF_BY` | auto-detected | `Signed-off-by` line for commits |
+| `--reviewers` | `OOMPA_REVIEWERS` | all | Comma-separated allowlist of reviewers to respond to |
+| `--create-flaky-issues` | `OOMPA_CREATE_FLAKY_ISSUES` | `false` | Create issues for unrelated CI failures (opt-in) |
 | `--dry-run` | — | `false` | Log actions without executing them |
 | `--one-shot` | — | `false` | Run one poll cycle and exit |
 | — | `GITHUB_TOKEN` | *required (PAT)* | GitHub personal access token |
@@ -120,7 +120,7 @@ All external interactions (GitHub API, Claude CLI, git) are behind interfaces wi
 ## Project layout
 
 ```
-cmd/ai-agent/       CLI entry point
+cmd/oompa/          CLI entry point
 pkg/agent/          Core logic (loop, state, GitHub client, Claude runner, worktree, prompts)
 specs/              Design specifications for each component
 ```

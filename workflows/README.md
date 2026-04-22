@@ -25,4 +25,4 @@ The following tools must be installed and available in PATH on the runner:
 2. The Ambient platform starts a Claude Code session with the workflow directory as CWD.
 3. Claude greets you and asks for the required information (repository, PR numbers, etc.).
 4. Once you provide the details, Claude downloads the runner script and starts the agent.
-5. The runner script downloads the latest `ai-agent` binary from GitHub releases and runs it in a restart loop with auto-update support.
+5. The runner script downloads the latest `oompa` binary from GitHub releases and runs it in a restart loop with auto-update support.

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qinqon/github-issue-resolver/pkg/agent"
+	"github.com/qinqon/oompa/pkg/agent"
 )
 
 func envOrDefault(key, def string) string {
@@ -36,41 +36,41 @@ func parseConfig() (agent.Config, string) {
 	cfg := agent.Config{}
 
 	var repoFlag string
-	flag.StringVar(&repoFlag, "repo", envOrDefault("AI_AGENT_REPO", ""), "GitHub repo as owner/repo (e.g. ovn-kubernetes/ovn-kubernetes)")
-	flag.StringVar(&cfg.Label, "label", envOrDefault("AI_AGENT_LABEL", "good-for-ai"), "Issue label to watch")
-	flag.StringVar(&cfg.CloneDir, "clone-dir", envOrDefault("AI_AGENT_CLONE_DIR", "/tmp/github-issue-resolver-agent-work"), "Base directory for clones (owner/repo appended automatically)")
-	flag.DurationVar(&cfg.PollInterval, "poll-interval", parseDuration(envOrDefault("AI_AGENT_POLL_INTERVAL", "2m")), "Poll frequency")
+	flag.StringVar(&repoFlag, "repo", envOrDefault("OOMPA_REPO", ""), "GitHub repo as owner/repo (e.g. ovn-kubernetes/ovn-kubernetes)")
+	flag.StringVar(&cfg.Label, "label", envOrDefault("OOMPA_LABEL", "good-for-ai"), "Issue label to watch")
+	flag.StringVar(&cfg.CloneDir, "clone-dir", envOrDefault("OOMPA_CLONE_DIR", "/tmp/oompa-work"), "Base directory for clones (owner/repo appended automatically)")
+	flag.DurationVar(&cfg.PollInterval, "poll-interval", parseDuration(envOrDefault("OOMPA_POLL_INTERVAL", "2m")), "Poll frequency")
 	flag.StringVar(&cfg.VertexRegion, "vertex-region", os.Getenv("CLOUD_ML_REGION"), "GCP Vertex AI region")
 	flag.StringVar(&cfg.VertexProject, "vertex-project", os.Getenv("ANTHROPIC_VERTEX_PROJECT_ID"), "GCP project ID for Vertex")
-	flag.StringVar(&cfg.LogLevel, "log-level", envOrDefault("AI_AGENT_LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
+	flag.StringVar(&cfg.LogLevel, "log-level", envOrDefault("OOMPA_LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 	flag.BoolVar(&cfg.DryRun, "dry-run", false, "Log what would be done without executing")
 	flag.BoolVar(&cfg.OneShot, "one-shot", false, "Run one cycle and exit")
-	flag.StringVar(&cfg.SignedOffBy, "signed-off-by", os.Getenv("AI_AGENT_SIGNED_OFF_BY"), "Signed-off-by value for commits (e.g. \"Name <email>\")")
+	flag.StringVar(&cfg.SignedOffBy, "signed-off-by", os.Getenv("OOMPA_SIGNED_OFF_BY"), "Signed-off-by value for commits (e.g. \"Name <email>\")")
 
 	var reviewers string
-	flag.StringVar(&reviewers, "reviewers", os.Getenv("AI_AGENT_REVIEWERS"), "Comma-separated whitelist of users/bots whose reviews to address (empty = all)")
+	flag.StringVar(&reviewers, "reviewers", os.Getenv("OOMPA_REVIEWERS"), "Comma-separated whitelist of users/bots whose reviews to address (empty = all)")
 
 	var watchPRs string
-	flag.StringVar(&watchPRs, "watch-prs", os.Getenv("AI_AGENT_WATCH_PRS"), "Comma-separated PR numbers to monitor directly (bypasses issue discovery)")
+	flag.StringVar(&watchPRs, "watch-prs", os.Getenv("OOMPA_WATCH_PRS"), "Comma-separated PR numbers to monitor directly (bypasses issue discovery)")
 
 	var reactions string
-	flag.StringVar(&reactions, "reactions", os.Getenv("AI_AGENT_REACTIONS"), "Comma-separated list of reactions to run: reviews, ci, conflicts, rebase (empty = all)")
+	flag.StringVar(&reactions, "reactions", os.Getenv("OOMPA_REACTIONS"), "Comma-separated list of reactions to run: reviews, ci, conflicts, rebase (empty = all)")
 
 	var triageJobs string
-	flag.StringVar(&triageJobs, "triage-jobs", os.Getenv("AI_AGENT_TRIAGE_JOBS"), "Comma-separated CI job URLs to monitor for periodic job triage")
+	flag.StringVar(&triageJobs, "triage-jobs", os.Getenv("OOMPA_TRIAGE_JOBS"), "Comma-separated CI job URLs to monitor for periodic job triage")
 
 	var logFile string
-	flag.StringVar(&logFile, "log-file", os.Getenv("AI_AGENT_LOG_FILE"), "Log file path (default: stderr)")
+	flag.StringVar(&logFile, "log-file", os.Getenv("OOMPA_LOG_FILE"), "Log file path (default: stderr)")
 
-	flag.BoolVar(&cfg.CreateFlakyIssues, "create-flaky-issues", envOrDefault("AI_AGENT_CREATE_FLAKY_ISSUES", "") == "true", "Create issues for unrelated CI failures (opt-in)")
-	flag.BoolVar(&cfg.OnlyAssigned, "only-assigned", envOrDefault("AI_AGENT_ONLY_ASSIGNED", "") == "true", "Only process issues assigned to the agent user")
-	flag.IntVar(&cfg.MaxWorkers, "max-workers", parseIntEnv("AI_AGENT_MAX_WORKERS", 1), "Maximum parallel Claude invocations (default 1 = sequential)")
+	flag.BoolVar(&cfg.CreateFlakyIssues, "create-flaky-issues", envOrDefault("OOMPA_CREATE_FLAKY_ISSUES", "") == "true", "Create issues for unrelated CI failures (opt-in)")
+	flag.BoolVar(&cfg.OnlyAssigned, "only-assigned", envOrDefault("OOMPA_ONLY_ASSIGNED", "") == "true", "Only process issues assigned to the agent user")
+	flag.IntVar(&cfg.MaxWorkers, "max-workers", parseIntEnv("OOMPA_MAX_WORKERS", 1), "Maximum parallel Claude invocations (default 1 = sequential)")
 
 	var forkFlag string
-	flag.StringVar(&forkFlag, "fork", envOrDefault("AI_AGENT_FORK", ""), "Fork repo as owner/repo for pushing (e.g. qinqon/ovn-kubernetes)")
+	flag.StringVar(&forkFlag, "fork", envOrDefault("OOMPA_FORK", ""), "Fork repo as owner/repo for pushing (e.g. qinqon/ovn-kubernetes)")
 
 	var exitOnNewVersion string
-	flag.StringVar(&exitOnNewVersion, "exit-on-new-version", os.Getenv("AI_AGENT_EXIT_ON_NEW_VERSION"), "Exit when a new version is available (format: owner/repo, e.g. qinqon/github-issue-resolver)")
+	flag.StringVar(&exitOnNewVersion, "exit-on-new-version", os.Getenv("OOMPA_EXIT_ON_NEW_VERSION"), "Exit when a new version is available (format: owner/repo, e.g. qinqon/oompa)")
 
 	// Identity flags (optional, auto-detected from auth when not set)
 	flag.StringVar(&cfg.GitHubUser, "github-user", os.Getenv("GITHUB_USER"), "GitHub username (e.g. myapp[bot])")
@@ -410,7 +410,7 @@ func main() {
 		}
 	}
 
-	logger.Info("starting ai-agent",
+	logger.Info("starting oompa",
 		"owner", cfg.Owner,
 		"repo", cfg.Repo,
 		"label", cfg.Label,

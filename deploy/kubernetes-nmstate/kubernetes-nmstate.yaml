@@ -1,39 +1,39 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: ai-agent-kubernetes-nmstate
+  name: oompa-kubernetes-nmstate
 ---
 # Create secrets with:
 #   oc create secret generic github-app-key \
-#     --namespace ai-agent-kubernetes-nmstate \
+#     --namespace oompa-kubernetes-nmstate \
 #     --from-file=app.pem=$HOME/.secrets/nmstate-ai.2026-04-10.private-key.pem
 #
 #   oc create secret generic gcp-credentials \
-#     --namespace ai-agent-kubernetes-nmstate \
-#     --from-file=credentials.json=$HOME/.secrets/nmstate-ai-agent-vertex.json
+#     --namespace oompa-kubernetes-nmstate \
+#     --from-file=credentials.json=$HOME/.secrets/nmstate-oompa-vertex.json
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ai-agent
-  namespace: ai-agent-kubernetes-nmstate
+  name: oompa
+  namespace: oompa-kubernetes-nmstate
   labels:
-    app: ai-agent
+    app: oompa
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: ai-agent
+      app: oompa
   template:
     metadata:
       labels:
-        app: ai-agent
+        app: oompa
     spec:
       containers:
-        - name: ai-agent
-          image: ghcr.io/qinqon/github-issue-resolver:latest
+        - name: oompa
+          image: ghcr.io/qinqon/oompa:latest
           args:
             - --owner=nmstate
             - --repo=kubernetes-nmstate

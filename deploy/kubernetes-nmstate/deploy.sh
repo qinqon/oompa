@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-NAMESPACE="ai-agent"
+NAMESPACE="oompa"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Validate required files
@@ -44,8 +44,8 @@ sed "s|value: \"\"  # TODO: set your GCP project ID|value: \"${VERTEX_PROJECT}\"
     "${SCRIPT_DIR}/deployment.yaml" | kubectl apply -f -
 
 echo "Waiting for rollout..."
-kubectl rollout status deployment/ai-agent --namespace "${NAMESPACE}" --timeout=120s
+kubectl rollout status deployment/oompa --namespace "${NAMESPACE}" --timeout=120s
 
 echo ""
 echo "Deployed. View logs with:"
-echo "  kubectl logs -f deployment/ai-agent -n ${NAMESPACE}"
+echo "  kubectl logs -f deployment/oompa -n ${NAMESPACE}"

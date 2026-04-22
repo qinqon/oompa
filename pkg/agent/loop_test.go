@@ -837,7 +837,7 @@ func TestProcessCIFailures_ReinvestigatesAfterNewCommits(t *testing.T) {
 		prHeadSHAs: []string{"abc1234", "def5678"}, // First call returns abc1234, second returns def5678
 		issueComments: []ReviewComment{
 			// Simulate a rebase comment that mentions the new commit
-			{ID: 1, User: "test-bot", Body: "Rebased commit def5678 on main and pushed.\n\n<!-- ai-agent-bot -->"},
+			{ID: 1, User: "test-bot", Body: "Rebased commit def5678 on main and pushed.\n\n<!-- oompa-bot -->"},
 		},
 	}
 	runner := &mockCommandRunner{stdout: claudeResult}

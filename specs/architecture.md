@@ -12,7 +12,7 @@ Single long-running Go binary with a sequential polling loop.
 ## Directory Structure
 
 ```
-cmd/ai-agent/
+cmd/oompa/
   main.go              -- entry point, config parsing, polling loop
 pkg/agent/
   types.go             -- shared types (Issue, ReviewComment, PR, ClaudeResult, IssueWork)

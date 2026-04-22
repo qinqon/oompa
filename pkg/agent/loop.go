@@ -14,7 +14,7 @@ import (
 const (
 	// botMarker is a hidden HTML comment added to all agent-posted comments
 	// so they can be distinguished from manual comments by the same user.
-	botMarker = "<!-- ai-agent-bot -->"
+	botMarker = "<!-- oompa-bot -->"
 )
 
 // Agent holds all dependencies and runs the main processing loop.
@@ -219,7 +219,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 				a.logger.Warn("failed to assign issue", "issue", issue.Number, "error", err)
 			}
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number,
-				fmt.Sprintf("AI agent is working on this issue. A PR will be created shortly.\n\n%s", botMarker)); err != nil {
+				fmt.Sprintf("Oompa is working on this issue. A PR will be created shortly.\n\n%s", botMarker)); err != nil {
 				a.logger.Warn("failed to add in-progress comment", "issue", issue.Number, "error", err)
 			}
 		}
@@ -1013,8 +1013,8 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 %s
 
 ---
-*This issue was automatically created by the AI agent based on CI failure analysis.*
-<!-- ai-agent-triage -->`, ciSource.JobName(), latestRun.ID, latestRun.LogURL, analysis)
+*This issue was automatically created by oompa based on CI failure analysis.*
+<!-- oompa-triage -->`, ciSource.JobName(), latestRun.ID, latestRun.LogURL, analysis)
 
 				issueNumber, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, title, body, []string{"ci-flake"})
 				if err != nil {

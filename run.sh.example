@@ -1,10 +1,10 @@
 #!/bin/bash
-# Example script to run the ai-agent in a container.
+# Example script to run oompa in a container.
 # Copy this file to run.sh and adjust the values below.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-IMAGE="${IMAGE:-ghcr.io/qinqon/github-issue-resolver:local}"
+IMAGE="${IMAGE:-ghcr.io/qinqon/oompa:local}"
 
 # --- GitHub App credentials ---
 # Set these to match your GitHub App installation.
@@ -27,7 +27,7 @@ GCP_ADC="${HOME}/.config/gcloud/application_default_credentials.json"
 REVIEWERS="${REVIEWERS:-}"              # comma-separated reviewer allowlist (empty = all)
 POLL_INTERVAL="${POLL_INTERVAL:-30s}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
-VOLUME_NAME="${VOLUME_NAME:-ai-agent-${OWNER}-${REPO}}"
+VOLUME_NAME="${VOLUME_NAME:-oompa-${OWNER}-${REPO}}"
 LOG_FILE="${LOG_FILE:-/tmp/agent.${OWNER}-${REPO}.log}"
 
 # Build the image locally (remove this line to use the pre-built image)

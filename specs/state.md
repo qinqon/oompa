@@ -1,6 +1,6 @@
 # State Management
 
-JSON file at configurable path (default `~/.ai-agent-state.json`).
+JSON file at configurable path (default `~/.oompa-state.json`).
 
 ## Types
 
