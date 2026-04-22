@@ -27,6 +27,36 @@ Claude never merges; a human must approve and merge every PR.
 go build -o oompa ./cmd/oompa
 ```
 
+## Deployment
+
+### Systemd (recommended for production)
+
+For long-running deployments with automatic updates and process supervision, use the systemd unit:
+
+```bash
+cd deploy/systemd
+./install.sh --user issue-resolver  # User-specific installation
+# OR
+sudo ./install.sh issue-resolver    # System-wide installation
+```
+
+See [`deploy/systemd/README.md`](deploy/systemd/README.md) for full documentation, including multi-instance setup and configuration.
+
+### Manual wrapper script
+
+For development or platforms without systemd, use the wrapper script:
+
+```bash
+export GITHUB_TOKEN="ghp_..."
+export CLOUD_ML_REGION="us-east5"
+export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
+
+cd workflows
+./run-oompa.sh --owner myorg --repo myrepo
+```
+
+See [`workflows/README.md`](workflows/README.md) for Ambient Code workflows.
+
 ## Usage
 
 ### With a personal access token (PAT)

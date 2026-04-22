@@ -26,3 +26,7 @@ The following tools must be installed and available in PATH on the runner:
 3. Claude greets you and asks for the required information (repository, PR numbers, etc.).
 4. Once you provide the details, Claude downloads the runner script and starts the agent.
 5. The runner script downloads the latest `oompa` binary from GitHub releases and runs it in a restart loop with auto-update support.
+
+## Alternative: Systemd Deployment
+
+For long-running production deployments with better process supervision and automatic updates, consider using the systemd unit instead of the wrapper script. See [`../deploy/systemd/README.md`](../deploy/systemd/README.md) for details.

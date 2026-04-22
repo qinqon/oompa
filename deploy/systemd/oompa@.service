@@ -1,0 +1,48 @@
+[Unit]
+Description=Oompa agent: %i
+Documentation=https://github.com/qinqon/oompa
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as the invoking user (systemctl --user) or specified user (system-wide)
+User=%u
+EnvironmentFile=-/etc/oompa/%i.env
+EnvironmentFile=-%h/.config/oompa/%i.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=OOMPA_BINARY_DIR=/var/lib/oompa/bin
+Environment=OOMPA_RELEASE_REPO=qinqon/oompa
+Environment=OOMPA_BINARY_NAME=oompa-linux-amd64
+
+# Create binary directory
+ExecStartPre=/usr/bin/mkdir -p ${OOMPA_BINARY_DIR}
+
+# Download latest binary
+# Use a temporary directory to avoid "text file busy" errors
+ExecStartPre=/bin/sh -c 'gh release download --repo ${OOMPA_RELEASE_REPO} --pattern ${OOMPA_BINARY_NAME} --dir ${OOMPA_BINARY_DIR}/tmp-download --clobber'
+
+# Move to final location and make executable
+ExecStartPre=/bin/sh -c 'mv ${OOMPA_BINARY_DIR}/tmp-download/${OOMPA_BINARY_NAME} ${OOMPA_BINARY_DIR}/oompa'
+ExecStartPre=/usr/bin/chmod +x ${OOMPA_BINARY_DIR}/oompa
+
+# Run oompa with auto-update support
+# The binary exits when a new version is detected, triggering a restart
+ExecStart=${OOMPA_BINARY_DIR}/oompa --exit-on-new-version=${OOMPA_RELEASE_REPO} ${OOMPA_FLAGS}
+
+# Restart policy: always restart (handles auto-updates and crashes)
+Restart=always
+RestartSec=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=oompa-%i
+
+# Security hardening (optional, can be relaxed if needed)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
