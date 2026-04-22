@@ -678,6 +678,7 @@ func TestProcessCIFailures_CreatesFlakyIssueWhenUnrelated(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.CreateFlakyIssues = true // Enable flaky issue creation
+	agent.cfg.FlakyLabel = "flaky-test" // Set flaky label
 	agent.state.ActiveIssues[42] = &IssueWork{
 		IssueNumber:  42,
 		IssueTitle:   "Fix bug",
@@ -719,6 +720,7 @@ func TestProcessCIFailures_SkipsFlakyIssueWhenDisabled(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.CreateFlakyIssues = false // Disabled by default
+	agent.cfg.FlakyLabel = "flaky-test"
 	agent.state.ActiveIssues[42] = &IssueWork{
 		IssueNumber:  42,
 		IssueTitle:   "Fix bug",
@@ -756,6 +758,7 @@ func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.CreateFlakyIssues = true
+	agent.cfg.FlakyLabel = "flaky-test"
 	agent.state.ActiveIssues[42] = &IssueWork{
 		IssueNumber:  42,
 		IssueTitle:   "Fix bug",
@@ -772,14 +775,22 @@ func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
 		t.Errorf("expected 0 created issues (should reference existing), got %d", len(gh.createdIssues))
 	}
 
-	// Check that comments were added (unrelated notice + duplicate reference)
-	if len(gh.addedComments) != 2 {
-		t.Fatalf("expected 2 comments (unrelated + duplicate reference), got %d", len(gh.addedComments))
+	// Check that 3 comments were added: unrelated notice + PR reference to flaky issue + comment on flaky issue
+	if len(gh.addedComments) != 3 {
+		t.Fatalf("expected 3 comments (unrelated + PR reference + flaky issue comment), got %d", len(gh.addedComments))
 	}
 
-	// Verify the duplicate reference comment
-	if !strings.Contains(gh.addedComments[1], "duplicate of existing flaky test issue #50") {
-		t.Errorf("expected duplicate reference comment, got: %q", gh.addedComments[1])
+	// Verify the PR comment references the known flake
+	if !strings.Contains(gh.addedComments[1], "Known flake: #50") {
+		t.Errorf("expected 'Known flake: #50' comment, got: %q", gh.addedComments[1])
+	}
+
+	// Verify the flaky issue comment with PR and CI run details
+	if !strings.Contains(gh.addedComments[2], "occurred again on PR #100") {
+		t.Errorf("expected occurrence comment on flaky issue, got: %q", gh.addedComments[2])
+	}
+	if !strings.Contains(gh.addedComments[2], "https://github.com/") {
+		t.Errorf("expected CI run URL in flaky issue comment, got: %q", gh.addedComments[2])
 	}
 }
 
@@ -796,6 +807,7 @@ func TestProcessCIFailures_CreatesNewFlakyIssueWhenNoDuplicate(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.CreateFlakyIssues = true
+	agent.cfg.FlakyLabel = "flaky-test"
 	agent.state.ActiveIssues[42] = &IssueWork{
 		IssueNumber:  42,
 		IssueTitle:   "Fix bug",
@@ -823,6 +835,41 @@ func TestProcessCIFailures_CreatesNewFlakyIssueWhenNoDuplicate(t *testing.T) {
 	// Check that comments were added (unrelated notice + new issue reference)
 	if len(gh.addedComments) != 2 {
 		t.Fatalf("expected 2 comments (unrelated + issue link), got %d", len(gh.addedComments))
+	}
+}
+
+func TestProcessCIFailures_SkipsCrossReferencingWhenLabelNotSet(t *testing.T) {
+	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
+		},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = true  // Enabled
+	agent.cfg.FlakyLabel = ""           // But no label configured
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Check that no flaky issue was created (label not configured)
+	if len(gh.createdIssues) != 0 {
+		t.Errorf("expected 0 created issues when label is not configured, got %d", len(gh.createdIssues))
+	}
+
+	// Check that only one comment was added (the unrelated notice)
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 comment (unrelated notice only), got %d", len(gh.addedComments))
 	}
 }
 

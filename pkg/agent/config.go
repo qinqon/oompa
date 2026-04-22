@@ -27,6 +27,7 @@ type Config struct {
 	WatchPRs          []int    // PR numbers to monitor directly (bypasses issue discovery)
 	Reactions         []string // which reactions to run: "reviews", "ci", "conflicts" (empty = all)
 	CreateFlakyIssues bool     // when true, create issues for unrelated CI failures (opt-in)
+	FlakyLabel        string   // label used to find/tag flaky test issues (empty = skip cross-referencing)
 	OnlyAssigned      bool     // when true, only process issues assigned to the agent user
 	MaxWorkers        int      // maximum concurrent Claude invocations (1 = sequential, default)
 	TriageJobs        []string // CI job URLs to monitor for periodic job triage
