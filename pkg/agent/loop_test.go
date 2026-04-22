@@ -191,6 +191,15 @@ func (m *mockGitHubClient) GetWorkflowJobLogs(_ context.Context, _, _ string, _ 
 	return "", nil
 }
 
+func (m *mockGitHubClient) GetPRDiff(_ context.Context, _, _ string, _ int) (string, error) {
+	return "diff --git a/file.go b/file.go\n+new content", nil
+}
+
+func (m *mockGitHubClient) SubmitPRReview(_ context.Context, _, _ string, _ int, body string, _ []ReviewComment, _ string) error {
+	m.addedComments = append(m.addedComments, "review:"+body)
+	return nil
+}
+
 // mockWorktreeManager implements WorktreeManager for testing.
 type mockWorktreeManager struct {
 	createdBranches []string

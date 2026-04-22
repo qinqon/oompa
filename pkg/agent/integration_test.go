@@ -291,6 +291,17 @@ func (f *fakeGitHubClient) GetWorkflowJobLogs(_ context.Context, _, _ string, _ 
 	return "", nil
 }
 
+func (f *fakeGitHubClient) GetPRDiff(_ context.Context, _, _ string, _ int) (string, error) {
+	return "diff --git a/file.go b/file.go\n+new content", nil
+}
+
+func (f *fakeGitHubClient) SubmitPRReview(_ context.Context, _, _ string, _ int, body string, _ []ReviewComment, _ string) error {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	f.state.postedComments = append(f.state.postedComments, "review:"+body)
+	return nil
+}
+
 // initBareRepo creates a bare repo and a working clone for the agent to use.
 // Returns (cloneDir, cleanup).
 func initBareRepo(t *testing.T) string {

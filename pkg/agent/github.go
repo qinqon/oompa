@@ -41,6 +41,8 @@ type GitHubClient interface {
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowID string, status string, limit int) ([]WorkflowRun, error)
 	ListWorkflowJobs(ctx context.Context, owner, repo string, runID int64) ([]WorkflowJob, error)
 	GetWorkflowJobLogs(ctx context.Context, owner, repo string, jobID int64) (string, error)
+	GetPRDiff(ctx context.Context, owner, repo string, prNumber int) (string, error)
+	SubmitPRReview(ctx context.Context, owner, repo string, prNumber int, body string, comments []ReviewComment, event string) error
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -591,4 +593,62 @@ func (g *GoGitHubClient) GetWorkflowJobLogs(ctx context.Context, owner, repo str
 	}
 
 	return string(body), nil
+}
+
+// GetPRDiff fetches the diff for a pull request.
+func (g *GoGitHubClient) GetPRDiff(ctx context.Context, owner, repo string, prNumber int) (string, error) {
+	// Get PR to retrieve base and head SHAs
+	pr, _, err := g.client.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return "", fmt.Errorf("getting PR: %w", err)
+	}
+
+	// Use GitHub's compare API to get the diff
+	comparison, _, err := g.client.Repositories.CompareCommits(ctx, owner, repo,
+		pr.GetBase().GetSHA(), pr.GetHead().GetSHA(), &github.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("comparing commits: %w", err)
+	}
+
+	// Build diff from files
+	var diffBuilder strings.Builder
+	for _, file := range comparison.Files {
+		if file.GetPatch() == "" {
+			continue
+		}
+		diffBuilder.WriteString(fmt.Sprintf("diff --git a/%s b/%s\n", file.GetFilename(), file.GetFilename()))
+		diffBuilder.WriteString(file.GetPatch())
+		diffBuilder.WriteString("\n")
+	}
+
+	return diffBuilder.String(), nil
+}
+
+// SubmitPRReview submits a review on a pull request with optional comments.
+// event can be "APPROVE", "REQUEST_CHANGES", or "COMMENT".
+func (g *GoGitHubClient) SubmitPRReview(ctx context.Context, owner, repo string, prNumber int, body string, comments []ReviewComment, event string) error {
+	review := &github.PullRequestReviewRequest{
+		Body:  github.Ptr(body),
+		Event: github.Ptr(event),
+	}
+
+	// Add inline comments if provided
+	if len(comments) > 0 {
+		var ghComments []*github.DraftReviewComment
+		for _, c := range comments {
+			ghComments = append(ghComments, &github.DraftReviewComment{
+				Path: github.Ptr(c.Path),
+				Line: github.Ptr(c.Line),
+				Body: github.Ptr(c.Body),
+			})
+		}
+		review.Comments = ghComments
+	}
+
+	_, _, err := g.client.PullRequests.CreateReview(ctx, owner, repo, prNumber, review)
+	if err != nil {
+		return fmt.Errorf("submitting review: %w", err)
+	}
+
+	return nil
 }

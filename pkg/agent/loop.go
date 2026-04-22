@@ -1423,3 +1423,143 @@ func (a *Agent) isAllowedReviewer(user string) bool {
 	}
 	return false
 }
+
+// ProcessGeminiReviews checks for new commits on tracked PRs and triggers Gemini reviews.
+func (a *Agent) ProcessGeminiReviews(ctx context.Context) {
+	if !a.cfg.GeminiReviewer {
+		return
+	}
+
+	var tasks []geminiTask
+	for issueNumber, work := range a.state.ActiveIssues {
+		if work.PRNumber == 0 {
+			continue // No PR yet
+		}
+
+		// Check if we should review this PR based on GeminiReviewOn config
+		shouldReview := false
+		if len(a.cfg.GeminiReviewOn) == 0 {
+			// Default: review on both new-pr and push
+			shouldReview = true
+		} else {
+			for _, trigger := range a.cfg.GeminiReviewOn {
+				if trigger == "new-pr" && work.LastGeminiReviewSHA == "" {
+					shouldReview = true
+					break
+				}
+				if trigger == "push" {
+					shouldReview = true
+					break
+				}
+			}
+		}
+
+		if !shouldReview {
+			continue
+		}
+
+		// Get current head SHA
+		headSHA, err := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		if err != nil {
+			a.logger.Error("failed to get PR head SHA for Gemini review", "issue", issueNumber, "pr", work.PRNumber, "error", err)
+			continue
+		}
+
+		// Skip if already reviewed this SHA
+		if headSHA == work.LastGeminiReviewSHA {
+			continue
+		}
+
+		tasks = append(tasks, geminiTask{
+			work:    work,
+			headSHA: headSHA,
+		})
+	}
+
+	if len(tasks) == 0 {
+		return
+	}
+
+	a.logger.Info("processing Gemini reviews", "count", len(tasks))
+
+	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task geminiTask) {
+		if err := a.processGeminiReview(ctx, task); err != nil {
+			a.logger.Error("Gemini review failed", "issue", task.work.IssueNumber, "pr", task.work.PRNumber, "error", err)
+		}
+	})
+}
+
+type geminiTask struct {
+	work    *IssueWork
+	headSHA string
+}
+
+func (a *Agent) processGeminiReview(ctx context.Context, task geminiTask) error {
+	work := task.work
+	headSHA := task.headSHA
+
+	a.logger.Info("running Gemini review", "issue", work.IssueNumber, "pr", work.PRNumber, "sha", headSHA[:7])
+
+	// Get PR details
+	pr, err := a.gh.GetPR(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+	if err != nil {
+		return fmt.Errorf("getting PR details: %w", err)
+	}
+
+	// Get PR diff
+	diff, err := a.gh.GetPRDiff(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+	if err != nil {
+		return fmt.Errorf("getting PR diff: %w", err)
+	}
+
+	// Create Gemini reviewer
+	reviewer := NewVertexGeminiReviewer(a.runner, a.cfg)
+
+	// Perform review
+	review, err := reviewer.ReviewPR(ctx, diff, pr.Title, work.IssueTitle)
+	if err != nil {
+		return fmt.Errorf("Gemini review failed: %w", err)
+	}
+
+	// Submit review to GitHub
+	if err := a.submitGeminiReview(ctx, work.PRNumber, review); err != nil {
+		return fmt.Errorf("submitting review to GitHub: %w", err)
+	}
+
+	// Update state
+	work.LastGeminiReviewSHA = headSHA
+
+	a.logger.Info("Gemini review complete", "issue", work.IssueNumber, "pr", work.PRNumber, "issues_found", len(review.Comments))
+	return nil
+}
+
+func (a *Agent) submitGeminiReview(ctx context.Context, prNumber int, review GeminiReview) error {
+	// Build review body with bot marker
+	body := fmt.Sprintf("%s\n\n🤖 **Gemini Review**\n\n%s", botMarker, review.Summary)
+
+	// Convert Gemini comments to GitHub review comments
+	var comments []ReviewComment
+	for _, issue := range review.Comments {
+		if issue.File == "general" || issue.File == "" || issue.Line == 0 {
+			// Add to main review body instead of inline comment
+			body += fmt.Sprintf("\n\n**%s**: %s", strings.ToUpper(issue.Severity), issue.Message)
+		} else {
+			comments = append(comments, ReviewComment{
+				Path: issue.File,
+				Line: issue.Line,
+				Body: fmt.Sprintf("**%s**: %s", strings.ToUpper(issue.Severity), issue.Message),
+			})
+		}
+	}
+
+	// Determine review event based on severity of issues
+	event := "COMMENT"
+	for _, issue := range review.Comments {
+		if issue.Severity == "error" {
+			event = "REQUEST_CHANGES"
+			break
+		}
+	}
+
+	return a.gh.SubmitPRReview(ctx, a.cfg.Owner, a.cfg.Repo, prNumber, body, comments, event)
+}

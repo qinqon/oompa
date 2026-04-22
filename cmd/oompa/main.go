@@ -66,6 +66,14 @@ func parseConfig() (agent.Config, string) {
 	flag.BoolVar(&cfg.OnlyAssigned, "only-assigned", envOrDefault("OOMPA_ONLY_ASSIGNED", "") == "true", "Only process issues assigned to the agent user")
 	flag.IntVar(&cfg.MaxWorkers, "max-workers", parseIntEnv("OOMPA_MAX_WORKERS", 1), "Maximum parallel Claude invocations (default 1 = sequential)")
 
+	// Gemini reviewer flags
+	flag.BoolVar(&cfg.GeminiReviewer, "gemini-reviewer", envOrDefault("OOMPA_GEMINI_REVIEWER", "") == "true", "Enable Gemini AI code reviews on PRs")
+	flag.StringVar(&cfg.GeminiModel, "gemini-model", envOrDefault("OOMPA_GEMINI_MODEL", "gemini-2.0-flash-exp"), "Gemini model to use for reviews (e.g. gemini-2.0-flash-exp, gemini-2.5-pro)")
+	flag.StringVar(&cfg.GeminiReviewSeverity, "gemini-review-severity", envOrDefault("OOMPA_GEMINI_REVIEW_SEVERITY", "warning"), "Minimum severity to comment on: info, warning, error")
+
+	var geminiReviewOn string
+	flag.StringVar(&geminiReviewOn, "gemini-review-on", os.Getenv("OOMPA_GEMINI_REVIEW_ON"), "When to trigger reviews: new-pr, push (comma-separated, empty = both)")
+
 	var forkFlag string
 	flag.StringVar(&forkFlag, "fork", envOrDefault("OOMPA_FORK", ""), "Fork repo as owner/repo for pushing (e.g. qinqon/ovn-kubernetes)")
 
@@ -162,14 +170,14 @@ func parseConfig() (agent.Config, string) {
 	}
 
 	if reactions != "" {
-		validReactions := map[string]bool{"reviews": true, "ci": true, "conflicts": true, "rebase": true}
+		validReactions := map[string]bool{"reviews": true, "ci": true, "conflicts": true, "rebase": true, "gemini": true}
 		for _, r := range strings.Split(reactions, ",") {
 			r = strings.TrimSpace(r)
 			if r == "" {
 				continue
 			}
 			if !validReactions[r] {
-				fmt.Fprintf(os.Stderr, "invalid reaction type %q: valid values are reviews, ci, conflicts, rebase\n", r)
+				fmt.Fprintf(os.Stderr, "invalid reaction type %q: valid values are reviews, ci, conflicts, rebase, gemini\n", r)
 				os.Exit(1)
 			}
 			cfg.Reactions = append(cfg.Reactions, r)
@@ -182,6 +190,21 @@ func parseConfig() (agent.Config, string) {
 			if url != "" {
 				cfg.TriageJobs = append(cfg.TriageJobs, url)
 			}
+		}
+	}
+
+	if geminiReviewOn != "" {
+		validTriggers := map[string]bool{"new-pr": true, "push": true}
+		for _, t := range strings.Split(geminiReviewOn, ",") {
+			t = strings.TrimSpace(t)
+			if t == "" {
+				continue
+			}
+			if !validTriggers[t] {
+				fmt.Fprintf(os.Stderr, "invalid gemini-review-on trigger %q: valid values are new-pr, push\n", t)
+				os.Exit(1)
+			}
+			cfg.GeminiReviewOn = append(cfg.GeminiReviewOn, t)
 		}
 	}
 
@@ -466,6 +489,9 @@ func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 	}
 	if a.ShouldRunReaction("ci") {
 		a.ProcessCIFailures(ctx)
+	}
+	if a.ShouldRunReaction("gemini") {
+		a.ProcessGeminiReviews(ctx)
 	}
 
 	// ProcessTriageJobs is independent of other reactions and runs when triage jobs are configured

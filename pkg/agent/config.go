@@ -31,6 +31,12 @@ type Config struct {
 	MaxWorkers        int      // maximum concurrent Claude invocations (1 = sequential, default)
 	TriageJobs        []string // CI job URLs to monitor for periodic job triage
 
+	// Gemini reviewer configuration
+	GeminiReviewer       bool     // enable Gemini PR reviews
+	GeminiModel          string   // Gemini model to use (e.g. gemini-2.5-pro)
+	GeminiReviewOn       []string // when to trigger reviews: "new-pr", "push" (empty = both)
+	GeminiReviewSeverity string   // minimum severity to comment on: "info", "warning", "error"
+
 	// GitHub App authentication (alternative to GITHUB_TOKEN)
 	GitHubAppID             int64
 	GitHubAppPrivateKey     []byte
