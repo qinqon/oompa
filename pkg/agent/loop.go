@@ -461,6 +461,13 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 				task.work.LastCommentID = c.ID
 			}
 		}
+
+		// Update last seen review ID
+		for _, r := range task.humanReviews {
+			if r.ID > task.work.LastReviewID {
+				task.work.LastReviewID = r.ID
+			}
+		}
 	})
 }
 
