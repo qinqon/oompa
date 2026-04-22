@@ -5,7 +5,7 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -o /ai-agent ./cmd/ai-agent
+    CGO_ENABLED=0 go build -o /oompa ./cmd/oompa
 
 # Stage 2: Runtime
 FROM node:22-slim
@@ -39,7 +39,7 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN git clone --depth 1 https://github.com/openshift-eng/ai-helpers /opt/ai-helpers
 
 # Copy the agent binary
-COPY --from=builder /ai-agent /usr/local/bin/ai-agent
+COPY --from=builder /oompa /usr/local/bin/oompa
 
 # Use the existing non-root node user (UID 1000)
 # This matches the host UID when using --userns=keep-id
@@ -61,5 +61,5 @@ RUN git config --system --add safe.directory '*' \
     && git config --system credential.helper '!f() { echo "protocol=https"; echo "host=github.com"; echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f' \
     && git config --system init.defaultBranch main
 ENV GIT_TERMINAL_PROMPT=0
-ENTRYPOINT ["ai-agent"]
+ENTRYPOINT ["oompa"]
 CMD ["--clone-dir", "/work"]

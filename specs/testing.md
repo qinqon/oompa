@@ -43,8 +43,8 @@ go test ./...
 
 ## Verification Checklist
 
-1. Build: `go build -o ai-agent ./cmd/ai-agent`
-2. Dry run: `./ai-agent --dry-run --poll-interval 10s` -- logs what it would do without executing
+1. Build: `go build -o oompa ./cmd/oompa`
+2. Dry run: `./oompa --dry-run --poll-interval 10s` -- logs what it would do without executing
 3. Test with a trivial issue (e.g., "Fix typo in comment") labeled `good-for-ai`
 4. Verify PR is created with correct format
 5. Post a review comment, verify Claude responds and pushes

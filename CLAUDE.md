@@ -1,4 +1,4 @@
-# AI Agent: Automated GitHub Issue Resolution
+# Oompa: Autonomous Code Maintenance Agent
 
 ## Spec-Driven Development
 
@@ -15,7 +15,7 @@ This project uses spec-driven development. **Read the relevant spec before imple
 | [specs/worktree.md](specs/worktree.md) | `pkg/agent/worktree.go` + `pkg/agent/worktree_test.go` |
 | [specs/prompts.md](specs/prompts.md) | `pkg/agent/prompt.go` + `pkg/agent/prompt_test.go` |
 | [specs/loop.md](specs/loop.md) | `pkg/agent/loop.go` + `pkg/agent/loop_test.go` |
-| [specs/config.md](specs/config.md) | `cmd/ai-agent/main.go` (config parsing) + `pkg/agent/config.go` (Config struct) |
+| [specs/config.md](specs/config.md) | `cmd/oompa/main.go` (config parsing) + `pkg/agent/config.go` (Config struct) |
 | [specs/error-handling.md](specs/error-handling.md) | Error handling and safety constraints |
 | [specs/testing.md](specs/testing.md) | Mock types, test strategy, verification |
 
@@ -30,7 +30,7 @@ This project uses spec-driven development. **Read the relevant spec before imple
 ## Build & Test
 
 ```bash
-go build -o ai-agent ./cmd/ai-agent
+go build -o oompa ./cmd/oompa
 go test ./...
 ```
 
@@ -44,4 +44,4 @@ Implement in dependency order:
 5. `pkg/agent/github.go` + `pkg/agent/github_test.go`
 6. `pkg/agent/worktree.go` + `pkg/agent/worktree_test.go`
 7. `pkg/agent/loop.go` + `pkg/agent/loop_test.go`
-8. `cmd/ai-agent/main.go`
+8. `cmd/oompa/main.go`

@@ -1,25 +1,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ai-agent
-  namespace: ai-agent
+  name: oompa
+  namespace: oompa
   labels:
-    app: ai-agent
+    app: oompa
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: ai-agent
+      app: oompa
   template:
     metadata:
       labels:
-        app: ai-agent
+        app: oompa
     spec:
       containers:
-        - name: ai-agent
-          image: ghcr.io/qinqon/github-issue-resolver:latest
+        - name: oompa
+          image: ghcr.io/qinqon/oompa:latest
           args:
             - --owner=nmstate
             - --repo=kubernetes-nmstate

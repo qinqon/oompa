@@ -1,4 +1,4 @@
-module github.com/qinqon/github-issue-resolver
+module github.com/qinqon/oompa
 
 go 1.25.7
 

@@ -1,4 +1,4 @@
-# AI Agent: Automated GitHub Issue Resolution
+# Oompa: Autonomous Code Maintenance Agent
 
 ## Context
 
@@ -57,7 +57,7 @@ LOOP (every poll-interval):
 
 ### `main.go`
 - `Config` struct with fields: `Owner`, `Repo`, `Label`, `CloneDir`, `StatePath`, `PollInterval`, `VertexRegion`, `VertexProject`, `LogLevel`, `DryRun`
-- Config from env vars (`AI_AGENT_*`) with flag overrides, read in `main()`
+- Config from env vars (`OOMPA_*`) with flag overrides, read in `main()`
 - `slog` for structured logging
 - `signal.NotifyContext` for graceful shutdown
 - Constructs concrete implementations of `GitHubClient`, `CommandRunner`, `WorktreeManager`
@@ -79,7 +79,7 @@ LOOP (every poll-interval):
 - Main loop lives in `main.go`, calls these methods sequentially
 
 ### `state.go`
-- JSON file at configurable path (default `~/.ai-agent-state.json`)
+- JSON file at configurable path (default `~/.oompa-state.json`)
 - Types:
   ```go
   type State struct {
@@ -166,12 +166,12 @@ LOOP (every poll-interval):
 
 | Env Var | Flag | Default | Description |
 |---------|------|---------|-------------|
-| `AI_AGENT_OWNER` | `--owner` | `openperouter` | GitHub repo owner |
-| `AI_AGENT_REPO` | `--repo` | `openperouter` | GitHub repo name |
-| `AI_AGENT_LABEL` | `--label` | `good-for-ai` | Issue label to watch |
-| `AI_AGENT_CLONE_DIR` | `--clone-dir` | `~/ai-agent-work` | Clone/worktree directory |
-| `AI_AGENT_STATE_PATH` | `--state-path` | `~/.ai-agent-state.json` | State file |
-| `AI_AGENT_POLL_INTERVAL` | `--poll-interval` | `2m` | Poll frequency |
+| `OOMPA_OWNER` | `--owner` | `openperouter` | GitHub repo owner |
+| `OOMPA_REPO` | `--repo` | `openperouter` | GitHub repo name |
+| `OOMPA_LABEL` | `--label` | `good-for-ai` | Issue label to watch |
+| `OOMPA_CLONE_DIR` | `--clone-dir` | `~/oompa-work` | Clone/worktree directory |
+| `OOMPA_STATE_PATH` | `--state-path` | `~/.oompa-state.json` | State file |
+| `OOMPA_POLL_INTERVAL` | `--poll-interval` | `2m` | Poll frequency |
 | `GITHUB_TOKEN` | — | (required) | GitHub PAT for go-github client |
 | `CLOUD_ML_REGION` | `--vertex-region` | (required) | GCP Vertex AI region (e.g. `us-east5`) |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | `--vertex-project` | (required) | GCP project ID for Vertex |
@@ -283,8 +283,8 @@ go test ./...
 
 ## Verification
 
-1. Build: `go build -o ai-agent .`
-2. Dry run: `./ai-agent --dry-run --poll-interval 10s` — logs what it would do without executing
+1. Build: `go build -o oompa .`
+2. Dry run: `./oompa --dry-run --poll-interval 10s` — logs what it would do without executing
 3. Test with a trivial issue (e.g., "Fix typo in comment") labeled `good-for-ai`
 4. Verify PR is created with correct format
 5. Post a review comment, verify Claude responds and pushes

@@ -2,11 +2,11 @@
 
 set -euo pipefail
 
-RELEASE_REPO="qinqon/github-issue-resolver"
+RELEASE_REPO="qinqon/oompa"
 
-BINARY_NAME="ai-agent-linux-amd64"
+BINARY_NAME="oompa-linux-amd64"
 
-INSTALL_DIR="${AI_AGENT_INSTALL_DIR:-/tmp/bin}"
+INSTALL_DIR="${OOMPA_INSTALL_DIR:-/tmp/bin}"
 
 BINARY_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 
@@ -26,7 +26,7 @@ trap cleanup SIGTERM SIGINT
 
 while true; do
 
-    echo "Downloading latest ai-agent binary..."
+    echo "Downloading latest oompa binary..."
 
     # Download to a temp file first to avoid "text file busy" when overwriting a running binary
     gh release download \
@@ -39,7 +39,7 @@ while true; do
 
     chmod +x "${BINARY_PATH}"
 
-    echo "Starting ai-agent..."
+    echo "Starting oompa..."
 
     "${BINARY_PATH}" --exit-on-new-version="${RELEASE_REPO}" "$@" &
     CHILD_PID=$!
