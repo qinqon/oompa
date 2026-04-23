@@ -742,7 +742,8 @@ func TestProcessCIFailures_SkipsFlakyIssueWhenDisabled(t *testing.T) {
 }
 
 func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	ciResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	matchResult := streamResultJSON(ClaudeResult{Result: "MATCH 50"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
@@ -751,7 +752,7 @@ func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
 			{Number: 50, Title: "Flaky CI: integration-tests", Labels: []string{"flaky-test"}},
 		},
 	}
-	runner := &mockCommandRunner{stdout: claudeResult}
+	runner := &mockCommandRunner{claudeResults: [][]byte{ciResult, matchResult}}
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
@@ -823,6 +824,66 @@ func TestProcessCIFailures_CreatesNewFlakyIssueWhenNoDuplicate(t *testing.T) {
 	// Check that comments were added (unrelated notice + new issue reference)
 	if len(gh.addedComments) != 2 {
 		t.Fatalf("expected 2 comments (unrelated + issue link), got %d", len(gh.addedComments))
+	}
+}
+
+func TestProcessCIFailures_CreatesIssueWhenClaudeSaysNone(t *testing.T) {
+	ciResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	matchResult := streamResultJSON(ClaudeResult{Result: "NONE"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
+		},
+		searchResults: []Issue{
+			{Number: 50, Title: "Some other flaky test", Labels: []string{"flaky-test"}},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{ciResult, matchResult}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = true
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Claude said NONE, so a new issue should be created
+	if len(gh.createdIssues) != 1 {
+		t.Fatalf("expected 1 created issue, got %d", len(gh.createdIssues))
+	}
+	if gh.createdIssues[0].Title != "Flaky CI: integration-tests" {
+		t.Errorf("expected title 'Flaky CI: integration-tests', got %q", gh.createdIssues[0].Title)
+	}
+}
+
+func TestParseFlakyMatch(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantNum int
+		wantOK  bool
+	}{
+		{"MATCH 50", 50, true},
+		{"MATCH #50", 50, true},
+		{"MATCH 123", 123, true},
+		{"**MATCH 50", 50, true},
+		{"NONE", 0, false},
+		{"MATCH", 0, false},
+		{"MATCH abc", 0, false},
+		{"something else", 0, false},
+		{"", 0, false},
+	}
+	for _, tt := range tests {
+		num, ok := parseFlakyMatch(tt.input)
+		if num != tt.wantNum || ok != tt.wantOK {
+			t.Errorf("parseFlakyMatch(%q) = (%d, %v), want (%d, %v)", tt.input, num, ok, tt.wantNum, tt.wantOK)
+		}
 	}
 }
 

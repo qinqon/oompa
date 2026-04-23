@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -604,27 +605,35 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			if a.cfg.CreateFlakyIssues {
 				issueTitle := fmt.Sprintf("Flaky CI: %s", task.failures[0].Name)
 
-				// Search for existing open issues with the same check name
-				searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:%s \"%s\"",
-					a.cfg.Owner, a.cfg.Repo, a.cfg.FlakyLabel, issueTitle)
+				// Search for existing open issues with the flaky label
+				searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:%s",
+					a.cfg.Owner, a.cfg.Repo, a.cfg.FlakyLabel)
 				existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
 
 				var issueNum int
 				if err != nil {
 					a.logger.Warn("failed to search for existing flaky issues", "error", err)
-					// Continue with creation despite search failure
 				} else if len(existingIssues) > 0 {
-					// Issue already exists, reference it instead of creating a duplicate
-					issueNum = existingIssues[0].Number
-					a.logger.Info("found existing flaky CI issue", "issue", issueNum, "check", task.failures[0].Name)
-					if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-						fmt.Sprintf("This appears to be a duplicate of existing flaky test issue #%d.\n\n%s", issueNum, botMarker)); err != nil {
-						a.logger.Error("failed to post existing flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
+					// Ask Claude if any existing issue matches this failure
+					matchPrompt := buildFlakyMatchPrompt(task.failures[0].Name, task.failures[0].Output, existingIssues)
+					matchResult, matchErr := runClaude(ctx, a.runner, task.work.WorktreePath, matchPrompt, a.cfg, a.logger, false)
+					if matchErr != nil {
+						a.logger.Warn("failed to run Claude for flaky issue matching", "error", matchErr)
+					} else {
+						matchResponse := strings.TrimSpace(matchResult.Result)
+						if matchedNum, ok := parseFlakyMatch(matchResponse); ok {
+							issueNum = matchedNum
+							a.logger.Info("Claude matched existing flaky CI issue", "issue", issueNum, "check", task.failures[0].Name)
+							if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+								fmt.Sprintf("This appears to be a duplicate of existing flaky test issue #%d.\n\n%s", issueNum, botMarker)); err != nil {
+								a.logger.Error("failed to post existing flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
+							}
+							return
+						}
 					}
-					return
 				}
 
-				// No existing issue found, create a new one
+				// No existing issue matched, create a new one
 				issueBody := fmt.Sprintf("A CI failure was detected that appears unrelated to PR changes.\n\n"+
 					"**Detected in PR**: #%d\n"+
 					"**Commit**: %s\n"+
@@ -638,7 +647,6 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 					a.logger.Error("failed to create flaky CI issue", "error", err)
 				} else {
 					a.logger.Info("created flaky CI issue", "issue", issueNum)
-					// Update the PR comment to reference the created issue
 					if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 						fmt.Sprintf("Opened issue #%d to track this flaky test.\n\n%s", issueNum, botMarker)); err != nil {
 						a.logger.Error("failed to post flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
@@ -1145,6 +1153,23 @@ func (a *Agent) hasExistingBotComment(ctx context.Context, issueNumber int, text
 		}
 	}
 	return false
+}
+
+// parseFlakyMatch parses Claude's response to a flaky match prompt.
+// Returns the matched issue number and true if the response is "MATCH <number>".
+func parseFlakyMatch(response string) (int, bool) {
+	response = strings.TrimLeft(response, "*_")
+	response = strings.TrimSpace(response)
+	if !strings.HasPrefix(response, "MATCH") {
+		return 0, false
+	}
+	numStr := strings.TrimSpace(strings.TrimPrefix(response, "MATCH"))
+	numStr = strings.TrimPrefix(numStr, "#")
+	n, err := strconv.Atoi(numStr)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // shortSHA returns the first 7 characters of a SHA, or the full string if shorter.

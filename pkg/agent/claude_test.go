@@ -15,17 +15,28 @@ type commandCall struct {
 }
 
 type mockCommandRunner struct {
-	mu     sync.Mutex
-	calls  []commandCall
-	stdout []byte
-	stderr []byte
-	err    error
+	mu             sync.Mutex
+	calls          []commandCall
+	stdout         []byte
+	stderr         []byte
+	err            error
+	claudeResults  [][]byte
+	claudeIndex    int
 }
 
 func (m *mockCommandRunner) Run(_ context.Context, workDir string, name string, args ...string) ([]byte, []byte, error) {
 	m.mu.Lock()
 	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args})
-	stdout, stderr, err := m.stdout, m.stderr, m.err
+	stdout := m.stdout
+	if name == "claude" && len(m.claudeResults) > 0 {
+		if m.claudeIndex < len(m.claudeResults) {
+			stdout = m.claudeResults[m.claudeIndex]
+		} else {
+			stdout = m.claudeResults[len(m.claudeResults)-1]
+		}
+		m.claudeIndex++
+	}
+	stderr, err := m.stderr, m.err
 	m.mu.Unlock()
 	return stdout, stderr, err
 }
