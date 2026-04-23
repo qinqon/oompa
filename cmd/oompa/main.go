@@ -63,6 +63,7 @@ func parseConfig() (agent.Config, string) {
 	flag.StringVar(&logFile, "log-file", os.Getenv("OOMPA_LOG_FILE"), "Log file path (default: stderr)")
 
 	flag.BoolVar(&cfg.CreateFlakyIssues, "create-flaky-issues", envOrDefault("OOMPA_CREATE_FLAKY_ISSUES", "") == "true", "Create issues for unrelated CI failures (opt-in)")
+	flag.StringVar(&cfg.FlakyLabel, "flaky-label", envOrDefault("OOMPA_FLAKY_LABEL", "flaky-test"), "Label to apply to flaky CI issues")
 	flag.BoolVar(&cfg.OnlyAssigned, "only-assigned", envOrDefault("OOMPA_ONLY_ASSIGNED", "") == "true", "Only process issues assigned to the agent user")
 	flag.IntVar(&cfg.MaxWorkers, "max-workers", parseIntEnv("OOMPA_MAX_WORKERS", 1), "Maximum parallel Claude invocations (default 1 = sequential)")
 

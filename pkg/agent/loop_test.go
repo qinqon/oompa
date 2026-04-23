@@ -227,7 +227,7 @@ func newTestAgent(gh *mockGitHubClient, runner *mockCommandRunner, wt *mockWorkt
 		runner:    runner,
 		worktrees: wt,
 		state:     NewState(),
-		cfg:       Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"},
+		cfg:       Config{Owner: "owner", Repo: "repo", Label: "good-for-ai", FlakyLabel: "flaky-test"},
 		logger:    slog.Default(),
 	}
 }
@@ -1470,6 +1470,7 @@ func TestProcessTriageJobs_CreatesIssueWhenFlakyIssuesEnabled(t *testing.T) {
 		Repo:              "repo",
 		TriageJobs:        []string{}, // Empty to avoid actual HTTP calls
 		CreateFlakyIssues: true,
+		FlakyLabel:        "ci-flake",
 	}
 
 	NewAgent(gh, runner, wtm, state, cfg, slog.Default())
@@ -1486,7 +1487,7 @@ func TestProcessTriageJobs_CreatesIssueWhenFlakyIssuesEnabled(t *testing.T) {
 	}
 
 	issueNum, err := gh.CreateIssue(context.Background(), "owner", "repo",
-		"CI Failure: test-job", "Analysis output", []string{"ci-flake"})
+		"CI Failure: test-job", "Analysis output", []string{cfg.FlakyLabel})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
