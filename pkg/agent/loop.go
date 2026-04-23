@@ -605,8 +605,8 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 				issueTitle := fmt.Sprintf("Flaky CI: %s", task.failures[0].Name)
 
 				// Search for existing open issues with the same check name
-				searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:flaky-test \"%s\"",
-					a.cfg.Owner, a.cfg.Repo, issueTitle)
+				searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:%s \"%s\"",
+					a.cfg.Owner, a.cfg.Repo, a.cfg.FlakyLabel, issueTitle)
 				existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
 
 				var issueNum int
@@ -633,7 +633,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 					"**Check output**:\n```\n%s\n```\n\n"+
 					"%s",
 					task.work.PRNumber, shortSHA(task.headSHA), task.failures[0].Name, explanation, task.failures[0].Output, botMarker)
-				issueNum, err = a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{"flaky-test"})
+				issueNum, err = a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{a.cfg.FlakyLabel})
 				if err != nil {
 					a.logger.Error("failed to create flaky CI issue", "error", err)
 				} else {
@@ -1022,7 +1022,7 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 *This issue was automatically created by oompa based on CI failure analysis.*
 <!-- oompa-triage -->`, ciSource.JobName(), latestRun.ID, latestRun.LogURL, analysis)
 
-				issueNumber, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, title, body, []string{"ci-flake"})
+				issueNumber, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, title, body, []string{a.cfg.FlakyLabel})
 				if err != nil {
 					a.logger.Error("failed to create issue", "error", err)
 				} else {
