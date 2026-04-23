@@ -463,28 +463,42 @@ func (g *GoGitHubClient) CreateIssue(ctx context.Context, owner, repo, title, bo
 }
 
 func (g *GoGitHubClient) SearchIssues(ctx context.Context, query string) ([]Issue, error) {
-	result, _, err := g.client.Search.Issues(ctx, query, nil)
-	if err != nil {
-		return nil, fmt.Errorf("searching issues: %w", err)
+	var allIssues []Issue
+	opts := &github.SearchOptions{
+		ListOptions: github.ListOptions{
+			PerPage: 100,
+		},
 	}
 
-	var issues []Issue
-	for _, ghIssue := range result.Issues {
-		if ghIssue.IsPullRequest() {
-			continue
+	for {
+		result, resp, err := g.client.Search.Issues(ctx, query, opts)
+		if err != nil {
+			return nil, fmt.Errorf("searching issues: %w", err)
 		}
-		var labels []string
-		for _, l := range ghIssue.Labels {
-			labels = append(labels, l.GetName())
+
+		for _, ghIssue := range result.Issues {
+			if ghIssue.IsPullRequest() {
+				continue
+			}
+			var labels []string
+			for _, l := range ghIssue.Labels {
+				labels = append(labels, l.GetName())
+			}
+			allIssues = append(allIssues, Issue{
+				Number: ghIssue.GetNumber(),
+				Title:  ghIssue.GetTitle(),
+				Body:   ghIssue.GetBody(),
+				Labels: labels,
+			})
 		}
-		issues = append(issues, Issue{
-			Number: ghIssue.GetNumber(),
-			Title:  ghIssue.GetTitle(),
-			Body:   ghIssue.GetBody(),
-			Labels: labels,
-		})
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
-	return issues, nil
+
+	return allIssues, nil
 }
 
 // GetAuthenticatedUser returns the login, name, and email of the authenticated user.

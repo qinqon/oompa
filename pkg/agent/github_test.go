@@ -506,6 +506,79 @@ func TestSearchIssues_FiltersPullRequests(t *testing.T) {
 	}
 }
 
+func TestSearchIssues_Paginates(t *testing.T) {
+	var requestedPages []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/search/issues", func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		perPage := r.URL.Query().Get("per_page")
+
+		// Verify per_page is set to 100
+		if perPage != "100" {
+			t.Errorf("expected per_page=100, got %q", perPage)
+		}
+
+		requestedPages = append(requestedPages, page)
+
+		// Return different results based on page
+		if page == "" || page == "1" {
+			// First page
+			w.Header().Set("Link", `<https://api.github.com/search/issues?page=2>; rel="next", <https://api.github.com/search/issues?page=2>; rel="last"`)
+			result := map[string]any{
+				"total_count": 3,
+				"items": []map[string]any{
+					{
+						"number": 1,
+						"title":  "Issue 1",
+						"body":   "Body 1",
+						"labels": []map[string]any{{"name": "flaky-test"}},
+					},
+					{
+						"number": 2,
+						"title":  "Issue 2",
+						"body":   "Body 2",
+						"labels": []map[string]any{{"name": "flaky-test"}},
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(result)
+		} else if page == "2" {
+			// Second page (last page)
+			result := map[string]any{
+				"total_count": 3,
+				"items": []map[string]any{
+					{
+						"number": 3,
+						"title":  "Issue 3",
+						"body":   "Body 3",
+						"labels": []map[string]any{{"name": "flaky-test"}},
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(result)
+		}
+	})
+
+	gh := setupTestClient(t, mux)
+	issues, err := gh.SearchIssues(context.Background(), "repo:owner/repo label:flaky-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have collected all 3 issues from both pages
+	if len(issues) != 3 {
+		t.Fatalf("expected 3 issues from 2 pages, got %d", len(issues))
+	}
+	if issues[0].Number != 1 || issues[1].Number != 2 || issues[2].Number != 3 {
+		t.Errorf("expected issues [1, 2, 3], got %v", []int{issues[0].Number, issues[1].Number, issues[2].Number})
+	}
+
+	// Verify we made requests to both pages
+	if len(requestedPages) != 2 {
+		t.Errorf("expected 2 page requests, got %d: %v", len(requestedPages), requestedPages)
+	}
+}
+
 func TestGetCheckRuns_UsesPerPage100(t *testing.T) {
 	var receivedPerPage int
 	mux := http.NewServeMux()
