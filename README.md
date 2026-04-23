@@ -163,6 +163,50 @@ RestartSec=10
 WantedBy=default.target
 ```
 
+### Example: periodic CI triage (one-shot with timer)
+
+For one-shot workflows like periodic CI triage, use a `Type=oneshot` service paired with a systemd timer instead of `Restart=always`.
+
+```ini
+# ~/.config/systemd/user/oompa-periodic-triage.service
+[Unit]
+Description=Oompa Periodic CI Triage - myorg/myrepo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/oompa/env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+RuntimeDirectory=oompa-periodic-triage
+ExecStartPre=/bin/bash -c 'gh release download --repo qinqon/oompa --pattern oompa-linux-amd64 --dir %t/oompa-periodic-triage --clobber && chmod +x %t/oompa-periodic-triage/oompa-linux-amd64'
+ExecStart=%t/oompa-periodic-triage/oompa-linux-amd64 --repo myorg/myrepo --triage-jobs https://prow.example.com/view/gs/bucket/logs/periodic-e2e-job/ --create-flaky-issues --one-shot --log-level info
+```
+
+```ini
+# ~/.config/systemd/user/oompa-periodic-triage.timer
+[Unit]
+Description=Run Oompa Periodic CI Triage daily at 9 AM
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Europe/Madrid
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable the timer (not the service):
+
+```bash
+systemctl --user enable --now oompa-periodic-triage.timer
+```
+
+- `Type=oneshot` lets the service run to completion and exit.
+- `--one-shot` makes oompa run a single triage cycle and exit.
+- `Persistent=true` ensures a missed run (e.g. machine was off) is caught up on next boot.
+- The timer's `OnCalendar` supports IANA timezones (e.g. `Europe/Madrid`, `US/Eastern`).
+
 ### Environment file
 
 Store credentials in `~/.config/oompa/env`:
