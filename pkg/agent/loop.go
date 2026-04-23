@@ -17,6 +17,10 @@ const (
 	botMarker = "<!-- oompa-bot -->"
 )
 
+func ciMarker(sha string) string {
+	return fmt.Sprintf("<!-- oompa-bot ci:%s -->", shortSHA(sha))
+}
+
 // Agent holds all dependencies and runs the main processing loop.
 type Agent struct {
 	gh        GitHubClient
@@ -508,16 +512,11 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		// Check if we already investigated this SHA (skip if no prior attempts, allow retries otherwise)
 		if work.LastCheckedCISHA == headSHA && work.CIFixAttempts == 0 {
-			// Already investigated this SHA and haven't started fix attempts yet
-			// (e.g., recovered from restart or marked as UNRELATED)
 			continue
 		}
 
-		// Fallback: check if we already investigated this SHA by looking for a bot comment
-		// (handles state recovery after restarts)
-		if work.LastCheckedCISHA == "" && a.alreadyCheckedCI(ctx, work.PRNumber, headSHA) {
+		if a.alreadyCheckedCI(ctx, work.PRNumber, headSHA) {
 			work.LastCheckedCISHA = headSHA
 			a.logger.Info("CI already investigated for this SHA (found existing comment), skipping", "pr", work.PRNumber, "sha", shortSHA(headSHA))
 			continue
@@ -594,16 +593,9 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
 			explanation := strings.TrimPrefix(cleaned, "UNRELATED")
 			explanation = strings.TrimSpace(explanation)
-
-			// Only post comment if we haven't already reported this SHA as unrelated
-			// This prevents duplicate comments across poll cycles for the same commit
-			if task.work.LastCheckedCISHA != task.headSHA || task.work.LastCIStatus != "unrelated-failure" {
-				comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(task.headSHA), explanation, botMarker)
-				if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
-					a.logger.Error("failed to post CI unrelated comment", "pr", task.work.PRNumber, "error", err)
-				}
-			} else {
-				a.logger.Info("skipping duplicate unrelated comment for same SHA", "pr", task.work.PRNumber, "sha", shortSHA(task.headSHA))
+			comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(task.headSHA), explanation, ciMarker(task.headSHA))
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
+				a.logger.Error("failed to post CI unrelated comment", "pr", task.work.PRNumber, "error", err)
 			}
 			task.work.LastCIStatus = "unrelated-failure"
 			task.work.LastCheckedCISHA = task.headSHA
@@ -705,13 +697,13 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		if pushed {
 			a.logger.Info("CI failure is related, pushed a fix", "pr", task.work.PRNumber)
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("CI was failing on commit %s. Pushed a fix.\n\n%s", shortSHA(task.headSHA), botMarker)); err != nil {
+				fmt.Sprintf("CI was failing on commit %s. Pushed a fix.\n\n%s", shortSHA(task.headSHA), ciMarker(task.headSHA))); err != nil {
 				a.logger.Error("failed to post CI fix comment", "pr", task.work.PRNumber, "error", err)
 			}
 		} else {
 			a.logger.Warn("Claude said RELATED but no changes to push", "pr", task.work.PRNumber)
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("CI is failing on commit %s. Investigated but could not push a fix.\n\n%s", shortSHA(task.headSHA), botMarker)); err != nil {
+				fmt.Sprintf("CI is failing on commit %s. Investigated but could not push a fix.\n\n%s", shortSHA(task.headSHA), ciMarker(task.headSHA))); err != nil {
 				a.logger.Error("failed to post CI investigation comment", "pr", task.work.PRNumber, "error", err)
 			}
 		}
@@ -1163,17 +1155,14 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// alreadyCheckedCI returns true if a bot comment about CI investigation mentioning
-// the given SHA already exists on the PR, indicating this commit was already investigated for CI.
 func (a *Agent) alreadyCheckedCI(ctx context.Context, prNumber int, sha string) bool {
 	comments, err := a.gh.GetIssueComments(ctx, a.cfg.Owner, a.cfg.Repo, prNumber, 0)
 	if err != nil {
 		return false
 	}
-	short := shortSHA(sha)
+	marker := ciMarker(sha)
 	for _, c := range comments {
-		// Only match CI-specific comments (not rebase or other comments mentioning the SHA)
-		if strings.Contains(c.Body, botMarker) && strings.Contains(c.Body, short) && strings.Contains(c.Body, "CI") {
+		if strings.Contains(c.Body, marker) {
 			return true
 		}
 	}
