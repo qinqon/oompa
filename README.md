@@ -36,7 +36,7 @@ export GITHUB_TOKEN="ghp_..."
 export CLOUD_ML_REGION="us-east5"
 export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
 
-./oompa --owner myorg --repo myrepo
+./oompa --repo myorg/myrepo
 ```
 
 ### With a GitHub App
@@ -48,7 +48,7 @@ export GITHUB_APP_INSTALLATION_ID="78901234"
 export CLOUD_ML_REGION="us-east5"
 export ANTHROPIC_VERTEX_PROJECT_ID="my-gcp-project"
 
-./oompa --owner myorg --repo myrepo
+./oompa --repo myorg/myrepo
 ```
 
 ### Setting up a GitHub App
@@ -84,26 +84,119 @@ When using GitHub App auth, the agent pushes branches directly to the upstream r
 
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|
-| `--owner` | `OOMPA_OWNER` | `openperouter` | GitHub repo owner |
-| `--repo` | `OOMPA_REPO` | `openperouter` | GitHub repo name |
+| `--repo` | `OOMPA_REPO` | — | GitHub repo as `owner/repo` (required) |
 | `--label` | `OOMPA_LABEL` | `good-for-ai` | Issue label to watch |
-| `--clone-dir` | `OOMPA_CLONE_DIR` | `~/oompa-work` | Working directory for clones and worktrees |
+| `--clone-dir` | `OOMPA_CLONE_DIR` | `/tmp/oompa-work` | Working directory for clones and worktrees |
 | `--poll-interval` | `OOMPA_POLL_INTERVAL` | `2m` | How often to poll GitHub |
 | `--log-level` | `OOMPA_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 | `--log-file` | `OOMPA_LOG_FILE` | stderr | Write logs to a file instead of stderr |
 | `--signed-off-by` | `OOMPA_SIGNED_OFF_BY` | auto-detected | `Signed-off-by` line for commits |
 | `--reviewers` | `OOMPA_REVIEWERS` | all | Comma-separated allowlist of reviewers to respond to |
+| `--fork` | `OOMPA_FORK` | — | Fork repo as `owner/repo` for pushing branches |
+| `--watch-prs` | `OOMPA_WATCH_PRS` | — | Comma-separated PR numbers to monitor (bypasses issue discovery) |
+| `--reactions` | `OOMPA_REACTIONS` | all | Comma-separated list: `reviews`, `ci`, `conflicts`, `rebase` |
+| `--only-assigned` | `OOMPA_ONLY_ASSIGNED` | `false` | Only process issues assigned to the agent user |
 | `--create-flaky-issues` | `OOMPA_CREATE_FLAKY_ISSUES` | `false` | Create issues for unrelated CI failures (opt-in) |
+| `--flaky-label` | `OOMPA_FLAKY_LABEL` | `flaky-test` | Label to apply to flaky CI issues |
+| `--triage-jobs` | `OOMPA_TRIAGE_JOBS` | — | Comma-separated CI job URLs to monitor for periodic job triage |
+| `--max-workers` | `OOMPA_MAX_WORKERS` | `1` | Maximum parallel Claude invocations |
+| `--exit-on-new-version` | `OOMPA_EXIT_ON_NEW_VERSION` | — | Exit when a new release is available (`owner/repo`) |
 | `--dry-run` | — | `false` | Log actions without executing them |
 | `--one-shot` | — | `false` | Run one poll cycle and exit |
 | — | `GITHUB_TOKEN` | *required (PAT)* | GitHub personal access token |
 | `--github-app-id` | `GITHUB_APP_ID` | — | GitHub App ID |
 | `--github-app-private-key` | `GITHUB_APP_PRIVATE_KEY_PATH` | — | Path to GitHub App private key PEM file |
 | `--github-app-installation-id` | `GITHUB_APP_INSTALLATION_ID` | — | GitHub App installation ID |
+| `--github-user` | `GITHUB_USER` | auto-detected | GitHub username (e.g. `myapp[bot]`) |
+| `--git-author-name` | `GIT_AUTHOR_NAME` | auto-detected | Git commit author name |
+| `--git-author-email` | `GIT_AUTHOR_EMAIL` | auto-detected | Git commit author email |
 | `--vertex-region` | `CLOUD_ML_REGION` | *required* | GCP Vertex AI region |
 | `--vertex-project` | `ANTHROPIC_VERTEX_PROJECT_ID` | *required* | GCP project ID for Vertex AI |
 
 `GITHUB_TOKEN` is required when not using GitHub App auth. When all three `--github-app-*` flags are provided, the agent uses App auth instead.
+
+## Running as a systemd service
+
+Oompa can run as a systemd user service that automatically downloads the latest release binary on each (re)start. Use `RuntimeDirectory=` to give each unit its own isolated directory and `--exit-on-new-version` to trigger a restart when a new release is published.
+
+### Example: issue resolver
+
+```ini
+# ~/.config/systemd/user/oompa-issue-resolver.service
+[Unit]
+Description=Oompa Issue Resolver - myorg/myrepo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/oompa/env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+RuntimeDirectory=oompa-resolver
+ExecStartPre=/bin/bash -c 'gh release download --repo qinqon/oompa --pattern oompa-linux-amd64 --dir %t/oompa-resolver --clobber && chmod +x %t/oompa-resolver/oompa-linux-amd64'
+ExecStart=%t/oompa-resolver/oompa-linux-amd64 --exit-on-new-version=qinqon/oompa --repo myorg/myrepo --poll-interval 2m --log-level info
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+### Example: PR babysitter
+
+```ini
+# ~/.config/systemd/user/oompa-pr-babysitter.service
+[Unit]
+Description=Oompa PR Babysitter - myorg/myrepo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/oompa/env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+RuntimeDirectory=oompa-babysitter
+ExecStartPre=/bin/bash -c 'gh release download --repo qinqon/oompa --pattern oompa-linux-amd64 --dir %t/oompa-babysitter --clobber && chmod +x %t/oompa-babysitter/oompa-linux-amd64'
+ExecStart=%t/oompa-babysitter/oompa-linux-amd64 --exit-on-new-version=qinqon/oompa --repo myorg/myrepo --watch-prs 123,456 --reactions ci,conflicts,rebase --fork myuser/myrepo --poll-interval 2m --log-level info
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+### Environment file
+
+Store credentials in `~/.config/oompa/env`:
+
+```bash
+GITHUB_TOKEN=ghp_...
+CLOUD_ML_REGION=us-east5
+ANTHROPIC_VERTEX_PROJECT_ID=my-gcp-project
+```
+
+### How it works
+
+- `ExecStartPre` downloads the latest release binary before each start.
+- `--exit-on-new-version=qinqon/oompa` makes the agent exit when it detects a newer release during polling.
+- `Restart=always` restarts the service on exit, which triggers `ExecStartPre` to download the new binary.
+- `RuntimeDirectory=` gives each unit its own directory under `/run/user/<uid>/`, so multiple units don't interfere with each other.
+- `%t` is the systemd specifier for the runtime directory root.
+- `%h` is the systemd specifier for the user's home directory.
+
+### Managing the services
+
+```bash
+# Enable and start
+systemctl --user enable --now oompa-issue-resolver.service
+
+# Check status
+systemctl --user status oompa-issue-resolver.service
+
+# View logs
+journalctl --user -u oompa-issue-resolver.service -f
+
+# Restart (re-downloads the binary)
+systemctl --user restart oompa-issue-resolver.service
+```
 
 ## State
 
