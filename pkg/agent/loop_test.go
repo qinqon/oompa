@@ -235,6 +235,7 @@ func newTestAgent(gh *mockGitHubClient, runner *mockCommandRunner, wt *mockWorkt
 		state:     NewState(),
 		cfg:       Config{Owner: "owner", Repo: "repo", Label: "good-for-ai", FlakyLabel: "flaky-test"},
 		logger:    slog.Default(),
+		codeAgent: &ClaudeCodeAgent{},
 	}
 }
 
