@@ -16,10 +16,39 @@ const (
 	// botMarker is a hidden HTML comment added to all agent-posted comments
 	// so they can be distinguished from manual comments by the same user.
 	botMarker = "<!-- oompa-bot -->"
+
+	// Status values for IssueWork
+	StatusImplementing = "implementing"
+	StatusPROpen       = "pr-open"
+	StatusFailed       = "failed"
+
+	// Labels
+	labelAIFailed = "ai-failed"
 )
 
 func ciMarker(sha string) string {
 	return fmt.Sprintf("<!-- oompa-bot ci:%s -->", shortSHA(sha))
+}
+
+// issueBranchName returns the branch name for a given issue number.
+func issueBranchName(issueNumber int) string {
+	return fmt.Sprintf("ai/issue-%d", issueNumber)
+}
+
+// classifyPRs finds the first open PR and checks if any PR was merged.
+func classifyPRs(prs []PR) (openPR *PR, hasMerged bool) {
+	for i := range prs {
+		if prs[i].State == "open" && openPR == nil {
+			openPR = &prs[i]
+		}
+		if prs[i].Merged {
+			hasMerged = true
+		}
+		if openPR != nil && hasMerged {
+			break
+		}
+	}
+	return openPR, hasMerged
 }
 
 // Agent holds all dependencies and runs the main processing loop.
@@ -150,16 +179,14 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 	for _, issue := range issues {
 		if work, exists := a.state.ActiveIssues[issue.Number]; exists {
 			// Re-check for PR if we lost track of it
-			if work.PRNumber == 0 && work.Status == "implementing" {
+			if work.PRNumber == 0 && work.Status == StatusImplementing {
 				prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubHeadOwner, work.BranchName)
 				if err == nil {
-					for _, p := range prs {
-						if p.State == "open" {
-							work.PRNumber = p.Number
-							work.Status = "pr-open"
-							a.logger.Info("found PR for tracked issue", "issue", issue.Number, "pr", work.PRNumber)
-							break
-						}
+					openPR, _ := classifyPRs(prs)
+					if openPR != nil {
+						work.PRNumber = openPR.Number
+						work.Status = StatusPROpen
+						a.logger.Info("found PR for tracked issue", "issue", issue.Number, "pr", work.PRNumber)
 					}
 				}
 			}
@@ -174,23 +201,13 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 
 		a.logger.Info("processing new issue", "issue", issue.Number, "title", issue.Title)
 
-		branchName := fmt.Sprintf("ai/issue-%d", issue.Number)
+		branchName := issueBranchName(issue.Number)
 
 		// Check if a PR already exists for this issue (open, closed, or merged)
 		prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubHeadOwner, branchName)
 		if err == nil && len(prs) > 0 {
 			// Find the first open PR, or check if any was merged
-			var openPR *PR
-			hasMerged := false
-			for i := range prs {
-				if prs[i].State == "open" {
-					openPR = &prs[i]
-					break
-				}
-				if prs[i].Merged {
-					hasMerged = true
-				}
-			}
+			openPR, hasMerged := classifyPRs(prs)
 			if openPR != nil {
 				a.logger.Info("PR already exists for issue", "issue", issue.Number, "pr", openPR.Number)
 				a.state.ActiveIssues[issue.Number] = &IssueWork{
@@ -198,7 +215,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 					IssueTitle:  issue.Title,
 					BranchName:  branchName,
 					PRNumber:    openPR.Number,
-					Status:      "pr-open",
+					Status:      StatusPROpen,
 					CreatedAt:   time.Now(),
 				}
 				continue
@@ -245,7 +262,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			IssueTitle:   issue.Title,
 			WorktreePath: worktreePath,
 			BranchName:   branchName,
-			Status:       "implementing",
+			Status:       StatusImplementing,
 			CreatedAt:    time.Now(),
 		}
 
@@ -266,9 +283,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		_, err := runClaude(ctx, a.runner, task.worktreePath, prompt, a.cfg, a.logger, false)
 		if err != nil {
 			a.logger.Error("claude failed", "issue", task.issue.Number, "error", err)
-			task.work.Status = "failed"
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			a.markIssueFailed(ctx, task.issue.Number, task.work)
 			return
 		}
 
@@ -276,27 +291,21 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		logOut, _, _ := a.runner.Run(ctx, task.worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--oneline")
 		if strings.TrimSpace(string(logOut)) == "" {
 			a.logger.Warn("claude finished but produced no commits", "issue", task.issue.Number)
-			task.work.Status = "failed"
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			a.markIssueFailed(ctx, task.issue.Number, task.work)
 			return
 		}
 
 		// Squash all commits into a single commit before pushing
 		if err := a.gitSquashCommits(ctx, task.worktreePath, task.issue.Number, task.issue.Title); err != nil {
 			a.logger.Error("failed to squash commits", "issue", task.issue.Number, "error", err)
-			task.work.Status = "failed"
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			a.markIssueFailed(ctx, task.issue.Number, task.work)
 			return
 		}
 
 		// Push the branch (force push because squashing rewrites history)
 		if err := a.gitPush(ctx, task.worktreePath, true); err != nil {
 			a.logger.Error("failed to push branch", "issue", task.issue.Number, "error", err)
-			task.work.Status = "failed"
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			a.markIssueFailed(ctx, task.issue.Number, task.work)
 			return
 		}
 
@@ -312,14 +321,12 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			a.logger.Error("failed to create PR", "issue", task.issue.Number, "error", err)
 			// Clean up the remote branch to avoid orphaned branches
 			a.deleteRemoteBranch(ctx, task.worktreePath, task.branchName)
-			task.work.Status = "failed"
-			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
-			_ = a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, "ai-failed")
+			a.markIssueFailed(ctx, task.issue.Number, task.work)
 			return
 		}
 
 		task.work.PRNumber = prNumber
-		task.work.Status = "pr-open"
+		task.work.Status = StatusPROpen
 		a.logger.Info("created PR", "issue", task.issue.Number, "pr", prNumber)
 
 		_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
@@ -332,7 +339,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 	var tasks []reviewTask
 
 	for _, work := range a.state.ActiveIssues {
-		if work.PRNumber == 0 || work.Status != "pr-open" {
+		if work.PRNumber == 0 || work.Status != StatusPROpen {
 			continue
 		}
 
@@ -503,7 +510,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 	var tasks []ciTask
 
 	for _, work := range a.state.ActiveIssues {
-		if work.PRNumber == 0 || work.Status != "pr-open" {
+		if work.PRNumber == 0 || work.Status != StatusPROpen {
 			continue
 		}
 
@@ -775,7 +782,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 	var tasks []conflictTask
 
 	for _, work := range a.state.ActiveIssues {
-		if work.PRNumber == 0 || work.Status != "pr-open" {
+		if work.PRNumber == 0 || work.Status != StatusPROpen {
 			continue
 		}
 
@@ -812,13 +819,8 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", a.originDefaultBranch())
 		if rebaseErr == nil {
 			// Rebase succeeded, force push
-			pushRemote := "origin"
-			if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
-				pushRemote = wtm.PushRemote()
-			}
-			_, stderr, pushErr := a.runner.Run(ctx, work.WorktreePath, "git", "push", pushRemote, "--force-with-lease")
-			if pushErr != nil {
-				a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr, "stderr", string(stderr))
+			if pushErr := a.gitPush(ctx, work.WorktreePath, true); pushErr != nil {
+				a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr)
 			} else {
 				a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
 				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
@@ -890,7 +892,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 // For PRs with actual merge conflicts (dirty state), use ProcessConflicts instead.
 func (a *Agent) ProcessRebase(ctx context.Context) {
 	for _, work := range a.state.ActiveIssues {
-		if work.PRNumber == 0 || work.Status != "pr-open" {
+		if work.PRNumber == 0 || work.Status != StatusPROpen {
 			continue
 		}
 
@@ -940,13 +942,8 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 			continue
 		}
 
-		pushRemote := "origin"
-		if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
-			pushRemote = wtm.PushRemote()
-		}
-		_, stderr, pushErr := a.runner.Run(ctx, work.WorktreePath, "git", "push", pushRemote, "--force-with-lease")
-		if pushErr != nil {
-			a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr, "stderr", string(stderr))
+		if pushErr := a.gitPush(ctx, work.WorktreePath, true); pushErr != nil {
+			a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr)
 		} else {
 			a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
@@ -1255,6 +1252,14 @@ func (a *Agent) defaultBranch() string {
 	return "main"
 }
 
+// pushRemote returns the name of the push remote (e.g. "origin", "fork").
+func (a *Agent) pushRemote() string {
+	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
+		return wtm.PushRemote()
+	}
+	return "origin"
+}
+
 // buildPRBody constructs a PR description. If Claude wrote a .pr-body.md file
 // (filled from the repo's PR template), that is used. Otherwise falls back to
 // constructing a body from the git log.
@@ -1363,10 +1368,7 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 
 // deleteRemoteBranch removes a branch from the push remote.
 func (a *Agent) deleteRemoteBranch(ctx context.Context, worktreePath, branchName string) {
-	pushRemote := "origin"
-	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
-		pushRemote = wtm.PushRemote()
-	}
+	pushRemote := a.pushRemote()
 	_, stderr, err := a.runner.Run(ctx, worktreePath, "git", "push", pushRemote, "--delete", branchName)
 	if err != nil {
 		a.logger.Warn("failed to delete remote branch", "branch", branchName, "error", err, "stderr", string(stderr))
@@ -1377,10 +1379,7 @@ func (a *Agent) deleteRemoteBranch(ctx context.Context, worktreePath, branchName
 
 // gitPush pushes the current branch to the push remote.
 func (a *Agent) gitPush(ctx context.Context, worktreePath string, force bool) error {
-	pushRemote := "origin"
-	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
-		pushRemote = wtm.PushRemote()
-	}
+	pushRemote := a.pushRemote()
 
 	// Get the current branch name for the refspec
 	branchOut, _, err := a.runner.Run(ctx, worktreePath, "git", "rev-parse", "--abbrev-ref", "HEAD")
@@ -1478,4 +1477,15 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// markIssueFailed marks an issue as failed, unassigns the agent, and adds the ai-failed label.
+func (a *Agent) markIssueFailed(ctx context.Context, issueNumber int, work *IssueWork) {
+	work.Status = StatusFailed
+	if err := a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueNumber, a.cfg.GitHubUser); err != nil {
+		a.logger.Warn("failed to unassign issue", "issue", issueNumber, "error", err)
+	}
+	if err := a.gh.AddLabel(ctx, a.cfg.Owner, a.cfg.Repo, issueNumber, labelAIFailed); err != nil {
+		a.logger.Warn("failed to add failure label", "issue", issueNumber, "error", err)
+	}
 }

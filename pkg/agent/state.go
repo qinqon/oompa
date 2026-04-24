@@ -48,7 +48,7 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 		}
 
 		for _, issue := range issues {
-		branchName := fmt.Sprintf("ai/issue-%d", issue.Number)
+		branchName := issueBranchName(issue.Number)
 		worktreePath := filepath.Join(cloneDir, "worktrees", branchName)
 
 		work := &IssueWork{
@@ -68,21 +68,11 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 
 		if len(prs) > 0 {
 			// Find the first open PR
-			var openPR *PR
-			hasMerged := false
-			for i := range prs {
-				if prs[i].State == "open" {
-					openPR = &prs[i]
-					break
-				}
-				if prs[i].Merged {
-					hasMerged = true
-				}
-			}
+			openPR, hasMerged := classifyPRs(prs)
 			switch {
 			case openPR != nil:
 				work.PRNumber = openPR.Number
-				work.Status = "pr-open"
+				work.Status = StatusPROpen
 				// lastCommentID stays 0 — ProcessReviewComments uses :eyes: reaction to skip already-handled comments
 				logger.Info("recovered state from GitHub", "issue", issue.Number, "pr", work.PRNumber)
 			case hasMerged:
@@ -97,13 +87,13 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 			// No PR yet — check if it has the ai-failed label
 			hasFailed := false
 			for _, l := range issue.Labels {
-				if l == "ai-failed" {
+				if l == labelAIFailed {
 					hasFailed = true
 					break
 				}
 			}
 			if hasFailed {
-				work.Status = "failed"
+				work.Status = StatusFailed
 				logger.Info("recovered failed issue from GitHub", "issue", issue.Number)
 			} else {
 				// No PR and not failed — this is a new issue to process
@@ -144,7 +134,7 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 			WorktreePath: filepath.Join(cloneDir, "worktrees", pr.Head),
 			BranchName:   pr.Head,
 			PRNumber:     prNumber,
-			Status:       "pr-open",
+			Status:       StatusPROpen,
 			CreatedAt:    time.Now(),
 		}
 
