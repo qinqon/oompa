@@ -679,7 +679,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			return
 		}
 
-		// Claude said RELATED — check if there are fixup commits or uncommitted changes
+		// Claude said RELATED — check if there are fixup commits, amended commits, or uncommitted changes
 		pushed := false
 		hasFixupCommits := a.hasFixupCommits(ctx, task.work.WorktreePath)
 		hasUncommitted := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
@@ -694,16 +694,21 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 				pushed = true
 			}
 		} else if hasUncommitted {
-			// Only amend HEAD if this is a single-commit PR
-			// For multi-commit PRs, Claude should have created fixup commits
-			if len(task.commits) > 1 {
-				a.logger.Error("CI fix produced uncommitted changes for multi-commit PR but no fixup commits", "pr", task.work.PRNumber, "commits", len(task.commits))
-				// Don't amend HEAD — this would attach the fix to the wrong commit
+			// Claude left uncommitted changes — amend them into HEAD as fallback
+			if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
+				a.logger.Error("failed to amend commit for CI fix", "pr", task.work.PRNumber, "error", err)
+			} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
+				a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
 			} else {
-				// For single-commit PRs, amending HEAD is correct
-				if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
-					a.logger.Error("failed to amend commit for CI fix", "pr", task.work.PRNumber, "error", err)
-				} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
+				pushed = true
+			}
+		} else {
+			// No fixups and no uncommitted changes — Claude may have amended
+			// the commit directly. Check if HEAD differs from the remote SHA.
+			localSHA, _, err := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
+			if err == nil && strings.TrimSpace(string(localSHA)) != task.headSHA {
+				a.logger.Info("Claude amended commit directly, pushing", "pr", task.work.PRNumber)
+				if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 					a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
 				} else {
 					pushed = true

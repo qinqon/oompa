@@ -144,13 +144,17 @@ Instructions:
 
 	if len(commits) > 1 {
 		prompt += `   - IMPORTANT: This PR has multiple commits. You MUST identify which specific commit introduced the breaking change
-   - After fixing the code, create a fixup commit targeting the commit that introduced the issue:
+   - After fixing the code, amend your fix into the commit that introduced the issue:
      git add <fixed-files>
-     git commit --fixup <SHA-of-commit-that-introduced-issue>
-   - Do NOT use "git commit --amend" as that would incorrectly amend the last commit` + signoff + `
+     git commit --amend --no-edit
+   - If the breaking commit is NOT the HEAD commit, use fixup instead:
+     git add <fixed-files>
+     git commit --fixup <SHA-of-commit-that-introduced-issue>` + signoff + `
 `
 	} else {
-		prompt += `   - After fixing the code, stage your changes with "git add" but do NOT commit
+		prompt += `   - After fixing the code, amend your fix into the commit:
+     git add <fixed-files>
+     git commit --amend --no-edit` + signoff + `
 `
 	}
 

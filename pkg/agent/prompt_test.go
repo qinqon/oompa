@@ -189,13 +189,13 @@ func TestBuildCIFixPrompt(t *testing.T) {
 		t.Error("prompt missing Signed-off-by when provided for multi-commit PR")
 	}
 
-	// Single-commit PR should NOT include signed-off-by instruction (no new commits created)
+	// Single-commit PR should also include signed-off-by (amend rewrites the commit)
 	singleCommit := []Commit{
 		{SHA: "abc123def456", Subject: "Fix handler"},
 	}
 	prompt = buildCIFixPrompt(work, failures, diff, singleCommit, "Test User <test@example.com>")
-	if strings.Contains(prompt, "Signed-off-by:") {
-		t.Error("prompt should NOT include Signed-off-by for single-commit PR (no new commits)")
+	if !strings.Contains(prompt, "Signed-off-by: Test User <test@example.com>") {
+		t.Error("prompt missing Signed-off-by for single-commit PR (amend rewrites commit)")
 	}
 }
 
