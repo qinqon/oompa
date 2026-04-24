@@ -129,9 +129,12 @@ Instructions:
      Focus ONLY on describing the failure itself: what test failed, what the error was, and why it looks flaky or infrastructure-related.
      The explanation will be used to create a standalone flaky test issue, so it must make sense without any PR context.
 3. If the failure IS directly related to the PR changes:
-   - Your output MUST start with the word RELATED
    - Fix the code so that CI passes
    - Run "make lint" and "make test" locally to verify
+   - CRITICAL: After you are done fixing, your FINAL text output MUST start with the word RELATED
+     followed by a brief summary of what you fixed. This prefix is mandatory — the automation
+     parses it to determine next steps. If you forget to start with RELATED, your entire fix
+     will be discarded.
    `
 
 	signoff := ""
