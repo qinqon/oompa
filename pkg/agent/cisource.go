@@ -177,7 +177,7 @@ func (g *GCSJobSource) ListRecentRuns(ctx context.Context, limit int) ([]JobRun,
 	listURL := fmt.Sprintf("https://storage.googleapis.com/storage/v1/b/%s/o?prefix=%s&delimiter=/",
 		url.PathEscape(g.bucket), url.PathEscape(g.prefix))
 
-	req, err := http.NewRequestWithContext(ctx, "GET", listURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", listURL, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("creating list request: %w", err)
 	}
@@ -241,7 +241,7 @@ func (g *GCSJobSource) ListRecentRuns(ctx context.Context, limit int) ([]JobRun,
 func (g *GCSJobSource) fetchFinishedJSON(ctx context.Context, buildID string) (string, time.Time, error) {
 	finishedURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s%s/finished.json", g.bucket, g.prefix, buildID)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", finishedURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", finishedURL, http.NoBody)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -276,7 +276,7 @@ func (g *GCSJobSource) fetchFinishedJSON(ctx context.Context, buildID string) (s
 	} else {
 		// Fallback: try to fetch started.json
 		startedURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s%s/started.json", g.bucket, g.prefix, buildID)
-		startedReq, _ := http.NewRequestWithContext(ctx, "GET", startedURL, nil)
+		startedReq, _ := http.NewRequestWithContext(ctx, "GET", startedURL, http.NoBody)
 		startedResp, err := g.client.Do(startedReq)
 		if err == nil && startedResp.StatusCode == http.StatusOK {
 			var started gcsStartedJSON
@@ -293,7 +293,7 @@ func (g *GCSJobSource) fetchFinishedJSON(ctx context.Context, buildID string) (s
 func (g *GCSJobSource) FetchLog(ctx context.Context, runID string) (string, error) {
 	logURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s%s/build-log.txt", g.bucket, g.prefix, runID)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", logURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", logURL, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("creating log request: %w", err)
 	}

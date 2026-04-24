@@ -79,7 +79,7 @@ func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
 		currentURL := strings.TrimSpace(string(urlOut))
 		if currentURL != g.repoURL {
 			// Origin points to a different repo — re-set it
-			g.runner.Run(ctx, g.cloneDir, "git", "remote", "set-url", "origin", g.repoURL)
+			g.runner.Run(ctx, g.cloneDir, "git", "remote", "set-url", "origin", g.repoURL) //nolint:errcheck // best-effort
 		}
 
 		_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "fetch", "origin")
@@ -113,14 +113,14 @@ func (g *GitWorktreeManager) SetGitIdentity(name, email string) {
 // and disables commit signing to avoid using the host's GPG/SSH keys.
 func (g *GitWorktreeManager) configureGitIdentity(ctx context.Context, dir string) {
 	if g.gitAuthorName != "" {
-		g.runner.Run(ctx, dir, "git", "config", "user.name", g.gitAuthorName)
+		g.runner.Run(ctx, dir, "git", "config", "user.name", g.gitAuthorName) //nolint:errcheck // best-effort
 	}
 	if g.gitAuthorEmail != "" {
-		g.runner.Run(ctx, dir, "git", "config", "user.email", g.gitAuthorEmail)
+		g.runner.Run(ctx, dir, "git", "config", "user.email", g.gitAuthorEmail) //nolint:errcheck // best-effort
 	}
 	if g.gitAuthorName != "" || g.gitAuthorEmail != "" {
-		g.runner.Run(ctx, dir, "git", "config", "commit.gpgsign", "false")
-		g.runner.Run(ctx, dir, "git", "config", "tag.gpgsign", "false")
+		g.runner.Run(ctx, dir, "git", "config", "commit.gpgsign", "false") //nolint:errcheck // best-effort
+		g.runner.Run(ctx, dir, "git", "config", "tag.gpgsign", "false")    //nolint:errcheck // best-effort
 	}
 }
 
@@ -130,7 +130,7 @@ func (g *GitWorktreeManager) ensureForkRemote(ctx context.Context) {
 		return
 	}
 	// Add fork remote (ignore error if it already exists)
-	g.runner.Run(ctx, g.cloneDir, "git", "remote", "add", "fork", g.forkURL)
+	g.runner.Run(ctx, g.cloneDir, "git", "remote", "add", "fork", g.forkURL) //nolint:errcheck // best-effort
 }
 
 // PushRemote returns the git remote name to push to ("fork" or "origin").
@@ -155,10 +155,10 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 	}
 
 	// Clean up stale worktree state
-	g.runner.Run(ctx, g.cloneDir, "git", "worktree", "remove", "--force", worktreePath)
-	os.RemoveAll(worktreePath)
-	g.runner.Run(ctx, g.cloneDir, "git", "worktree", "prune")
-	g.runner.Run(ctx, g.cloneDir, "git", "branch", "-D", branchName)
+	g.runner.Run(ctx, g.cloneDir, "git", "worktree", "remove", "--force", worktreePath) //nolint:errcheck // best-effort
+	os.RemoveAll(worktreePath)                                                           //nolint:errcheck // best-effort
+	g.runner.Run(ctx, g.cloneDir, "git", "worktree", "prune")                            //nolint:errcheck // best-effort
+	g.runner.Run(ctx, g.cloneDir, "git", "branch", "-D", branchName)                     //nolint:errcheck // best-effort
 
 	_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "worktree", "add", "-b", branchName, worktreePath, g.OriginDefaultBranch())
 	if err != nil {

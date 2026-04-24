@@ -160,7 +160,7 @@ func (m *mockGitHubClient) UnassignIssue(_ context.Context, _, _ string, _ int, 
 	return nil
 }
 
-func (m *mockGitHubClient) CreateIssue(_ context.Context, _, _ string, title, body string, labels []string) (int, error) {
+func (m *mockGitHubClient) CreateIssue(_ context.Context, _, _, title, body string, labels []string) (int, error) {
 	if m.nextIssueNumber == 0 {
 		m.nextIssueNumber = 1
 	}

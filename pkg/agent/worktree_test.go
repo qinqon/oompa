@@ -17,7 +17,7 @@ func TestCreateWorktree_New(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expectedPath := filepath.Join(cloneDir, "worktrees", "ai/issue-42")
+	expectedPath := filepath.Join(cloneDir, "worktrees", "ai", "issue-42")
 	if path != expectedPath {
 		t.Errorf("expected path %q, got %q", expectedPath, path)
 	}
@@ -50,7 +50,7 @@ func TestCreateWorktree_New(t *testing.T) {
 
 func TestCreateWorktree_ReusesExisting(t *testing.T) {
 	cloneDir := t.TempDir()
-	worktreePath := filepath.Join(cloneDir, "worktrees", "ai/issue-42")
+	worktreePath := filepath.Join(cloneDir, "worktrees", "ai", "issue-42")
 
 	// Simulate an existing worktree with a .git marker
 	if err := os.MkdirAll(worktreePath, 0o755); err != nil {

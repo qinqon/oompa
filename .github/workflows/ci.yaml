@@ -35,7 +35,6 @@ jobs:
         with:
           version: latest
           install-mode: goinstall
-          only-new-issues: true
 
   agentready:
     runs-on: ubuntu-latest

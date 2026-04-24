@@ -533,7 +533,7 @@ func (g *GoGitHubClient) GetLatestReleaseSHA(ctx context.Context, owner, repo st
 }
 
 // ListWorkflowRuns lists recent workflow runs filtered by status.
-func (g *GoGitHubClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowID string, status string, limit int) ([]WorkflowRun, error) {
+func (g *GoGitHubClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowID, status string, limit int) ([]WorkflowRun, error) {
 	opts := &github.ListWorkflowRunsOptions{
 		Status: status,
 		ListOptions: github.ListOptions{
@@ -588,7 +588,7 @@ func (g *GoGitHubClient) GetWorkflowJobLogs(ctx context.Context, owner, repo str
 	}
 
 	// Fetch the log content from the redirect URL
-	req, err := http.NewRequestWithContext(ctx, "GET", logURL.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", logURL.String(), http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("creating log request: %w", err)
 	}
