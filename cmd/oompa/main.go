@@ -40,8 +40,8 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion string) {
 	flag.StringVar(&cfg.Label, "label", envOrDefault("OOMPA_LABEL", "good-for-ai"), "Issue label to watch")
 	flag.StringVar(&cfg.CloneDir, "clone-dir", envOrDefault("OOMPA_CLONE_DIR", "/tmp/oompa-work"), "Base directory for clones (owner/repo appended automatically)")
 	flag.DurationVar(&cfg.PollInterval, "poll-interval", parseDuration(envOrDefault("OOMPA_POLL_INTERVAL", "2m")), "Poll frequency")
-	flag.StringVar(&cfg.VertexRegion, "vertex-region", os.Getenv("CLOUD_ML_REGION"), "GCP Vertex AI region")
-	flag.StringVar(&cfg.VertexProject, "vertex-project", os.Getenv("ANTHROPIC_VERTEX_PROJECT_ID"), "GCP project ID for Vertex")
+	flag.StringVar(&cfg.Agent, "agent", envOrDefault("OOMPA_AGENT", "claudecode"), "Coding agent backend: claudecode or opencode")
+	flag.StringVar(&cfg.AgentModel, "agent-model", envOrDefault("OOMPA_AGENT_MODEL", ""), "Model override for OpenCode (ignored for Claude Code)")
 	flag.StringVar(&cfg.LogLevel, "log-level", envOrDefault("OOMPA_LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 	flag.BoolVar(&cfg.DryRun, "dry-run", false, "Log what would be done without executing")
 	flag.BoolVar(&cfg.OneShot, "one-shot", false, "Run one cycle and exit")
@@ -256,8 +256,15 @@ func shouldExitForNewVersion(ctx context.Context, ghClient *agent.GoGitHubClient
 func main() {
 	cfg, exitOnNewVersion := parseConfig()
 
-	if cfg.VertexRegion == "" || cfg.VertexProject == "" {
-		fmt.Fprintln(os.Stderr, "CLOUD_ML_REGION and ANTHROPIC_VERTEX_PROJECT_ID are required")
+	// Validate agent backend
+	if cfg.Agent != "claudecode" && cfg.Agent != "opencode" {
+		fmt.Fprintf(os.Stderr, "invalid --agent %q: must be claudecode or opencode\n", cfg.Agent)
+		os.Exit(1)
+	}
+
+	// Validate --agent-model is only used with opencode
+	if cfg.AgentModel != "" && cfg.Agent != "opencode" {
+		fmt.Fprintln(os.Stderr, "--agent-model can only be used with --agent opencode")
 		os.Exit(1)
 	}
 
@@ -373,11 +380,23 @@ func main() {
 		forkURL = fmt.Sprintf("https://github.com/%s/%s.git", cfg.GitHubUser, cfg.Repo)
 	}
 	runner := &agent.ExecRunner{}
-	runner.Env = agent.BuildClaudeEnv(cfg)
+	runner.Env = agent.BuildAgentEnv(cfg)
 
 	wtm := agent.NewGitWorktreeManager(runner, cfg.CloneDir, repoURL, forkURL)
 	if cfg.GitAuthorName != "" || cfg.GitAuthorEmail != "" {
 		wtm.SetGitIdentity(cfg.GitAuthorName, cfg.GitAuthorEmail)
+	}
+
+	// Select the coding agent backend
+	var codeAgent agent.CodeAgent
+	switch cfg.Agent {
+	case "claudecode":
+		codeAgent = &agent.ClaudeCodeAgent{}
+	case "opencode":
+		codeAgent = &agent.OpenCodeAgent{Model: cfg.AgentModel}
+	default:
+		logger.Error("unsupported agent backend", "agent", cfg.Agent)
+		os.Exit(1)
 	}
 
 	a := agent.NewAgent(
@@ -387,6 +406,7 @@ func main() {
 		state,
 		cfg,
 		logger,
+		codeAgent,
 	)
 
 	if tokenFunc != nil {

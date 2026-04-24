@@ -60,6 +60,7 @@ type Agent struct {
 	cfg       Config
 	logger    *slog.Logger
 	tokenFunc func(context.Context) (string, error) // optional: provides fresh GitHub tokens (for App auth)
+	codeAgent CodeAgent                              // coding agent backend (Claude Code or OpenCode)
 }
 
 // SetTokenFunc sets a function that provides fresh GitHub tokens.
@@ -154,7 +155,7 @@ type conflictTask struct {
 	rebaseStderr string
 }
 
-func NewAgent(gh GitHubClient, runner CommandRunner, worktrees WorktreeManager, state *State, cfg Config, logger *slog.Logger) *Agent {
+func NewAgent(gh GitHubClient, runner CommandRunner, worktrees WorktreeManager, state *State, cfg Config, logger *slog.Logger, codeAgent CodeAgent) *Agent {
 	return &Agent{
 		gh:        gh,
 		runner:    runner,
@@ -162,6 +163,7 @@ func NewAgent(gh GitHubClient, runner CommandRunner, worktrees WorktreeManager, 
 		state:     state,
 		cfg:       cfg,
 		logger:    logger,
+		codeAgent: codeAgent,
 	}
 }
 
@@ -280,9 +282,9 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 	// Parallel phase: run Claude, push, create PR
 	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task newIssueTask) {
 		prompt := buildImplementationPrompt(task.issue, a.cfg.SignedOffBy)
-		_, err := runClaude(ctx, a.runner, task.worktreePath, prompt, a.cfg, a.logger, false)
+		_, err := a.codeAgent.Run(ctx, a.runner, task.worktreePath, prompt, a.logger, false)
 		if err != nil {
-			a.logger.Error("claude failed", "issue", task.issue.Number, "error", err)
+			a.logger.Error("agent failed", "issue", task.issue.Number, "error", err)
 			a.markIssueFailed(ctx, task.issue.Number, task.work)
 			return
 		}
@@ -437,9 +439,9 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		headSHABefore := strings.TrimSpace(string(headBefore))
 
 		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, a.cfg.Owner, a.cfg.Repo)
-		_, err = runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
+		_, err = a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		if err != nil {
-			a.logger.Error("claude failed to address review", "pr", task.work.PRNumber, "error", err)
+			a.logger.Error("agent failed to address review", "pr", task.work.PRNumber, "error", err)
 			return
 		}
 
@@ -609,9 +611,9 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 	// Parallel phase: Claude invocations and post-processing
 	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task ciTask) {
 		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff, task.commits, a.cfg.SignedOffBy)
-		result, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
+		result, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		if err != nil {
-			a.logger.Error("claude failed to investigate CI", "pr", task.work.PRNumber, "error", err)
+			a.logger.Error("agent failed to investigate CI", "pr", task.work.PRNumber, "error", err)
 			task.work.CIFixAttempts++
 			task.work.LastCIStatus = "failure"
 			task.work.LastCheckedCISHA = task.headSHA
@@ -671,16 +673,16 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 				if err != nil {
 					a.logger.Warn("failed to search for existing flaky issues", "error", err)
 				} else if len(existingIssues) > 0 {
-					// Ask Claude if any existing issue matches this failure
+					// Ask the agent if any existing issue matches this failure
 					matchPrompt := buildFlakyMatchPrompt(task.failures[0].Name, task.failures[0].Output, existingIssues)
-					matchResult, matchErr := runClaude(ctx, a.runner, task.work.WorktreePath, matchPrompt, a.cfg, a.logger, false)
+					matchResult, matchErr := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, matchPrompt, a.logger, false)
 					if matchErr != nil {
-						a.logger.Warn("failed to run Claude for flaky issue matching", "error", matchErr)
+						a.logger.Warn("failed to run agent for flaky issue matching", "error", matchErr)
 					} else {
 						matchResponse := strings.TrimSpace(matchResult.Result)
 						if matchedNum, ok := parseFlakyMatch(matchResponse); ok {
 							issueNum = matchedNum
-							a.logger.Info("Claude matched existing flaky CI issue", "issue", issueNum, "check", task.failures[0].Name)
+							a.logger.Info("agent matched existing flaky CI issue", "issue", issueNum, "check", task.failures[0].Name)
 							if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 								fmt.Sprintf("This appears to be a duplicate of existing flaky test issue #%d.\n\n%s", issueNum, botMarker)); err != nil {
 								a.logger.Error("failed to post existing flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
@@ -864,9 +866,9 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		commitCountBefore := len(commitsBefore)
 
 		prompt := buildConflictResolutionPrompt(*task.work, a.originDefaultBranch(), a.cfg.SignedOffBy)
-		_, err := runClaude(ctx, a.runner, task.work.WorktreePath, prompt, a.cfg, a.logger, true)
+		_, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		if err != nil {
-			a.logger.Error("claude failed to resolve conflicts", "pr", task.work.PRNumber, "error", err)
+			a.logger.Error("agent failed to resolve conflicts", "pr", task.work.PRNumber, "error", err)
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 				fmt.Sprintf("Could not resolve conflicts on commit %s automatically. Human intervention needed.\n\n%s", shortSHA(task.headSHA), botMarker))
 			return
@@ -1049,16 +1051,16 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 		// Build the triage prompt
 		prompt := buildPeriodicCITriagePrompt(ciSource.JobName(), latestRun.ID, buildLog, a.cfg.Owner, a.cfg.Repo)
 
-		// Run Claude in the worktree
-		a.logger.Info("running Claude for CI triage", "job", ciSource.JobName(), "runID", latestRun.ID)
-		stdout, stderr, err := a.runner.Run(ctx, worktreePath, "claude", "-p", prompt)
+		// Run agent in the worktree
+		a.logger.Info("running agent for CI triage", "job", ciSource.JobName(), "runID", latestRun.ID)
+		result, err := a.codeAgent.Run(ctx, a.runner, worktreePath, prompt, a.logger, false)
 		if err != nil {
-			a.logger.Error("Claude failed during CI triage", "job", ciSource.JobName(), "runID", latestRun.ID, "error", err, "stderr", string(stderr))
+			a.logger.Error("agent failed during CI triage", "job", ciSource.JobName(), "runID", latestRun.ID, "error", err)
 			_ = a.worktrees.RemoveWorktree(ctx, worktreePath)
 			continue
 		}
 
-		analysis := string(stdout)
+		analysis := result.Result
 		a.logger.Info("CI triage analysis complete", "job", ciSource.JobName(), "runID", latestRun.ID)
 		a.logger.Debug("analysis output", "output", analysis)
 

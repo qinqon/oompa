@@ -36,10 +36,10 @@ type Commit struct {
 	Subject string
 }
 
-// ClaudeResult represents the parsed JSON output from Claude CLI.
-type ClaudeResult struct {
-	Result string `json:"result"`
-	Cost   float64 `json:"cost_usd"`
+// AgentResult represents the parsed result from a coding agent invocation.
+type AgentResult struct {
+	Result  string  // final text output
+	CostUSD float64 // cost (if available)
 }
 
 // IssueWork tracks the state of work on a single issue.

@@ -235,6 +235,7 @@ func newTestAgent(gh *mockGitHubClient, runner *mockCommandRunner, wt *mockWorkt
 		state:     NewState(),
 		cfg:       Config{Owner: "owner", Repo: "repo", Label: "good-for-ai", FlakyLabel: "flaky-test"},
 		logger:    slog.Default(),
+		codeAgent: &ClaudeCodeAgent{},
 	}
 }
 
@@ -292,7 +293,7 @@ func TestProcessNewIssues_RechecksForPR(t *testing.T) {
 }
 
 func TestProcessNewIssues_HappyPath(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "Fixed it"})
+	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
 	gh := &mockGitHubClient{
 		issues: []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
 	}
@@ -394,7 +395,7 @@ func TestProcessReviewComments_NoNewComments(t *testing.T) {
 }
 
 func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "Addressed"})
+	claudeResult := streamResultJSON(AgentResult{Result: "Addressed"})
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
@@ -456,7 +457,7 @@ func TestProcessReviewComments_SkipsNonWhitelistedUsers(t *testing.T) {
 }
 
 func TestProcessReviewComments_AllowsAllWhenWhitelistEmpty(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "Done"})
+	claudeResult := streamResultJSON(AgentResult{Result: "Done"})
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "anyone", Body: "fix this"},
@@ -559,7 +560,7 @@ func TestCleanupDone_OpenPR(t *testing.T) {
 }
 
 func TestProcessCIFailures_FixesFailingCI(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "RELATED Fixed CI"})
+	claudeResult := streamResultJSON(AgentResult{Result: "RELATED Fixed CI"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
@@ -673,7 +674,7 @@ func TestProcessCIFailures_SkipsPendingCI(t *testing.T) {
 }
 
 func TestProcessCIFailures_CreatesFlakyIssueWhenUnrelated(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED The test database connection times out intermittently"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
@@ -733,7 +734,7 @@ func TestProcessCIFailures_CreatesFlakyIssueWhenUnrelated(t *testing.T) {
 }
 
 func TestProcessCIFailures_SkipsFlakyIssueWhenDisabled(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED The test database connection times out intermittently"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
@@ -770,8 +771,8 @@ func TestProcessCIFailures_SkipsFlakyIssueWhenDisabled(t *testing.T) {
 }
 
 func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
-	ciResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
-	matchResult := streamResultJSON(ClaudeResult{Result: "MATCH 50"})
+	ciResult := streamResultJSON(AgentResult{Result: "UNRELATED The test database connection times out intermittently"})
+	matchResult := streamResultJSON(AgentResult{Result: "MATCH 50"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
@@ -816,7 +817,7 @@ func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
 }
 
 func TestProcessCIFailures_CreatesNewFlakyIssueWhenNoDuplicate(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
+	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED The test database connection times out intermittently"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
@@ -862,8 +863,8 @@ func TestProcessCIFailures_CreatesNewFlakyIssueWhenNoDuplicate(t *testing.T) {
 }
 
 func TestProcessCIFailures_CreatesIssueWhenClaudeSaysNone(t *testing.T) {
-	ciResult := streamResultJSON(ClaudeResult{Result: "UNRELATED The test database connection times out intermittently"})
-	matchResult := streamResultJSON(ClaudeResult{Result: "NONE"})
+	ciResult := streamResultJSON(AgentResult{Result: "UNRELATED The test database connection times out intermittently"})
+	matchResult := streamResultJSON(AgentResult{Result: "NONE"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
@@ -927,7 +928,7 @@ func TestParseFlakyMatch(t *testing.T) {
 func TestProcessCIFailures_ReinvestigatesAfterNewCommits(t *testing.T) {
 	// Issue #28: Agent should re-investigate CI failures when new commits are pushed,
 	// even if a previous rebase comment mentions the new commit SHA.
-	claudeResult := streamResultJSON(ClaudeResult{Result: "RELATED Fixed CI"})
+	claudeResult := streamResultJSON(AgentResult{Result: "RELATED Fixed CI"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
@@ -1000,7 +1001,7 @@ func TestProcessCIFailures_SkipsAlreadyReportedAfterRestart(t *testing.T) {
 }
 
 func TestProcessCIFailures_NoDuplicateCommentsOnRepeatedPolls(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED Flaky network test"})
+	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED Flaky network test"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "e2e-network", Status: "completed", Conclusion: "failure", Output: "timeout"},
@@ -1056,7 +1057,7 @@ func countClaudeCalls(calls []commandCall) int {
 
 func TestProcessCIFailures_DeduplicatesUnrelatedComments(t *testing.T) {
 	// Issue #63: Should only post one unrelated comment per SHA, not on every poll cycle
-	claudeResult := streamResultJSON(ClaudeResult{Result: "UNRELATED Flaky test"})
+	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED Flaky test"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
 			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
@@ -1424,7 +1425,7 @@ func TestHasWatchedPRs(t *testing.T) {
 	}
 }
 func TestProcessNewIssues_SquashesCommits(t *testing.T) {
-	claudeResult := streamResultJSON(ClaudeResult{Result: "Fixed it"})
+	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
 	gh := &mockGitHubClient{
 		issues: []Issue{{Number: 42, Title: "Fix the bug", Body: "broken"}},
 	}
@@ -1500,7 +1501,7 @@ func TestProcessTriageJobs_NoJobsConfigured(t *testing.T) {
 		TriageJobs: []string{}, // No jobs configured
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default())
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), &ClaudeCodeAgent{})
 	a.ProcessTriageJobs(context.Background())
 
 	// Should not create any worktrees or run Claude
@@ -1527,7 +1528,7 @@ func TestProcessTriageJobs_SkipsAlreadyInvestigated(t *testing.T) {
 		TriageJobs: []string{"https://prow.ci.kubevirt.io/view/gs/kubevirt-prow/logs/periodic-knmstate-e2e-handler-k8s-latest/"},
 	}
 
-	NewAgent(gh, runner, wtm, state, cfg, slog.Default())
+	NewAgent(gh, runner, wtm, state, cfg, slog.Default(), &ClaudeCodeAgent{})
 
 	// Note: This test would need a real HTTP server to mock GCS API responses
 	// For now, we test the state checking logic directly
@@ -1571,7 +1572,7 @@ func TestProcessTriageJobs_CreatesIssueWhenFlakyIssuesEnabled(t *testing.T) {
 		FlakyLabel:        "ci-flake",
 	}
 
-	NewAgent(gh, runner, wtm, state, cfg, slog.Default())
+	NewAgent(gh, runner, wtm, state, cfg, slog.Default(), &ClaudeCodeAgent{})
 
 	// Verify that CreateFlakyIssues flag is respected
 	if !cfg.CreateFlakyIssues {
