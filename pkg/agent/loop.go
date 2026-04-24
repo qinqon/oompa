@@ -590,7 +590,22 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 
 		// Strip markdown formatting (bold, italic) before checking prefix
 		cleaned := strings.TrimLeft(strings.TrimSpace(result.Result), "*_")
-		if strings.HasPrefix(cleaned, "UNRELATED") {
+
+		// Check if Claude followed the expected format (must start with UNRELATED or RELATED)
+		startsWithUnrelated := strings.HasPrefix(cleaned, "UNRELATED")
+		startsWithRelated := strings.HasPrefix(cleaned, "RELATED")
+
+		if !startsWithUnrelated && !startsWithRelated {
+			a.logger.Warn("Claude response did not start with UNRELATED or RELATED, skipping to avoid noise",
+				"pr", task.work.PRNumber,
+				"response_preview", truncateString(cleaned, 100))
+			task.work.CIFixAttempts++
+			task.work.LastCIStatus = "investigation-inconclusive"
+			task.work.LastCheckedCISHA = task.headSHA
+			return
+		}
+
+		if startsWithUnrelated {
 			a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
 			explanation := strings.TrimPrefix(cleaned, "UNRELATED")
 			explanation = strings.TrimSpace(explanation)
@@ -634,14 +649,21 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 				}
 
 				// No existing issue matched, create a new one
-				issueBody := fmt.Sprintf("A CI failure was detected that appears unrelated to PR changes.\n\n"+
-					"**Detected in PR**: #%d\n"+
-					"**Commit**: %s\n"+
-					"**Failed check**: %s\n\n"+
-					"**Analysis**:\n%s\n\n"+
-					"**Check output**:\n```\n%s\n```\n\n"+
+				issueBody := fmt.Sprintf("### Which jobs are flaking?\n\n"+
+					"%s\n\n"+
+					"Detected in PR #%d, commit %s.\n\n"+
+					"### Which tests are flaking?\n\n"+
+					"%s\n\n"+
+					"### Since when has it been flaking?\n\n"+
+					"%s\n\n"+
+					"### Reason for failure (if possible)\n\n"+
+					"%s\n\n"+
+					"### Anything else we need to know?\n\n"+
+					"Automatically created by [oompa](https://github.com/qinqon/oompa).\n\n"+
 					"%s",
-					task.work.PRNumber, shortSHA(task.headSHA), task.failures[0].Name, explanation, task.failures[0].Output, botMarker)
+					task.failures[0].Name, task.work.PRNumber, shortSHA(task.headSHA),
+					task.failures[0].Name, time.Now().Format("2006-01-02"), explanation,
+					botMarker)
 				issueNum, err = a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{a.cfg.FlakyLabel})
 				if err != nil {
 					a.logger.Error("failed to create flaky CI issue", "error", err)
@@ -1450,4 +1472,12 @@ func (a *Agent) isAllowedReviewer(user string) bool {
 		}
 	}
 	return false
+}
+
+// truncateString returns the first maxLen characters of s, with "..." appended if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

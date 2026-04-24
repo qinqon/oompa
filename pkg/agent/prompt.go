@@ -125,6 +125,9 @@ Instructions:
 2. If the failure is NOT related to the PR changes:
    - Do NOT attempt to fix it, do NOT modify any files
    - Your output MUST start with the word UNRELATED followed by a brief explanation
+   - IMPORTANT: Do NOT mention the PR changes, the PR number, or what the PR modifies in your explanation.
+     Focus ONLY on describing the failure itself: what test failed, what the error was, and why it looks flaky or infrastructure-related.
+     The explanation will be used to create a standalone flaky test issue, so it must make sense without any PR context.
 3. If the failure IS directly related to the PR changes:
    - Your output MUST start with the word RELATED
    - Fix the code so that CI passes

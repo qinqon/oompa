@@ -700,6 +700,22 @@ func TestProcessCIFailures_CreatesFlakyIssueWhenUnrelated(t *testing.T) {
 	if len(issue.Labels) != 1 || issue.Labels[0] != "flaky-test" {
 		t.Errorf("expected labels ['flaky-test'], got %v", issue.Labels)
 	}
+	// Check the body uses the flaking-test issue template format
+	if !strings.Contains(issue.Body, "### Which jobs are flaking?") {
+		t.Errorf("expected issue body to contain '### Which jobs are flaking?', got %q", issue.Body)
+	}
+	if !strings.Contains(issue.Body, "### Which tests are flaking?") {
+		t.Errorf("expected issue body to contain '### Which tests are flaking?', got %q", issue.Body)
+	}
+	if !strings.Contains(issue.Body, "### Since when has it been flaking?") {
+		t.Errorf("expected issue body to contain '### Since when has it been flaking?', got %q", issue.Body)
+	}
+	if !strings.Contains(issue.Body, "### Reason for failure (if possible)") {
+		t.Errorf("expected issue body to contain '### Reason for failure (if possible)', got %q", issue.Body)
+	}
+	if !strings.Contains(issue.Body, "Automatically created by [oompa]") {
+		t.Errorf("expected issue body to contain oompa attribution, got %q", issue.Body)
+	}
 
 	// Check that a comment was added to the PR
 	if len(gh.addedComments) != 2 {
