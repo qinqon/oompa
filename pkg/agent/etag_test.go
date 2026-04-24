@@ -12,7 +12,7 @@ import (
 func TestCachingTransport_FirstRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"abc123"`)
-		w.Write([]byte(`{"data":"hello"}`))
+		_, _ = w.Write([]byte(`{"data":"hello"}`))
 	}))
 	defer server.Close()
 
@@ -29,7 +29,7 @@ func TestCachingTransport_FirstRequest(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body) //nolint:errcheck // test helper
 	if string(body) != `{"data":"hello"}` {
 		t.Fatalf("unexpected body: %s", body)
 	}
@@ -54,7 +54,7 @@ func TestCachingTransport_CachedRequest_304(t *testing.T) {
 			return
 		}
 		w.Header().Set("ETag", `"abc123"`)
-		w.Write([]byte(`{"data":"hello"}`))
+		_, _ = w.Write([]byte(`{"data":"hello"}`))
 	}))
 	defer server.Close()
 
@@ -65,7 +65,7 @@ func TestCachingTransport_CachedRequest_304(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.ReadAll(resp.Body)
+	_, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 
 	resp, err = client.Get(server.URL + "/test")
@@ -94,11 +94,11 @@ func TestCachingTransport_CachedRequest_Changed(t *testing.T) {
 		count := requestCount.Add(1)
 		if count == 1 {
 			w.Header().Set("ETag", `"v1"`)
-			w.Write([]byte(`{"version":1}`))
+			_, _ = w.Write([]byte(`{"version":1}`))
 			return
 		}
 		w.Header().Set("ETag", `"v2"`)
-		w.Write([]byte(`{"version":2}`))
+		_, _ = w.Write([]byte(`{"version":2}`))
 	}))
 	defer server.Close()
 
@@ -109,7 +109,7 @@ func TestCachingTransport_CachedRequest_Changed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.ReadAll(resp.Body)
+	_, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 
 	resp, err = client.Get(server.URL + "/test")
@@ -134,14 +134,14 @@ func TestCachingTransport_CachedRequest_Changed(t *testing.T) {
 func TestCachingTransport_NonGET_NotCached(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"abc123"`)
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer server.Close()
 
 	transport := NewCachingTransport(http.DefaultTransport)
 	client := &http.Client{Transport: transport}
 
-	req, _ := http.NewRequest(http.MethodPost, server.URL+"/test", nil)
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/test", http.NoBody)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestCachingTransport_NonGET_NotCached(t *testing.T) {
 
 func TestCachingTransport_NoETag_NotCached(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"data":"no-etag"}`))
+		_, _ = w.Write([]byte(`{"data":"no-etag"}`))
 	}))
 	defer server.Close()
 
@@ -186,7 +186,7 @@ func TestCachingTransport_ConcurrentAccess(t *testing.T) {
 			return
 		}
 		w.Header().Set("ETag", `"concurrent"`)
-		w.Write([]byte(`{"data":"concurrent"}`))
+		_, _ = w.Write([]byte(`{"data":"concurrent"}`))
 	}))
 	defer server.Close()
 
@@ -198,7 +198,7 @@ func TestCachingTransport_ConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.ReadAll(resp.Body)
+	_, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 
 	var wg sync.WaitGroup

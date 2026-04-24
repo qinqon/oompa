@@ -259,7 +259,7 @@ func (f *fakeGitHubClient) IsPRBehind(_ context.Context, _, _ string, _ int) (bo
 	return false, nil
 }
 
-func (f *fakeGitHubClient) CreateIssue(_ context.Context, _, _ string, title, body string, labels []string) (int, error) {
+func (f *fakeGitHubClient) CreateIssue(_ context.Context, _, _, title, body string, labels []string) (int, error) {
 	f.state.mu.Lock()
 	defer f.state.mu.Unlock()
 	issueNum := len(f.state.issues) + 1
@@ -310,7 +310,7 @@ func initBareRepo(t *testing.T) string {
 
 	// Create initial commit
 	readme := filepath.Join(cloneDir, "README.md")
-	os.WriteFile(readme, []byte("# test repo\n"), 0o644)
+	_ = os.WriteFile(readme, []byte("# test repo\n"), 0o644)
 	run(t, cloneDir, "git", "add", ".")
 	run(t, cloneDir, "git", "commit", "-m", "initial commit")
 	run(t, cloneDir, "git", "push", "origin", "main")
@@ -318,7 +318,7 @@ func initBareRepo(t *testing.T) string {
 	return cloneDir
 }
 
-func run(t *testing.T, dir string, name string, args ...string) string {
+func run(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	if dir != "" {
@@ -340,7 +340,7 @@ type fakeClaudeRunner struct {
 	onClaudeRun func() // called when claude is invoked, before returning
 }
 
-func (f *fakeClaudeRunner) Run(_ context.Context, workDir string, name string, args ...string) ([]byte, []byte, error) {
+func (f *fakeClaudeRunner) Run(_ context.Context, workDir, name string, args ...string) (stdout, stderr []byte, runErr error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, commandCall{WorkDir: workDir, Name: name, Args: args})
 	err := f.err
@@ -349,9 +349,9 @@ func (f *fakeClaudeRunner) Run(_ context.Context, workDir string, name string, a
 	// If this is a claude invocation, simulate work: create a file, commit, push
 	if name == "claude" {
 		filePath := filepath.Join(workDir, "fix.go")
-		os.WriteFile(filePath, []byte(fmt.Sprintf("package main\n// fix %d\n", time.Now().UnixNano())), 0o644)
+		_ = os.WriteFile(filePath, []byte(fmt.Sprintf("package main\n// fix %d\n", time.Now().UnixNano())), 0o644)
 
-		exec.Command("git", "-C", workDir, "add", ".").Run()
+		_ = exec.Command("git", "-C", workDir, "add", ".").Run()
 		cmd := exec.Command("git", "-C", workDir, "commit", "-m", "implement fix")
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=Claude",
@@ -359,8 +359,8 @@ func (f *fakeClaudeRunner) Run(_ context.Context, workDir string, name string, a
 			"GIT_COMMITTER_NAME=Claude",
 			"GIT_COMMITTER_EMAIL=claude@test.com",
 		)
-		cmd.Run()
-		exec.Command("git", "-C", workDir, "push", "origin", "HEAD", "--force").Run()
+		_ = cmd.Run()
+		_ = exec.Command("git", "-C", workDir, "push", "origin", "HEAD", "--force").Run()
 
 		if f.onClaudeRun != nil {
 			f.onClaudeRun()
@@ -377,8 +377,7 @@ func (f *fakeClaudeRunner) Run(_ context.Context, workDir string, name string, a
 	// For non-claude commands (git), actually execute them
 	cmd := exec.Command(name, args...)
 	cmd.Dir = workDir
-	stdout, runErr := cmd.Output()
-	var stderr []byte
+	stdout, runErr = cmd.Output()
 	if exitErr, ok := runErr.(*exec.ExitError); ok {
 		stderr = exitErr.Stderr
 	}
@@ -859,7 +858,7 @@ func TestIntegration_SyncWorktreePullsManualCommits(t *testing.T) {
 	run(t, manualClone, "git", "config", "user.name", "Human")
 	run(t, manualClone, "git", "checkout", work.BranchName)
 	manualFile := filepath.Join(manualClone, "manual.txt")
-	os.WriteFile(manualFile, []byte("manual change\n"), 0o644)
+	_ = os.WriteFile(manualFile, []byte("manual change\n"), 0o644)
 	run(t, manualClone, "git", "add", ".")
 	run(t, manualClone, "git", "commit", "-m", "manual fix by human")
 	run(t, manualClone, "git", "push", "origin", work.BranchName)

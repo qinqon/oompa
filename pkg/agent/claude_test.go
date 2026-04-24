@@ -24,10 +24,10 @@ type mockCommandRunner struct {
 	claudeIndex    int
 }
 
-func (m *mockCommandRunner) Run(_ context.Context, workDir string, name string, args ...string) ([]byte, []byte, error) {
+func (m *mockCommandRunner) Run(_ context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
 	m.mu.Lock()
 	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args})
-	stdout := m.stdout
+	stdout = m.stdout
 	if name == "claude" && len(m.claudeResults) > 0 {
 		if m.claudeIndex < len(m.claudeResults) {
 			stdout = m.claudeResults[m.claudeIndex]
@@ -36,7 +36,7 @@ func (m *mockCommandRunner) Run(_ context.Context, workDir string, name string, 
 		}
 		m.claudeIndex++
 	}
-	stderr, err := m.stderr, m.err
+	stderr, err = m.stderr, m.err
 	m.mu.Unlock()
 	return stdout, stderr, err
 }

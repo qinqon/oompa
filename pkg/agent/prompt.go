@@ -164,7 +164,7 @@ Do NOT push or rebase — the agent handles that automatically.`
 	return prompt
 }
 
-func buildConflictResolutionPrompt(work IssueWork, originDefaultBranch string, signedOffBy string) string {
+func buildConflictResolutionPrompt(work IssueWork, originDefaultBranch, signedOffBy string) string {
 	signoff := ""
 	if signedOffBy != "" {
 		signoff = fmt.Sprintf("\n5. Add \"Signed-off-by: %s\" as a trailer in every commit message (do NOT use git commit -s, write it directly in the message)", signedOffBy)
@@ -191,7 +191,7 @@ Do NOT push — the agent handles that automatically.`,
 		work.PRNumber, work.IssueNumber, work.IssueTitle, originDefaultBranch, signoff)
 }
 
-func buildPeriodicCITriagePrompt(jobName, runID, buildLog string, owner, repo string) string {
+func buildPeriodicCITriagePrompt(jobName, runID, buildLog, owner, repo string) string {
 	return fmt.Sprintf(`You are investigating a periodic CI job failure.
 
 Job: %s

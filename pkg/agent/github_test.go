@@ -37,7 +37,7 @@ func TestListLabeledIssues(t *testing.T) {
 				Labels: []*github.Label{{Name: github.Ptr("good-for-ai")}},
 			},
 		}
-		json.NewEncoder(w).Encode(issues)
+		_ = json.NewEncoder(w).Encode(issues)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -63,7 +63,7 @@ func TestGetPRReviewComments_FiltersBySinceID(t *testing.T) {
 			{ID: github.Ptr(int64(10)), User: &github.User{Login: github.Ptr("alice")}, Body: github.Ptr("old comment")},
 			{ID: github.Ptr(int64(20)), User: &github.User{Login: github.Ptr("bob")}, Body: github.Ptr("new comment"), Path: github.Ptr("main.go"), Line: github.Ptr(5)},
 		}
-		json.NewEncoder(w).Encode(comments)
+		_ = json.NewEncoder(w).Encode(comments)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -86,7 +86,7 @@ func TestGetPRState_Merged(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1", func(w http.ResponseWriter, r *http.Request) {
 		pr := &github.PullRequest{State: github.Ptr("closed"), Merged: github.Ptr(true)}
-		json.NewEncoder(w).Encode(pr)
+		_ = json.NewEncoder(w).Encode(pr)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -103,7 +103,7 @@ func TestGetPRState_Closed(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1", func(w http.ResponseWriter, r *http.Request) {
 		pr := &github.PullRequest{State: github.Ptr("closed"), Merged: github.Ptr(false)}
-		json.NewEncoder(w).Encode(pr)
+		_ = json.NewEncoder(w).Encode(pr)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -120,7 +120,7 @@ func TestGetPRState_Open(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1", func(w http.ResponseWriter, r *http.Request) {
 		pr := &github.PullRequest{State: github.Ptr("open"), Merged: github.Ptr(false)}
-		json.NewEncoder(w).Encode(pr)
+		_ = json.NewEncoder(w).Encode(pr)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -138,9 +138,9 @@ func TestAddIssueComment(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/issues/42/comments", func(w http.ResponseWriter, r *http.Request) {
 		var comment github.IssueComment
-		json.NewDecoder(r.Body).Decode(&comment)
+		_ = json.NewDecoder(r.Body).Decode(&comment)
 		receivedBody = comment.GetBody()
-		json.NewEncoder(w).Encode(&comment)
+		_ = json.NewEncoder(w).Encode(&comment)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -157,8 +157,8 @@ func TestAddLabel(t *testing.T) {
 	var receivedLabels []string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/issues/42/labels", func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedLabels)
-		json.NewEncoder(w).Encode([]*github.Label{{Name: github.Ptr("ai-failed")}})
+		_ = json.NewDecoder(r.Body).Decode(&receivedLabels)
+		_ = json.NewEncoder(w).Encode([]*github.Label{{Name: github.Ptr("ai-failed")}})
 	})
 
 	gh := setupTestClient(t, mux)
@@ -200,7 +200,7 @@ func TestListPRsByHead(t *testing.T) {
 				Head:   &github.PullRequestBranch{Ref: github.Ptr("ai/issue-42")},
 			},
 		}
-		json.NewEncoder(w).Encode(prs)
+		_ = json.NewEncoder(w).Encode(prs)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -238,7 +238,7 @@ func TestHasLinkedPR_FindsOpenPR(t *testing.T) {
 				},
 			},
 		}
-		json.NewEncoder(w).Encode(events)
+		_ = json.NewEncoder(w).Encode(events)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -267,7 +267,7 @@ func TestHasLinkedPR_IgnoresClosedPR(t *testing.T) {
 				},
 			},
 		}
-		json.NewEncoder(w).Encode(events)
+		_ = json.NewEncoder(w).Encode(events)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -287,7 +287,7 @@ func TestHasLinkedPR_NoLinkedPRs(t *testing.T) {
 			{"event": "labeled"},
 			{"event": "assigned"},
 		}
-		json.NewEncoder(w).Encode(events)
+		_ = json.NewEncoder(w).Encode(events)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -308,7 +308,7 @@ func TestGetAuthenticatedUser_WithNameAndEmail(t *testing.T) {
 			Name:  github.Ptr("Jane Doe"),
 			Email: github.Ptr("jane@example.com"),
 		}
-		json.NewEncoder(w).Encode(user)
+		_ = json.NewEncoder(w).Encode(user)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -333,7 +333,7 @@ func TestGetAuthenticatedUser_FallbackToLogin(t *testing.T) {
 		user := &github.User{
 			Login: github.Ptr("jdoe"),
 		}
-		json.NewEncoder(w).Encode(user)
+		_ = json.NewEncoder(w).Encode(user)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -358,7 +358,7 @@ func TestCreateIssue(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
 		var req github.IssueRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		receivedTitle = req.GetTitle()
 		receivedBody = req.GetBody()
 		receivedLabels = *req.Labels
@@ -367,7 +367,7 @@ func TestCreateIssue(t *testing.T) {
 			Title:  req.Title,
 			Body:   req.Body,
 		}
-		json.NewEncoder(w).Encode(issue)
+		_ = json.NewEncoder(w).Encode(issue)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -396,7 +396,7 @@ func TestGetLatestReleaseSHA(t *testing.T) {
 			TargetCommitish: github.Ptr("abc123def456"),
 			TagName:         github.Ptr("latest"),
 		}
-		json.NewEncoder(w).Encode(release)
+		_ = json.NewEncoder(w).Encode(release)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -446,7 +446,7 @@ func TestSearchIssues(t *testing.T) {
 				},
 			},
 		}
-		json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(result)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -489,7 +489,7 @@ func TestSearchIssues_FiltersPullRequests(t *testing.T) {
 				},
 			},
 		}
-		json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(result)
 	})
 
 	gh := setupTestClient(t, mux)
@@ -539,7 +539,7 @@ func TestGetCheckRuns_UsesPerPage100(t *testing.T) {
 				},
 			},
 		}
-		json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(result)
 	})
 
 	gh := setupTestClient(t, mux)

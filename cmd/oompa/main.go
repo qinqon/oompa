@@ -32,8 +32,8 @@ func parseIntEnv(key string, def int) int {
 	return def
 }
 
-func parseConfig() (agent.Config, string) {
-	cfg := agent.Config{}
+func parseConfig() (cfg agent.Config, exitOnNewVersion string) {
+	cfg = agent.Config{}
 
 	var repoFlag string
 	flag.StringVar(&repoFlag, "repo", envOrDefault("OOMPA_REPO", ""), "GitHub repo as owner/repo (e.g. ovn-kubernetes/ovn-kubernetes)")
@@ -70,7 +70,6 @@ func parseConfig() (agent.Config, string) {
 	var forkFlag string
 	flag.StringVar(&forkFlag, "fork", envOrDefault("OOMPA_FORK", ""), "Fork repo as owner/repo for pushing (e.g. qinqon/ovn-kubernetes)")
 
-	var exitOnNewVersion string
 	flag.StringVar(&exitOnNewVersion, "exit-on-new-version", os.Getenv("OOMPA_EXIT_ON_NEW_VERSION"), "Exit when a new version is available (format: owner/repo, e.g. qinqon/oompa)")
 
 	// Identity flags (optional, auto-detected from auth when not set)
@@ -186,7 +185,7 @@ func parseConfig() (agent.Config, string) {
 		}
 	}
 
-	return cfg, exitOnNewVersion
+	return cfg, exitOnNewVersion //nolint:nakedret // named results used for gocritic
 }
 
 func parseDuration(s string) time.Duration {
@@ -197,7 +196,7 @@ func parseDuration(s string) time.Duration {
 	return d
 }
 
-func setupLogger(level, logFile string) (*slog.Logger, func()) {
+func setupLogger(level, logFile string) (logger *slog.Logger, cleanup func()) {
 	var logLevel slog.Level
 	switch level {
 	case "debug":
@@ -211,7 +210,7 @@ func setupLogger(level, logFile string) (*slog.Logger, func()) {
 	}
 
 	w := os.Stderr
-	cleanup := func() {}
+	cleanup = func() {}
 
 	if logFile != "" {
 		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -256,13 +255,14 @@ func shouldExitForNewVersion(ctx context.Context, ghClient *agent.GoGitHubClient
 
 func main() {
 	cfg, exitOnNewVersion := parseConfig()
-	logger, closeLog := setupLogger(cfg.LogLevel, cfg.LogFile)
-	defer closeLog()
 
 	if cfg.VertexRegion == "" || cfg.VertexProject == "" {
-		logger.Error("CLOUD_ML_REGION and ANTHROPIC_VERTEX_PROJECT_ID are required")
+		fmt.Fprintln(os.Stderr, "CLOUD_ML_REGION and ANTHROPIC_VERTEX_PROJECT_ID are required")
 		os.Exit(1)
 	}
+
+	logger, closeLog := setupLogger(cfg.LogLevel, cfg.LogFile)
+	defer closeLog()
 
 	// If GCP credentials JSON is provided inline, write to a temp file
 	// so GOOGLE_APPLICATION_CREDENTIALS can reference it.
@@ -270,7 +270,7 @@ func main() {
 		f, err := os.CreateTemp("", "gcp-credentials-*.json")
 		if err != nil {
 			logger.Error("failed to create temp file for GCP credentials", "error", err)
-			os.Exit(1)
+			os.Exit(1) //nolint:gocritic // exitAfterDefer: intentional early exit in CLI startup
 		}
 		defer os.Remove(f.Name())
 		if _, err := f.Write([]byte(gcpJSON)); err != nil {

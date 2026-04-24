@@ -19,6 +19,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
 
       - name: Build
         run: go build ./...
@@ -28,6 +29,50 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          install-mode: goinstall
+
+  agentready:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install agentready
+        run: pip install agentready
+
+      - name: Run assessment
+        run: agentready assess . --config .agentready-config.yaml --output-dir .agentready
+
+      - name: Check minimum score (Gold = 75)
+        run: |
+          SCORE=$(jq -r '.overall_score' .agentready/assessment-latest.json)
+          LEVEL=$(jq -r '.certification_level' .agentready/assessment-latest.json)
+          echo "Score: $SCORE/100 ($LEVEL)"
+          if [ "$(echo "$SCORE < 75" | bc -l)" -eq 1 ]; then
+            echo "::error::AgentReady score $SCORE is below Gold (75). Current level: $LEVEL"
+            echo ""
+            echo "Failing attributes:"
+            jq -r '.findings[] | select(.status == "fail") | "  - \(.attribute.name): \(.evidence)"' .agentready/assessment-latest.json
+            exit 1
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentready-report
+          path: .agentready/
+          retention-days: 30
 
   image:
     runs-on: ubuntu-latest

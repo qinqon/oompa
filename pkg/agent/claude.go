@@ -49,7 +49,7 @@ func (r *ExecRunner) SetGHToken(token string) {
 	}
 }
 
-func (r *ExecRunner) Run(ctx context.Context, workDir string, name string, args ...string) ([]byte, []byte, error) {
+func (r *ExecRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = workDir
 	r.mu.RLock()
@@ -58,15 +58,14 @@ func (r *ExecRunner) Run(ctx context.Context, workDir string, name string, args 
 	}
 	r.mu.RUnlock()
 
-	stdout, err := cmd.Output()
-	var stderr []byte
+	stdout, err = cmd.Output()
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		stderr = exitErr.Stderr
 	}
 	return stdout, stderr, err
 }
 
-func (r *ExecRunner) RunStream(ctx context.Context, workDir string, onLine func(line []byte), name string, args ...string) ([]byte, []byte, error) {
+func (r *ExecRunner) RunStream(ctx context.Context, workDir string, onLine func(line []byte), name string, args ...string) (stdout, stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = workDir
 	r.mu.RLock()

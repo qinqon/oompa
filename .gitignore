@@ -1,4 +1,34 @@
+# Binary
 /oompa
+oompa-linux-*
+
+# Scripts with local config
 kubernetes-nmstate.sh
 openperouter.sh
 run.sh
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AgentReady reports
+.agentready/

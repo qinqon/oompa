@@ -274,7 +274,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 
 		// Check if Claude produced any commits
 		logOut, _, _ := a.runner.Run(ctx, task.worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--oneline")
-		if len(strings.TrimSpace(string(logOut))) == 0 {
+		if strings.TrimSpace(string(logOut)) == "" {
 			a.logger.Warn("claude finished but produced no commits", "issue", task.issue.Number)
 			task.work.Status = "failed"
 			_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
@@ -684,7 +684,8 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		hasFixupCommits := a.hasFixupCommits(ctx, task.work.WorktreePath)
 		hasUncommitted := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
 
-		if hasFixupCommits {
+		switch {
+		case hasFixupCommits:
 			// Run autosquash rebase to merge fixup commits into their targets
 			if err := a.gitAutosquashRebase(ctx, task.work.WorktreePath); err != nil {
 				a.logger.Error("failed to autosquash fixup commits", "pr", task.work.PRNumber, "error", err)
@@ -693,7 +694,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			} else {
 				pushed = true
 			}
-		} else if hasUncommitted {
+		case hasUncommitted:
 			// Claude left uncommitted changes — amend them into HEAD as fallback
 			if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
 				a.logger.Error("failed to amend commit for CI fix", "pr", task.work.PRNumber, "error", err)
@@ -702,7 +703,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			} else {
 				pushed = true
 			}
-		} else {
+		default:
 			// No fixups and no uncommitted changes — Claude may have amended
 			// the commit directly. Check if HEAD differs from the remote SHA.
 			localSHA, _, err := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
@@ -748,8 +749,6 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 	})
 }
 
-const maxConflictFixAttempts = 2
-
 // ProcessConflicts checks for merge conflicts (dirty mergeable_state) and tries to resolve them.
 // For simple rebases when a PR is just behind the base branch, use ProcessRebase instead.
 func (a *Agent) ProcessConflicts(ctx context.Context) {
@@ -788,7 +787,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		}
 
 		// Fetch all remotes and try automatic rebase against the upstream default branch
-		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all")
+		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all") //nolint:errcheck // best-effort
 
 		// Try automatic rebase
 		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", a.originDefaultBranch())
@@ -810,7 +809,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		}
 
 		// Rebase failed — abort and let Claude try
-		a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort")
+		a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
 		a.logger.Info("automatic rebase failed, invoking Claude to resolve conflicts", "pr", work.PRNumber, "stderr", string(stderr))
 
 		tasks = append(tasks, conflictTask{
@@ -912,12 +911,12 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 			continue
 		}
 
-		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all")
+		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all") //nolint:errcheck // best-effort
 
 		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", a.originDefaultBranch())
 		if rebaseErr != nil {
 			// Rebase should not fail since there are no conflicts — abort and log
-			a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort")
+			a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
 			a.logger.Error("rebase failed unexpectedly (no conflicts expected)", "pr", work.PRNumber, "stderr", string(stderr))
 			continue
 		}
@@ -1013,7 +1012,7 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 		}
 
 		// Checkout the default branch (CreateWorktree creates a new branch, we want default)
-		a.runner.Run(ctx, worktreePath, "git", "checkout", a.defaultBranch())
+		a.runner.Run(ctx, worktreePath, "git", "checkout", a.defaultBranch()) //nolint:errcheck // best-effort
 
 		// Build the triage prompt
 		prompt := buildPeriodicCITriagePrompt(ciSource.JobName(), latestRun.ID, buildLog, a.cfg.Owner, a.cfg.Repo)
@@ -1036,7 +1035,7 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 			a.logger.Info("creating issue for CI failure", "job", ciSource.JobName(), "runID", latestRun.ID)
 
 			// Search for existing issues about this job to avoid duplicates
-			searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open in:title \"%s\"", a.cfg.Owner, a.cfg.Repo, ciSource.JobName())
+			searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open in:title %q", a.cfg.Owner, a.cfg.Repo, ciSource.JobName())
 			existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
 			if err != nil {
 				a.logger.Warn("failed to search for existing issues", "error", err)
@@ -1221,14 +1220,6 @@ func (a *Agent) alreadyCheckedCI(ctx context.Context, prNumber int, sha string) 
 	return false
 }
 
-// pushRemoteName returns the git remote name used for pushing ("fork" or "origin").
-func (a *Agent) pushRemoteName() string {
-	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
-		return wtm.PushRemote()
-	}
-	return "origin"
-}
-
 // originDefaultBranch returns "origin/<default-branch>" (e.g. "origin/main", "origin/master").
 func (a *Agent) originDefaultBranch() string {
 	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
@@ -1302,24 +1293,7 @@ func (a *Agent) ensureWorktreeReady(ctx context.Context, work *IssueWork) error 
 // hasUncommittedChanges returns true if the worktree has staged or unstaged changes.
 func (a *Agent) hasUncommittedChanges(ctx context.Context, worktreePath string) bool {
 	out, _, _ := a.runner.Run(ctx, worktreePath, "git", "status", "--porcelain")
-	return len(strings.TrimSpace(string(out))) > 0
-}
-
-// gitCommitAll stages all changes and creates a new commit with the configured author and signed-off-by.
-func (a *Agent) gitCommitAll(ctx context.Context, worktreePath, message string) error {
-	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "add", "-A"); err != nil {
-		return fmt.Errorf("git add: %w (stderr: %s)", err, string(stderr))
-	}
-
-	commitMsg := message
-	if a.cfg.SignedOffBy != "" {
-		commitMsg += fmt.Sprintf("\n\nSigned-off-by: %s", a.cfg.SignedOffBy)
-	}
-
-	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "-m", commitMsg); err != nil {
-		return fmt.Errorf("git commit: %w (stderr: %s)", err, string(stderr))
-	}
-	return nil
+	return strings.TrimSpace(string(out)) != ""
 }
 
 // gitAmendAll stages all changes and amends the current commit.
@@ -1348,7 +1322,7 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 	}
 
 	// Unstage .pr-body.md if Claude accidentally staged it — it must not be committed.
-	a.runner.Run(ctx, worktreePath, "git", "restore", "--staged", ".pr-body.md")
+	a.runner.Run(ctx, worktreePath, "git", "restore", "--staged", ".pr-body.md") //nolint:errcheck // best-effort
 
 	// Create a single commit with a meaningful message.
 	// Strip any Signed-off-by trailers Claude may have added to individual commits
@@ -1399,7 +1373,7 @@ func (a *Agent) gitPush(ctx context.Context, worktreePath string, force bool) er
 	args := []string{"push", pushRemote, "HEAD:" + branch}
 	if force {
 		// Fetch first so --force-with-lease has up-to-date tracking refs
-		a.runner.Run(ctx, worktreePath, "git", "fetch", pushRemote)
+		a.runner.Run(ctx, worktreePath, "git", "fetch", pushRemote) //nolint:errcheck // best-effort
 		args = append(args, "--force-with-lease")
 	}
 

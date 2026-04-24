@@ -1,0 +1,8 @@
+# AgentReady configuration for oompa (Go project)
+# Some attributes are designed for Python/JS and don't map to Go conventions.
+
+excluded_attributes:
+  # Go uses cmd/ + pkg/ layout, not src/ + tests/
+  - standard_layout
+  # Go uses ADR-equivalent specs/ directory (see CLAUDE.md)
+  - architecture_decisions
