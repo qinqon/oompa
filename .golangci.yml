@@ -1,22 +1,30 @@
-run:
-  timeout: 5m
-
+version: "2"
 linters:
   enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    - gosimple
     - gocritic
-
-linters-settings:
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
   max-issues-per-linter: 50
   max-same-issues: 10
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

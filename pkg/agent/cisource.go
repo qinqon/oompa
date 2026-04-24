@@ -378,12 +378,12 @@ func (g *GitHubActionsJobSource) FetchLog(ctx context.Context, runID string) (st
 		if i > 0 {
 			allLogs.WriteString("\n\n==========\n\n")
 		}
-		allLogs.WriteString(fmt.Sprintf("Job: %s (ID: %d)\n", job.Name, job.ID))
+		fmt.Fprintf(&allLogs, "Job: %s (ID: %d)\n", job.Name, job.ID)
 		allLogs.WriteString("==========\n\n")
 
 		log, err := g.gh.GetWorkflowJobLogs(ctx, g.owner, g.repo, job.ID)
 		if err != nil {
-			allLogs.WriteString(fmt.Sprintf("Error fetching logs: %v\n", err))
+			fmt.Fprintf(&allLogs, "Error fetching logs: %v\n", err)
 			continue
 		}
 		allLogs.WriteString(log)

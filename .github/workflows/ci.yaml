@@ -34,7 +34,6 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: latest
-          install-mode: goinstall
 
   agentready:
     runs-on: ubuntu-latest
