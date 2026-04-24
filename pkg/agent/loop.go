@@ -590,7 +590,22 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 
 		// Strip markdown formatting (bold, italic) before checking prefix
 		cleaned := strings.TrimLeft(strings.TrimSpace(result.Result), "*_")
-		if strings.HasPrefix(cleaned, "UNRELATED") {
+
+		// Check if Claude followed the expected format (must start with UNRELATED or RELATED)
+		startsWithUnrelated := strings.HasPrefix(cleaned, "UNRELATED")
+		startsWithRelated := strings.HasPrefix(cleaned, "RELATED")
+
+		if !startsWithUnrelated && !startsWithRelated {
+			a.logger.Warn("Claude response did not start with UNRELATED or RELATED, skipping to avoid noise",
+				"pr", task.work.PRNumber,
+				"response_preview", truncateString(cleaned, 100))
+			task.work.CIFixAttempts++
+			task.work.LastCIStatus = "investigation-inconclusive"
+			task.work.LastCheckedCISHA = task.headSHA
+			return
+		}
+
+		if startsWithUnrelated {
 			a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
 			explanation := strings.TrimPrefix(cleaned, "UNRELATED")
 			explanation = strings.TrimSpace(explanation)
@@ -1450,4 +1465,12 @@ func (a *Agent) isAllowedReviewer(user string) bool {
 		}
 	}
 	return false
+}
+
+// truncateString returns the first maxLen characters of s, with "..." appended if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
