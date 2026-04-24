@@ -159,8 +159,8 @@ func logStreamEvent(logger *slog.Logger, line []byte) {
 	}
 }
 
-// parseStreamResult extracts the final ClaudeResult from stream-json output.
-func parseStreamResult(stdout []byte) (ClaudeResult, error) {
+// parseStreamResult extracts the final AgentResult from stream-json output.
+func parseStreamResult(stdout []byte) (AgentResult, error) {
 	lines := bytes.Split(stdout, []byte("\n"))
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := bytes.TrimSpace(lines[i])
@@ -176,23 +176,20 @@ func parseStreamResult(stdout []byte) (ClaudeResult, error) {
 			if cost == 0 {
 				cost = event.TotalCostUSD
 			}
-			return ClaudeResult{
-				Result: event.Result,
-				Cost:   cost,
+			return AgentResult{
+				Result:  event.Result,
+				CostUSD: cost,
 			}, nil
 		}
 	}
-	return ClaudeResult{}, fmt.Errorf("no result event found in stream output (stdout: %s)", string(stdout))
+	return AgentResult{}, fmt.Errorf("no result event found in stream output (stdout: %s)", string(stdout))
 }
 
-// BuildClaudeEnv builds the environment variable slice for Claude invocations.
-// Call this once at startup and assign to runner.Env.
-func BuildClaudeEnv(cfg Config) []string {
-	env := []string{
-		"CLAUDE_CODE_USE_VERTEX=1",
-		fmt.Sprintf("CLOUD_ML_REGION=%s", cfg.VertexRegion),
-		fmt.Sprintf("ANTHROPIC_VERTEX_PROJECT_ID=%s", cfg.VertexProject),
-	}
+// BuildAgentEnv builds the environment variable slice for agent invocations.
+// Only passes through git identity and GitHub token; provider-specific vars
+// are inherited from the system environment.
+func BuildAgentEnv(cfg Config) []string {
+	var env []string
 	if cfg.GitHubToken != "" {
 		env = append(env, fmt.Sprintf("GH_TOKEN=%s", cfg.GitHubToken))
 	}
@@ -209,31 +206,4 @@ func BuildClaudeEnv(cfg Config) []string {
 		)
 	}
 	return env
-}
-
-// runClaude invokes Claude CLI in headless mode with streaming output and parses the result.
-// If resume is true, --continue is passed to resume the most recent session in workDir.
-func runClaude(ctx context.Context, runner CommandRunner, workDir, prompt string, cfg Config, logger *slog.Logger, resume bool) (ClaudeResult, error) {
-	args := []string{"-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"}
-	if resume {
-		args = append(args, "--continue")
-	}
-	args = append(args, prompt)
-
-	var stdout, stderr []byte
-	var err error
-
-	if sr, ok := runner.(StreamingRunner); ok && logger != nil {
-		stdout, stderr, err = sr.RunStream(ctx, workDir, func(line []byte) {
-			logStreamEvent(logger, line)
-		}, "claude", args...)
-	} else {
-		stdout, stderr, err = runner.Run(ctx, workDir, "claude", args...)
-	}
-
-	if err != nil {
-		return ClaudeResult{}, fmt.Errorf("claude invocation failed: %w (stderr: %s)", err, string(stderr))
-	}
-
-	return parseStreamResult(stdout)
 }

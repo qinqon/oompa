@@ -370,7 +370,7 @@ func (f *fakeClaudeRunner) Run(_ context.Context, workDir, name string, args ...
 			return nil, []byte("claude error"), err
 		}
 
-		result := streamResultJSON(ClaudeResult{Result: "RELATED Fixed it"})
+		result := streamResultJSON(AgentResult{Result: "RELATED Fixed it"})
 		return result, nil, nil
 	}
 
@@ -402,6 +402,7 @@ func TestIntegration_FullIssueLifecycle(t *testing.T) {
 		NewState(),
 		Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"},
 		slog.Default(),
+		&ClaudeCodeAgent{},
 	)
 
 	// === Phase 1: New issue appears, Claude implements it and creates PR ===
@@ -527,6 +528,7 @@ func TestIntegration_ClaudeFailure(t *testing.T) {
 		NewState(),
 		Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"},
 		slog.Default(),
+		&ClaudeCodeAgent{},
 	)
 
 	gh.addIssue(Issue{Number: 99, Title: "Hard bug", Body: "Very broken"})
@@ -581,6 +583,7 @@ func TestIntegration_ClosedPRRetriggers(t *testing.T) {
 		NewState(),
 		Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"},
 		slog.Default(),
+		&ClaudeCodeAgent{},
 	)
 
 	// First run: issue processed, Claude creates PR
@@ -645,6 +648,7 @@ func TestIntegration_ReviewerWhitelist(t *testing.T) {
 		NewState(),
 		Config{Owner: "owner", Repo: "repo", Label: "good-for-ai", Reviewers: []string{"trusted-user"}},
 		slog.Default(),
+		&ClaudeCodeAgent{},
 	)
 
 	// Setup: issue with open PR (Claude creates PR)
@@ -714,6 +718,7 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 		NewState(),
 		Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"},
 		slog.Default(),
+		&ClaudeCodeAgent{},
 	)
 
 	// Setup: issue with open PR (Claude creates PR)
@@ -833,6 +838,7 @@ func TestIntegration_SyncWorktreePullsManualCommits(t *testing.T) {
 		NewState(),
 		Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"},
 		slog.Default(),
+		&ClaudeCodeAgent{},
 	)
 
 	// Create issue and PR (Claude creates PR)
@@ -897,6 +903,7 @@ func TestIntegration_CIFailureAfterNewPush(t *testing.T) {
 		NewState(),
 		Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"},
 		slog.Default(),
+		&ClaudeCodeAgent{},
 	)
 
 	// Setup: issue with open PR (Claude creates PR)

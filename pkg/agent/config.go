@@ -4,14 +4,12 @@ import "time"
 
 // Config holds all agent configuration.
 type Config struct {
-	Owner         string
-	Repo          string
-	Label         string
-	CloneDir      string
-	PollInterval  time.Duration
-	VertexRegion  string
-	VertexProject string
-	LogLevel      string
+	Owner        string
+	Repo         string
+	Label        string
+	CloneDir     string
+	PollInterval time.Duration
+	LogLevel     string
 	LogFile       string
 	DryRun        bool
 	OneShot       bool
@@ -31,6 +29,8 @@ type Config struct {
 	OnlyAssigned      bool     // when true, only process issues assigned to the agent user
 	MaxWorkers        int      // maximum concurrent Claude invocations (1 = sequential, default)
 	TriageJobs        []string // CI job URLs to monitor for periodic job triage
+	Agent             string   // coding agent backend: "claudecode" or "opencode"
+	AgentModel        string   // model override for OpenCode (empty = default)
 
 	// GitHub App authentication (alternative to GITHUB_TOKEN)
 	GitHubAppID             int64

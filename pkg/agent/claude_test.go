@@ -42,43 +42,43 @@ func (m *mockCommandRunner) Run(_ context.Context, workDir, name string, args ..
 }
 
 // streamResultJSON builds a stream-json result line for testing.
-func streamResultJSON(r ClaudeResult) []byte {
+func streamResultJSON(r AgentResult) []byte {
 	event := streamEvent{
 		Type:    "result",
 		Subtype: "success",
 		Result:  r.Result,
-		CostUSD: r.Cost,
+		CostUSD: r.CostUSD,
 	}
 	data, _ := json.Marshal(event)
 	return append(data, '\n')
 }
 
-func TestRunClaude_Success(t *testing.T) {
-	expected := ClaudeResult{Result: "Fixed the bug", Cost: 0.05}
+func TestClaudeCodeAgent_Success(t *testing.T) {
+	expected := AgentResult{Result: "Fixed the bug", CostUSD: 0.05}
 
 	runner := &mockCommandRunner{stdout: streamResultJSON(expected)}
-	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
+	agent := &ClaudeCodeAgent{}
 
-	result, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg, nil, false)
+	result, err := agent.Run(context.Background(), runner, "/tmp/work", "fix the bug", nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Result != expected.Result {
 		t.Errorf("expected result %q, got %q", expected.Result, result.Result)
 	}
-	if result.Cost != expected.Cost {
-		t.Errorf("expected cost %f, got %f", expected.Cost, result.Cost)
+	if result.CostUSD != expected.CostUSD {
+		t.Errorf("expected cost %f, got %f", expected.CostUSD, result.CostUSD)
 	}
 }
 
-func TestRunClaude_Failure(t *testing.T) {
+func TestClaudeCodeAgent_Failure(t *testing.T) {
 	runner := &mockCommandRunner{
 		err:    &mockError{msg: "exit status 1"},
 		stderr: []byte("something went wrong"),
 	}
-	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
+	agent := &ClaudeCodeAgent{}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix the bug", cfg, nil, false)
+	_, err := agent.Run(context.Background(), runner, "/tmp/work", "fix the bug", nil, false)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -87,11 +87,11 @@ func TestRunClaude_Failure(t *testing.T) {
 	}
 }
 
-func TestRunClaude_VertexEnvVars(t *testing.T) {
-	runner := &mockCommandRunner{stdout: streamResultJSON(ClaudeResult{Result: "ok"})}
-	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
+func TestClaudeCodeAgent_RequiredFlags(t *testing.T) {
+	runner := &mockCommandRunner{stdout: streamResultJSON(AgentResult{Result: "ok"})}
+	agent := &ClaudeCodeAgent{}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil, false)
+	_, err := agent.Run(context.Background(), runner, "/tmp/work", "fix", nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -114,11 +114,11 @@ func TestRunClaude_VertexEnvVars(t *testing.T) {
 	}
 }
 
-func TestRunClaude_ResumePassesContinue(t *testing.T) {
-	runner := &mockCommandRunner{stdout: streamResultJSON(ClaudeResult{Result: "ok"})}
-	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
+func TestClaudeCodeAgent_ResumePassesContinue(t *testing.T) {
+	runner := &mockCommandRunner{stdout: streamResultJSON(AgentResult{Result: "ok"})}
+	agent := &ClaudeCodeAgent{}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil, true)
+	_, err := agent.Run(context.Background(), runner, "/tmp/work", "fix", nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,11 +129,11 @@ func TestRunClaude_ResumePassesContinue(t *testing.T) {
 	}
 }
 
-func TestRunClaude_NoResumeOmitsContinue(t *testing.T) {
-	runner := &mockCommandRunner{stdout: streamResultJSON(ClaudeResult{Result: "ok"})}
-	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
+func TestClaudeCodeAgent_NoResumeOmitsContinue(t *testing.T) {
+	runner := &mockCommandRunner{stdout: streamResultJSON(AgentResult{Result: "ok"})}
+	agent := &ClaudeCodeAgent{}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil, false)
+	_, err := agent.Run(context.Background(), runner, "/tmp/work", "fix", nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,11 +144,11 @@ func TestRunClaude_NoResumeOmitsContinue(t *testing.T) {
 	}
 }
 
-func TestRunClaude_InvalidJSON(t *testing.T) {
+func TestClaudeCodeAgent_InvalidJSON(t *testing.T) {
 	runner := &mockCommandRunner{stdout: []byte("not json at all")}
-	cfg := Config{VertexRegion: "us-east5", VertexProject: "my-project"}
+	agent := &ClaudeCodeAgent{}
 
-	_, err := runClaude(context.Background(), runner, "/tmp/work", "fix", cfg, nil, false)
+	_, err := agent.Run(context.Background(), runner, "/tmp/work", "fix", nil, false)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
