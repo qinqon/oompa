@@ -227,7 +227,7 @@ func (m *mockWorktreeManager) RemoveWorktree(_ context.Context, worktreePath str
 	return nil
 }
 
-func newTestAgent(gh *mockGitHubClient, runner *mockCommandRunner, wt *mockWorktreeManager) *Agent {
+func newTestAgent(gh *mockGitHubClient, runner CommandRunner, wt *mockWorktreeManager) *Agent {
 	return &Agent{
 		gh:        gh,
 		runner:    runner,
@@ -1384,6 +1384,101 @@ func TestProcessRebase_SkipsDirty(t *testing.T) {
 			t.Errorf("ProcessRebase should not run git commands for dirty PR, got: git %v", c.Args)
 		}
 	}
+}
+
+func TestProcessRebase_InvokesConflictResolutionWhenRebaseFails(t *testing.T) {
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+	}
+	// Create a custom runner that returns conflict error for rebase
+	baseMock := &mockCommandRunner{}
+	runner := &conflictRebaseRunner{
+		mockCommandRunner: baseMock,
+	}
+	wt := &mockWorktreeManager{}
+	codeAgent := &mockCodeAgent{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = codeAgent
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessRebase(context.Background())
+
+	// Should have called git rebase and git rebase --abort
+	var rebaseCalls, abortCalls int
+	for _, c := range baseMock.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
+			if len(c.Args) > 1 && c.Args[1] == "--abort" {
+				abortCalls++
+			} else {
+				rebaseCalls++
+			}
+		}
+	}
+
+	if rebaseCalls == 0 {
+		t.Error("expected git rebase to be called")
+	}
+	if abortCalls == 0 {
+		t.Error("expected git rebase --abort to be called after conflict")
+	}
+
+	// Should have invoked the code agent for conflict resolution
+	if !codeAgent.called {
+		t.Error("expected code agent to be called for conflict resolution")
+	}
+	if !strings.Contains(codeAgent.lastPrompt, "merge conflicts") {
+		t.Errorf("expected conflict resolution prompt, got: %s", codeAgent.lastPrompt)
+	}
+}
+
+// conflictRebaseRunner is a test helper that returns conflict errors for git rebase
+type conflictRebaseRunner struct {
+	*mockCommandRunner
+}
+
+func (r *conflictRebaseRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
+	// Call the base mock to record the call
+	stdout, _, _ = r.mockCommandRunner.Run(ctx, workDir, name, args...)
+
+	// Return conflict error for "git rebase" (but not "git rebase --abort")
+	if name == "git" && len(args) > 0 && args[0] == "rebase" {
+		isAbort := false
+		for _, arg := range args {
+			if arg == "--abort" {
+				isAbort = true
+				break
+			}
+		}
+		if !isAbort {
+			return nil, []byte("error: could not apply 3a35b4e... Migrate remaining features"), fmt.Errorf("rebase failed")
+		}
+	}
+
+	return stdout, nil, nil
+}
+
+// mockCodeAgent is a test double for CodeAgent
+type mockCodeAgent struct {
+	called     bool
+	lastPrompt string
+	result     AgentResult
+	err        error
+}
+
+func (m *mockCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir, prompt string, logger *slog.Logger, resume bool) (AgentResult, error) {
+	m.called = true
+	m.lastPrompt = prompt
+	if m.err != nil {
+		return AgentResult{}, m.err
+	}
+	return m.result, nil
 }
 
 func TestProcessConflicts_SkipsCleanPR(t *testing.T) {
