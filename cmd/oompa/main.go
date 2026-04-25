@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
@@ -328,7 +329,13 @@ func main() {
 	} else {
 		token := os.Getenv("GITHUB_TOKEN")
 		if token == "" {
-			logger.Error("GITHUB_TOKEN is required (or configure GitHub App auth with --github-app-id, --github-app-private-key/GITHUB_APP_PRIVATE_KEY, --github-app-installation-id)")
+			// Fallback: get token from gh auth if GITHUB_TOKEN is not set
+			if ghToken, err := exec.Command("gh", "auth", "token").Output(); err == nil {
+				token = strings.TrimSpace(string(ghToken))
+			}
+		}
+		if token == "" {
+			logger.Error("GITHUB_TOKEN is required, or run 'gh auth login' (or configure GitHub App auth with --github-app-id, --github-app-private-key/GITHUB_APP_PRIVATE_KEY, --github-app-installation-id)")
 			os.Exit(1)
 		}
 		cfg.GitHubToken = token

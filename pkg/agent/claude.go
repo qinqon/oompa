@@ -186,13 +186,10 @@ func parseStreamResult(stdout []byte) (AgentResult, error) {
 }
 
 // BuildAgentEnv builds the environment variable slice for agent invocations.
-// Only passes through git identity and GitHub token; provider-specific vars
-// are inherited from the system environment.
+// Only passes through git identity; provider-specific vars and GH_TOKEN
+// are inherited from the system environment (e.g. via gh auth git-credential).
 func BuildAgentEnv(cfg Config) []string {
 	var env []string
-	if cfg.GitHubToken != "" {
-		env = append(env, fmt.Sprintf("GH_TOKEN=%s", cfg.GitHubToken))
-	}
 	if cfg.GitAuthorName != "" {
 		env = append(env,
 			fmt.Sprintf("GIT_AUTHOR_NAME=%s", cfg.GitAuthorName),
