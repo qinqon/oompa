@@ -429,17 +429,30 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		})
 	}
 
-	// Parallel phase: run Claude, amend/push, post fallback replies
+	// Parallel phase: run triage then implementation, amend/push, post fallback replies
 	runParallel(ctx, a.cfg.MaxWorkers, tasks, func(ctx context.Context, task reviewTask) {
-		// Capture local HEAD before Claude runs so we can detect if Claude committed directly
+		// Step 1: Triage — produce a structured summary (read-only, no code changes)
+		triageSummary := ""
+		triagePrompt := buildReviewTriagePrompt(*task.work, task.humanComments, task.humanReviews, a.cfg.Owner, a.cfg.Repo)
+		triageResult, triageErr := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, triagePrompt, a.logger, false)
+		if triageErr != nil {
+			a.logger.Warn("triage step failed, proceeding without triage summary", "pr", task.work.PRNumber, "error", triageErr)
+		} else {
+			triageSummary = triageResult.Result
+			a.logger.Info("review triage summary", "pr", task.work.PRNumber, "triage", triageSummary)
+		}
+
+		// Step 2: Implementation — address review comments guided by triage summary
+		// Capture local HEAD before agent runs so we can detect if it committed directly
 		headBefore, _, err := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
 		if err != nil {
-			a.logger.Warn("failed to get HEAD before Claude", "pr", task.work.PRNumber, "error", err)
+			a.logger.Warn("failed to get HEAD before agent", "pr", task.work.PRNumber, "error", err)
 		}
 		headSHABefore := strings.TrimSpace(string(headBefore))
 
-		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, a.cfg.Owner, a.cfg.Repo)
-		_, err = a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
+		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, a.cfg.Owner, a.cfg.Repo, triageSummary)
+		shouldResume := triageErr == nil
+		_, err = a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, shouldResume)
 		if err != nil {
 			a.logger.Error("agent failed to address review", "pr", task.work.PRNumber, "error", err)
 			return

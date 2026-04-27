@@ -9,15 +9,26 @@ Tells Claude to:
 - If signedOffBy is non-empty, add `Signed-off-by:` to every commit message
 - Do NOT push, create PRs, or amend — the agent handles that automatically
 
-## `buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, signedOffBy string) string`
+## `buildReviewTriagePrompt(work IssueWork, comments []ReviewComment, reviews []PRReview, owner, repo string) string`
 
 Tells Claude to:
-- For each review comment: implement if valid, push back with explanation if not
+- Evaluate each review comment critically and produce a structured triage summary
+- For each comment, output a TRIAGE line with: comment ID, user, classification, and ACCEPT/DECLINE decision
+- Classifications: BUG FIX, VALID IMPROVEMENT, INCORRECT, STYLE PREFERENCE
+- This is a READ-ONLY step: do NOT modify any files, commit, or push
+- Output format: `TRIAGE:` header followed by one line per comment
+
+## `buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, reviews []PRReview, owner, repo, triageSummary string) string`
+
+Tells Claude to:
+- Use the provided triage summary to guide which comments to implement vs decline
+- For accepted comments: implement the suggested change
+- For declined comments: reply with explanation but do NOT implement
 - Always reply to every comment, even when implementing the suggestion
-- Reply using `gh pr review` or `gh api`
-- Run lint/test, commit, push
+- Reply using `gh api` to post comment replies
+- Run lint/test
 - No force-push
-- If signedOffBy is non-empty, add `Signed-off-by:` to every commit message
+- Do NOT commit, push, or amend — the agent handles that automatically
 
 ## `buildCIFixPrompt(work IssueWork, failures []CheckRun, diff string, commits []Commit, signedOffBy string) string`
 
@@ -47,4 +58,5 @@ Tells Claude to:
 ## Tests (`prompt_test.go`)
 
 - `TestBuildImplementationPrompt` -- verifies issue number, title, body are interpolated; verifies push/PR instructions are absent
-- `TestBuildReviewResponsePrompt` -- verifies each comment's file/line/body is included
+- `TestBuildReviewResponsePrompt` -- verifies each comment's file/line/body is included; verifies triage summary is included when provided
+- `TestBuildReviewTriagePrompt` -- verifies comment details are included; verifies READ-ONLY instructions; verifies TRIAGE output format instructions

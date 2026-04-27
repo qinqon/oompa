@@ -481,8 +481,9 @@ func TestIntegration_FullIssueLifecycle(t *testing.T) {
 		}
 	}
 	runner.mu.Unlock()
-	if claudeCalls != 2 {
-		t.Errorf("expected 2 total claude calls, got %d", claudeCalls)
+	// 1 for implementation + 2 for review (triage + implementation)
+	if claudeCalls != 3 {
+		t.Errorf("expected 3 total claude calls, got %d", claudeCalls)
 	}
 
 	// === Phase 3: No new comments, nothing happens ===
@@ -700,8 +701,9 @@ func TestIntegration_ReviewerWhitelist(t *testing.T) {
 	}
 	runner.mu.Unlock()
 
-	if claudeCallsAfter != 1 {
-		t.Errorf("expected 1 claude call for whitelisted reviewer, got %d", claudeCallsAfter)
+	// 2 calls for whitelisted reviewer: triage + implementation
+	if claudeCallsAfter != 2 {
+		t.Errorf("expected 2 claude calls for whitelisted reviewer (triage + implement), got %d", claudeCallsAfter)
 	}
 }
 

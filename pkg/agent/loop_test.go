@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -400,13 +401,14 @@ func TestProcessReviewComments_NoNewComments(t *testing.T) {
 }
 
 func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
-	claudeResult := streamResultJSON(AgentResult{Result: "Addressed"})
+	triageResult := streamResultJSON(AgentResult{Result: "TRIAGE:\n- Comment #60 (reviewer): BUG FIX — missing nil check → ACCEPT"})
+	implResult := streamResultJSON(AgentResult{Result: "Addressed"})
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
 		},
 	}
-	runner := &mockCommandRunner{stdout: claudeResult}
+	runner := &mockCommandRunner{claudeResults: [][]byte{triageResult, implResult}}
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
@@ -427,8 +429,9 @@ func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
 			claudeCalls++
 		}
 	}
-	if claudeCalls != 1 {
-		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
+	// Two calls: triage + implementation
+	if claudeCalls != 2 {
+		t.Fatalf("expected 2 claude calls (triage + implement), got %d", claudeCalls)
 	}
 
 	if agent.state.ActiveIssues[42].LastCommentID != 60 {
@@ -462,13 +465,14 @@ func TestProcessReviewComments_SkipsNonWhitelistedUsers(t *testing.T) {
 }
 
 func TestProcessReviewComments_AllowsAllWhenWhitelistEmpty(t *testing.T) {
-	claudeResult := streamResultJSON(AgentResult{Result: "Done"})
+	triageResult := streamResultJSON(AgentResult{Result: "TRIAGE:\n- Comment #60 (anyone): VALID IMPROVEMENT → ACCEPT"})
+	implResult := streamResultJSON(AgentResult{Result: "Done"})
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "anyone", Body: "fix this"},
 		},
 	}
-	runner := &mockCommandRunner{stdout: claudeResult}
+	runner := &mockCommandRunner{claudeResults: [][]byte{triageResult, implResult}}
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
@@ -490,9 +494,143 @@ func TestProcessReviewComments_AllowsAllWhenWhitelistEmpty(t *testing.T) {
 			claudeCalls++
 		}
 	}
-	if claudeCalls != 1 {
-		t.Errorf("expected 1 claude call with empty whitelist, got %d", claudeCalls)
+	// Two calls: triage + implementation
+	if claudeCalls != 2 {
+		t.Errorf("expected 2 claude calls with empty whitelist (triage + implement), got %d", claudeCalls)
 	}
+}
+
+func TestProcessReviewComments_TriageSummaryLogged(t *testing.T) {
+	triageSummary := "TRIAGE:\n- Comment #60 (reviewer): BUG FIX — nil dereference → ACCEPT"
+	triageResult := streamResultJSON(AgentResult{Result: triageSummary})
+	implResult := streamResultJSON(AgentResult{Result: "Addressed"})
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "nil check missing", Path: "main.go", Line: 10},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{triageResult, implResult}}
+	wt := &mockWorktreeManager{}
+
+	// Use a custom logger that captures log entries
+	var logBuf logBuffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	agent := NewAgent(gh, runner, wt, NewState(), Config{Owner: "owner", Repo: "repo", Label: "good-for-ai", FlakyLabel: "flaky-test"}, logger, &ClaudeCodeAgent{})
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:   42,
+		IssueTitle:    "Fix bug",
+		PRNumber:      100,
+		Status:        "pr-open",
+		WorktreePath:  "/tmp/worktree",
+		LastCommentID: 50,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Verify the triage summary was logged
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "review triage summary") {
+		t.Error("expected triage summary to be logged at Info level")
+	}
+	if !strings.Contains(logOutput, "TRIAGE:") {
+		t.Error("expected log to contain the triage content")
+	}
+}
+
+func TestProcessReviewComments_TriageFailureFallsBack(t *testing.T) {
+	implResult := streamResultJSON(AgentResult{Result: "Addressed without triage"})
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	// First claude call (triage) fails, second (implementation) succeeds
+	runner := &mockCommandRunner{
+		claudeResults: [][]byte{
+			nil, // triage will fail because of error
+			implResult,
+		},
+	}
+	wt := &mockWorktreeManager{}
+
+	// Use a mockCodeAgent that fails on first call and succeeds on second
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{err: fmt.Errorf("triage agent failed")},
+			{result: AgentResult{Result: "Addressed without triage"}},
+		},
+	}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = codeAgent
+	agent.state.ActiveIssues[42] = &IssueWork{
+		IssueNumber:   42,
+		IssueTitle:    "Fix bug",
+		PRNumber:      100,
+		Status:        "pr-open",
+		WorktreePath:  "/tmp/worktree",
+		LastCommentID: 50,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Should have called agent twice: triage (failed) + implementation (succeeded)
+	if codeAgent.callCount != 2 {
+		t.Fatalf("expected 2 agent calls (failed triage + implementation), got %d", codeAgent.callCount)
+	}
+
+	// The implementation prompt should NOT contain triage summary
+	implPrompt := codeAgent.prompts[1]
+	if strings.Contains(implPrompt, "triage summary was produced") {
+		t.Error("implementation prompt should not contain triage section when triage failed")
+	}
+
+	// lastCommentID should still be updated
+	if agent.state.ActiveIssues[42].LastCommentID != 60 {
+		t.Errorf("expected lastCommentID 60, got %d", agent.state.ActiveIssues[42].LastCommentID)
+	}
+}
+
+// sequentialMockCodeAgent returns different results for sequential calls.
+type sequentialMockCodeAgent struct {
+	results   []mockCodeAgentCall
+	callCount int
+	prompts   []string
+}
+
+type mockCodeAgentCall struct {
+	result AgentResult
+	err    error
+}
+
+func (m *sequentialMockCodeAgent) Run(_ context.Context, _ CommandRunner, _, prompt string, _ *slog.Logger, _ bool) (AgentResult, error) {
+	idx := m.callCount
+	m.callCount++
+	m.prompts = append(m.prompts, prompt)
+	if idx < len(m.results) {
+		return m.results[idx].result, m.results[idx].err
+	}
+	return AgentResult{}, fmt.Errorf("unexpected call %d", idx)
+}
+
+// logBuffer is a simple thread-safe bytes.Buffer for capturing log output.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (lb *logBuffer) Write(p []byte) (n int, err error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.buf = append(lb.buf, p...)
+	return len(p), nil
+}
+
+func (lb *logBuffer) String() string {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return string(lb.buf)
 }
 
 func TestCleanupDone_MergedPR(t *testing.T) {

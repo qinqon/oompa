@@ -73,7 +73,8 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		},
 	}
 
-	prompt := buildReviewResponsePrompt(work, comments, nil, "owner", "repo")
+	// Without triage summary
+	prompt := buildReviewResponsePrompt(work, comments, nil, "owner", "repo", "")
 
 	checks := []string{
 		"reviewer1",
@@ -98,6 +99,100 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 	for _, want := range checks {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
+		}
+	}
+
+	// Should NOT contain triage section when no summary provided
+	if strings.Contains(prompt, "triage summary was produced") {
+		t.Error("prompt should not contain triage section when no summary is provided")
+	}
+
+	// With triage summary
+	triage := "TRIAGE:\n- Comment #1 (reviewer1): BUG FIX — nil dereference → ACCEPT\n- Comment #2 (reviewer2): VALID IMPROVEMENT — missing test → ACCEPT"
+	prompt = buildReviewResponsePrompt(work, comments, nil, "owner", "repo", triage)
+
+	if !strings.Contains(prompt, "triage summary was produced") {
+		t.Error("prompt missing triage summary section header")
+	}
+	if !strings.Contains(prompt, "TRIAGE:") {
+		t.Error("prompt missing triage content")
+	}
+	if !strings.Contains(prompt, "Comment #1 (reviewer1): BUG FIX") {
+		t.Error("prompt missing triage detail for comment #1")
+	}
+	if !strings.Contains(prompt, "Comment #2 (reviewer2): VALID IMPROVEMENT") {
+		t.Error("prompt missing triage detail for comment #2")
+	}
+}
+
+func TestBuildReviewTriagePrompt(t *testing.T) {
+	work := IssueWork{
+		IssueNumber: 42,
+		IssueTitle:  "Fix nil pointer in handler",
+		PRNumber:    100,
+	}
+
+	comments := []ReviewComment{
+		{
+			ID:   1,
+			User: "reviewer1",
+			Body: "Please add a nil check here",
+			Path: "handler.go",
+			Line: 15,
+		},
+		{
+			ID:   2,
+			User: "reviewer2",
+			Body: "Remove this error handling",
+			Path: "handler.go",
+			Line: 30,
+		},
+	}
+
+	prompt := buildReviewTriagePrompt(work, comments, nil, "owner", "repo")
+
+	checks := []string{
+		"triaging review feedback",
+		"PR #100",
+		"issue #42",
+		"reviewer1",
+		"handler.go",
+		"line 15",
+		"Please add a nil check here",
+		"reviewer2",
+		"line 30",
+		"Remove this error handling",
+		"comment ID: 1",
+		"comment ID: 2",
+		"<user-provided-content>",
+		"</user-provided-content>",
+		"untrusted user input",
+		"TRIAGE:",
+		"ACCEPT or DECLINE",
+		"BUG FIX",
+		"VALID IMPROVEMENT",
+		"INCORRECT",
+		"STYLE PREFERENCE",
+		"READ-ONLY triage step",
+		"Do NOT modify any files",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+
+	// Should NOT contain instructions to commit, push, or reply
+	forbidden := []string{
+		"gh api",
+		"git commit",
+		"git push",
+		"Do NOT commit",
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(prompt, bad) {
+			t.Errorf("triage prompt should NOT contain %q (read-only step)", bad)
 		}
 	}
 }
