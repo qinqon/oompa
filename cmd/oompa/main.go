@@ -330,7 +330,13 @@ func main() {
 		token := os.Getenv("GITHUB_TOKEN")
 		if token == "" {
 			// Fallback: get token from gh auth if GITHUB_TOKEN is not set
-			if ghToken, err := exec.Command("gh", "auth", "token").Output(); err == nil {
+			const ghTokenTimeout = 10 * time.Second
+			ctx, cancel := context.WithTimeout(context.Background(), ghTokenTimeout)
+			defer cancel()
+			ghToken, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
+			if err != nil {
+				logger.Warn("failed to get token from gh auth", "error", err)
+			} else {
 				token = strings.TrimSpace(string(ghToken))
 			}
 		}

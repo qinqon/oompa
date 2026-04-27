@@ -1492,6 +1492,9 @@ func (a *Agent) resolveConflictsParallel(ctx context.Context, tasks []conflictTa
 		_, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		if err != nil {
 			a.logger.Error("agent failed to resolve conflicts", "pr", task.work.PRNumber, "error", err)
+			// Post a hidden marker so deduplication skips this SHA on the next cycle
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(task.headSHA)))
 			return
 		}
 
@@ -1519,6 +1522,9 @@ func (a *Agent) resolveConflictsParallel(ctx context.Context, tasks []conflictTa
 		// Push the rebased branch
 		if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 			a.logger.Error("failed to push after conflict resolution", "pr", task.work.PRNumber, "error", err)
+			// Post a hidden marker so deduplication skips this SHA on the next cycle
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(task.headSHA)))
 		} else {
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 				fmt.Sprintf("Rebased commit %s on main and pushed (conflicts resolved).\n\n%s", shortSHA(task.headSHA), botMarker)); err != nil {
