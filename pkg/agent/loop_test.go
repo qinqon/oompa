@@ -1118,7 +1118,7 @@ func TestProcessCIFailures_SkipsAlreadyReportedAfterRestart(t *testing.T) {
 		},
 		prHeadSHAs: []string{"abc1234567890"},
 		issueComments: []ReviewComment{
-			{ID: 1, User: "bot", Body: fmt.Sprintf("CI check failed on commit abc1234 but appears unrelated to this PR's changes.\n\nFlaky test\n\n%s", ciMarker("abc1234567890"))},
+			{ID: 1, User: "bot", Body: fmt.Sprintf("CI check `test` failed on commit abc1234 but appears unrelated to this PR's changes.\n\nFlaky test\n\n%s", ciMarker("abc1234567890", "test"))},
 		},
 	}
 	runner := &mockCommandRunner{}
@@ -1224,7 +1224,7 @@ func TestProcessCIFailures_DeduplicatesUnrelatedComments(t *testing.T) {
 	if len(gh.addedComments) != 1 {
 		t.Fatalf("expected 1 comment on first poll, got %d", len(gh.addedComments))
 	}
-	if !strings.Contains(gh.addedComments[0], "CI check failed on commit abc123 but appears unrelated") {
+	if !strings.Contains(gh.addedComments[0], "CI check `test` failed on commit abc123 but appears unrelated") {
 		t.Errorf("unexpected comment body: %s", gh.addedComments[0])
 	}
 
@@ -1915,25 +1915,34 @@ func TestProcessCIFailures_MergesCheckRunsAndCommitStatuses(t *testing.T) {
 
 	agent.ProcessCIFailures(context.Background())
 
-	// Should have invoked Claude with both failures merged into the prompt
-	var claudePrompt string
-	claudeCalls := 0
+	// Each failure should get its own Claude invocation for independent classification
+	var claudePrompts []string
 	for _, c := range runner.calls {
 		if c.Name == "claude" {
-			claudeCalls++
-			// The prompt is the last positional argument
 			if len(c.Args) > 0 {
-				claudePrompt = c.Args[len(c.Args)-1]
+				claudePrompts = append(claudePrompts, c.Args[len(c.Args)-1])
 			}
 		}
 	}
-	if claudeCalls != 1 {
-		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
+	if len(claudePrompts) != 2 {
+		t.Fatalf("expected 2 claude calls (one per failure), got %d", len(claudePrompts))
 	}
-	if !strings.Contains(claudePrompt, "github-actions-test") {
-		t.Errorf("expected prompt to contain check run failure 'github-actions-test', got: %s", truncateString(claudePrompt, 200))
+
+	// Verify each failure gets its own prompt
+	foundCheckRun := false
+	foundCommitStatus := false
+	for _, prompt := range claudePrompts {
+		if strings.Contains(prompt, "github-actions-test") {
+			foundCheckRun = true
+		}
+		if strings.Contains(prompt, "pull-unit-test") {
+			foundCommitStatus = true
+		}
 	}
-	if !strings.Contains(claudePrompt, "pull-unit-test") {
-		t.Errorf("expected prompt to contain commit status failure 'pull-unit-test', got: %s", truncateString(claudePrompt, 200))
+	if !foundCheckRun {
+		t.Errorf("expected one prompt to contain check run failure 'github-actions-test'")
+	}
+	if !foundCommitStatus {
+		t.Errorf("expected one prompt to contain commit status failure 'pull-unit-test'")
 	}
 }

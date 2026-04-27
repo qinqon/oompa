@@ -26,8 +26,8 @@ const (
 	labelAIFailed = "ai-failed"
 )
 
-func ciMarker(sha string) string {
-	return fmt.Sprintf("<!-- oompa-bot ci:%s -->", shortSHA(sha))
+func ciMarker(sha, checkName string) string {
+	return fmt.Sprintf("<!-- oompa-bot ci:%s:%s -->", shortSHA(sha), checkName)
 }
 
 // issueBranchName returns the branch name for a given issue number.
@@ -560,12 +560,6 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		if a.alreadyCheckedCI(ctx, work.PRNumber, headSHA) {
-			work.LastCheckedCISHA = headSHA
-			a.logger.Info("CI already investigated for this SHA (found existing comment), skipping", "pr", work.PRNumber, "sha", shortSHA(headSHA))
-			continue
-		}
-
 		runs, err := a.gh.GetCheckRuns(ctx, a.cfg.Owner, a.cfg.Repo, headSHA)
 		if err != nil {
 			a.logger.Error("failed to get check runs", "pr", work.PRNumber, "error", err)
@@ -593,6 +587,23 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
+		// Filter out failures already investigated for this SHA.
+		// This prevents re-investigating a check that was already classified
+		// as RELATED or UNRELATED in a previous poll cycle.
+		var newFailures []CheckRun
+		for _, f := range failures {
+			if a.alreadyCheckedCI(ctx, work.PRNumber, headSHA, f.Name) {
+				a.logger.Info("CI already investigated for this check, skipping", "pr", work.PRNumber, "sha", shortSHA(headSHA), "check", f.Name)
+				continue
+			}
+			newFailures = append(newFailures, f)
+		}
+
+		if len(newFailures) == 0 {
+			work.LastCheckedCISHA = headSHA
+			continue
+		}
+
 		// Fetch logs for each failing check when output is missing or too short.
 		// Threshold of 50 chars filters out generic GitHub Actions boilerplate
 		// (e.g., "Process completed with exit code 1") that doesn't provide
@@ -600,7 +611,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		// Skip entries with ID==0: these are commit-status entries (e.g. Prow)
 		// where Output contains a target_url, not log text, and no check-run
 		// log is available via the GitHub Actions API.
-		for i, f := range failures {
+		for i, f := range newFailures {
 			if f.ID == 0 {
 				continue
 			}
@@ -610,12 +621,12 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 				if err != nil {
 					a.logger.Warn("failed to get check run log", "check", f.Name, "error", err)
 				} else if log != "" {
-					failures[i].Output = log
+					newFailures[i].Output = log
 				}
 			}
 		}
 
-		a.logger.Info("CI failing, investigating", "pr", work.PRNumber, "failures", len(failures), "attempt", work.CIFixAttempts+1)
+		a.logger.Info("CI failing, investigating", "pr", work.PRNumber, "failures", len(newFailures), "attempt", work.CIFixAttempts+1)
 
 		if err := a.ensureWorktreeReady(ctx, work); err != nil {
 			a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
@@ -629,13 +640,18 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		// Get commits in the PR to help Claude identify which commit introduced the failure
 		commits := a.getPRCommits(ctx, work.WorktreePath)
 
-		tasks = append(tasks, ciTask{
-			work:     work,
-			headSHA:  headSHA,
-			failures: failures,
-			diff:     diff,
-			commits:  commits,
-		})
+		// Create one task per failure so each gets its own RELATED/UNRELATED classification.
+		// This prevents a single unrelated failure (e.g. a policy check) from masking a
+		// related failure (e.g. a unit test) when they fail on the same SHA.
+		for _, f := range newFailures {
+			tasks = append(tasks, ciTask{
+				work:     work,
+				headSHA:  headSHA,
+				failures: []CheckRun{f},
+				diff:     diff,
+				commits:  commits,
+			})
+		}
 	}
 
 	// Parallel phase: Claude invocations and post-processing
@@ -671,7 +687,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
 			explanation := strings.TrimPrefix(cleaned, "UNRELATED")
 			explanation = strings.TrimSpace(explanation)
-			comment := fmt.Sprintf("CI check failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", shortSHA(task.headSHA), explanation, ciMarker(task.headSHA))
+			comment := fmt.Sprintf("CI check `%s` failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", task.failures[0].Name, shortSHA(task.headSHA), explanation, ciMarker(task.headSHA, task.failures[0].Name))
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
 				a.logger.Error("failed to post CI unrelated comment", "pr", task.work.PRNumber, "error", err)
 			}
@@ -807,13 +823,13 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		if pushed {
 			a.logger.Info("CI failure is related, pushed a fix", "pr", task.work.PRNumber)
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("CI was failing on commit %s. Pushed a fix.\n\n%s", shortSHA(task.headSHA), ciMarker(task.headSHA))); err != nil {
+				fmt.Sprintf("CI check `%s` was failing on commit %s. Pushed a fix.\n\n%s", task.failures[0].Name, shortSHA(task.headSHA), ciMarker(task.headSHA, task.failures[0].Name))); err != nil {
 				a.logger.Error("failed to post CI fix comment", "pr", task.work.PRNumber, "error", err)
 			}
 		} else {
 			a.logger.Warn("Claude said RELATED but no changes to push", "pr", task.work.PRNumber)
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("CI is failing on commit %s. Investigated but could not push a fix.\n\n%s", shortSHA(task.headSHA), ciMarker(task.headSHA))); err != nil {
+				fmt.Sprintf("CI check `%s` is failing on commit %s. Investigated but could not push a fix.\n\n%s", task.failures[0].Name, shortSHA(task.headSHA), ciMarker(task.headSHA, task.failures[0].Name))); err != nil {
 				a.logger.Error("failed to post CI investigation comment", "pr", task.work.PRNumber, "error", err)
 			}
 		}
@@ -1246,12 +1262,12 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-func (a *Agent) alreadyCheckedCI(ctx context.Context, prNumber int, sha string) bool {
+func (a *Agent) alreadyCheckedCI(ctx context.Context, prNumber int, sha, checkName string) bool {
 	comments, err := a.gh.GetIssueComments(ctx, a.cfg.Owner, a.cfg.Repo, prNumber, 0)
 	if err != nil {
 		return false
 	}
-	marker := ciMarker(sha)
+	marker := ciMarker(sha, checkName)
 	for _, c := range comments {
 		if strings.Contains(c.Body, marker) {
 			return true
