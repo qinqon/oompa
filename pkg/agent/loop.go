@@ -446,12 +446,15 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		}
 
 		// Amend and push if Claude made changes
+		pushed := false
 		hasChanges := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
 		if hasChanges {
 			if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
 				a.logger.Error("failed to amend commit", "pr", task.work.PRNumber, "error", err)
 			} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 				a.logger.Error("failed to push", "pr", task.work.PRNumber, "error", err)
+			} else {
+				pushed = true
 			}
 		} else {
 			// No uncommitted changes — Claude may have committed or amended directly.
@@ -460,9 +463,10 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			headSHAAfter := strings.TrimSpace(string(headAfter))
 			if revErr == nil && headSHABefore != "" && headSHAAfter != headSHABefore {
 				a.logger.Info("Claude committed directly, pushing", "pr", task.work.PRNumber)
-				hasChanges = true
 				if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 					a.logger.Error("failed to push", "pr", task.work.PRNumber, "error", err)
+				} else {
+					pushed = true
 				}
 			}
 		}
@@ -480,7 +484,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 				continue
 			}
 			fallback := "Reviewed — no code changes needed for this comment.\n\n" + botMarker
-			if hasChanges {
+			if pushed {
 				fallback = "Addressed in the latest push.\n\n" + botMarker
 			}
 			if err := a.gh.ReplyToPRComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, c.ID, fallback); err != nil {

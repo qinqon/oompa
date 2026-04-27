@@ -345,6 +345,7 @@ func main() {
 			os.Exit(1)
 		}
 		cfg.GitHubToken = token
+		os.Setenv("GH_TOKEN", token)
 
 		ghClient = agent.NewGoGitHubClient(token)
 		if cfg.GitHubUser != "" && cfg.GitAuthorName != "" && cfg.GitAuthorEmail != "" {
