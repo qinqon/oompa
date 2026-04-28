@@ -300,7 +300,11 @@ Instructions:
 	}
 
 	prompt.WriteString(`
-Do NOT push or rebase — the agent handles that automatically.`)
+Do NOT push or rebase — the agent handles that automatically.
+
+REMINDER: Your FINAL text output MUST start with either UNRELATED or RELATED.
+This is how the automation determines what to do next. Any other format will
+cause your work to be discarded.`)
 
 	return prompt.String()
 }
