@@ -689,14 +689,28 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		// Strip markdown formatting (bold, italic) before checking prefix
 		cleaned := strings.TrimLeft(strings.TrimSpace(result.Result), "*_")
 
-		// Check if Claude followed the expected format (must start with UNRELATED or RELATED)
-		startsWithUnrelated := strings.HasPrefix(cleaned, "UNRELATED")
-		startsWithRelated := strings.HasPrefix(cleaned, "RELATED")
+		// Check if the response contains UNRELATED or RELATED.
+		// The agent sometimes puts preamble text before the keyword (e.g.
+		// "Same infrastructure failure.\n\nUNRELATED — ..."), so scan the
+		// first few lines instead of requiring it as the very first word.
+		startsWithUnrelated := false
+		startsWithRelated := false
+		for _, line := range strings.SplitN(cleaned, "\n", 5) {
+			trimmed := strings.TrimLeft(strings.TrimSpace(line), "*_")
+			if strings.HasPrefix(trimmed, "UNRELATED") {
+				startsWithUnrelated = true
+				break
+			}
+			if strings.HasPrefix(trimmed, "RELATED") {
+				startsWithRelated = true
+				break
+			}
+		}
 
 		if !startsWithUnrelated && !startsWithRelated {
-			a.logger.Warn("Claude response did not start with UNRELATED or RELATED, skipping to avoid noise",
+			a.logger.Warn("agent response did not contain UNRELATED or RELATED in first 5 lines, skipping to avoid noise",
 				"pr", task.work.PRNumber,
-				"response_preview", truncateString(cleaned, 100))
+				"response_preview", truncateString(cleaned, 200))
 			task.work.CIFixAttempts++
 			task.work.LastCIStatus = "investigation-inconclusive"
 			task.work.LastCheckedCISHA = task.headSHA
@@ -705,7 +719,9 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 
 		if startsWithUnrelated {
 			a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
-			explanation := strings.TrimPrefix(cleaned, "UNRELATED")
+			// Extract explanation: everything after UNRELATED in the full response
+			idx := strings.Index(cleaned, "UNRELATED")
+			explanation := strings.TrimPrefix(cleaned[idx:], "UNRELATED")
 			explanation = strings.TrimSpace(explanation)
 			comment := fmt.Sprintf("CI check `%s` failed on commit %s but appears unrelated to this PR's changes.\n\n%s\n\n%s", task.failures[0].Name, shortSHA(task.headSHA), explanation, ciMarker(task.headSHA, task.failures[0].Name))
 			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
