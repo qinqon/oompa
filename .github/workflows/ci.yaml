@@ -30,6 +30,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Check go fix
+        run: make check-fix
+
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:

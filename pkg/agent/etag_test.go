@@ -202,10 +202,8 @@ func TestCachingTransport_ConcurrentAccess(t *testing.T) {
 	resp.Body.Close()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 20 {
+		wg.Go(func() {
 			resp, err := client.Get(server.URL + "/test")
 			if err != nil {
 				t.Error(err)
@@ -219,7 +217,7 @@ func TestCachingTransport_ConcurrentAccess(t *testing.T) {
 			if string(body) != `{"data":"concurrent"}` {
 				t.Errorf("unexpected body: %s", body)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

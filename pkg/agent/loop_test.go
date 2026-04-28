@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -12,27 +13,27 @@ import (
 
 // mockGitHubClient implements GitHubClient for testing.
 type mockGitHubClient struct {
-	issues           []Issue
-	prComments       []ReviewComment
-	issueComments    []ReviewComment
-	prState          string
-	prs              []PR
-	addedComments    []string
-	addedLabels      []string
-	removedLabels    []string
-	addedReactions   []string
-	checkRuns        []CheckRun
-	commitStatuses   []CheckRun       // commit status failures (returned by GetCommitStatuses)
-	checkRunLogs     map[int64]string  // maps check run ID to full log content
-	prHeadSHAs       []string          // returns these in sequence; if empty returns "abc123"
-	prsAfterNCalls   int               // only return PRs after this many ListPRsByHead calls
-	prsCallCount     int
-	mergeableState   string            // mergeable state to return from GetPRMergeable (default: "clean")
-	prBehind         bool              // whether IsPRBehind returns true
-	createdIssues    []Issue           // tracks issues created via CreateIssue
-	nextIssueNumber  int               // next issue number to return (defaults to 1)
-	searchResults    []Issue           // results to return from SearchIssues
-	workflowRuns     []WorkflowRun     // workflow runs to return from ListWorkflowRuns
+	issues          []Issue
+	prComments      []ReviewComment
+	issueComments   []ReviewComment
+	prState         string
+	prs             []PR
+	addedComments   []string
+	addedLabels     []string
+	removedLabels   []string
+	addedReactions  []string
+	checkRuns       []CheckRun
+	commitStatuses  []CheckRun       // commit status failures (returned by GetCommitStatuses)
+	checkRunLogs    map[int64]string // maps check run ID to full log content
+	prHeadSHAs      []string         // returns these in sequence; if empty returns "abc123"
+	prsAfterNCalls  int              // only return PRs after this many ListPRsByHead calls
+	prsCallCount    int
+	mergeableState  string        // mergeable state to return from GetPRMergeable (default: "clean")
+	prBehind        bool          // whether IsPRBehind returns true
+	createdIssues   []Issue       // tracks issues created via CreateIssue
+	nextIssueNumber int           // next issue number to return (defaults to 1)
+	searchResults   []Issue       // results to return from SearchIssues
+	workflowRuns    []WorkflowRun // workflow runs to return from ListWorkflowRuns
 
 	listIssuesErr error
 }
@@ -1592,13 +1593,7 @@ func (r *conflictRebaseRunner) Run(ctx context.Context, workDir, name string, ar
 
 	// Return conflict error for "git rebase" (but not "git rebase --abort")
 	if name == "git" && len(args) > 0 && args[0] == "rebase" {
-		isAbort := false
-		for _, arg := range args {
-			if arg == "--abort" {
-				isAbort = true
-				break
-			}
-		}
+		isAbort := slices.Contains(args, "--abort")
 		if !isAbort {
 			return nil, []byte("error: could not apply 3a35b4e... Migrate remaining features"), fmt.Errorf("rebase failed")
 		}
@@ -1703,12 +1698,9 @@ func TestProcessNewIssues_SquashesCommits(t *testing.T) {
 			if c.Args[0] == "push" {
 				// Should be force-with-lease push after squashing
 				hasForce := false
-				for _, arg := range c.Args {
-					if arg == "--force-with-lease" {
-						hasForce = true
-						foundForcePush = true
-						break
-					}
+				if slices.Contains(c.Args, "--force-with-lease") {
+					hasForce = true
+					foundForcePush = true
 				}
 				if !hasForce {
 					t.Error("expected force-with-lease push after squashing commits")

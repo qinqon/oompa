@@ -31,10 +31,10 @@ func TestListLabeledIssues(t *testing.T) {
 	mux.HandleFunc("/api/v3/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
 		issues := []*github.Issue{
 			{
-				Number: github.Ptr(42),
-				Title:  github.Ptr("Fix bug"),
-				Body:   github.Ptr("Something is broken"),
-				Labels: []*github.Label{{Name: github.Ptr("good-for-ai")}},
+				Number: new(42),
+				Title:  new("Fix bug"),
+				Body:   new("Something is broken"),
+				Labels: []*github.Label{{Name: new("good-for-ai")}},
 			},
 		}
 		_ = json.NewEncoder(w).Encode(issues)
@@ -60,8 +60,8 @@ func TestGetPRReviewComments_FiltersBySinceID(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1/comments", func(w http.ResponseWriter, r *http.Request) {
 		comments := []*github.PullRequestComment{
-			{ID: github.Ptr(int64(10)), User: &github.User{Login: github.Ptr("alice")}, Body: github.Ptr("old comment")},
-			{ID: github.Ptr(int64(20)), User: &github.User{Login: github.Ptr("bob")}, Body: github.Ptr("new comment"), Path: github.Ptr("main.go"), Line: github.Ptr(5)},
+			{ID: new(int64(10)), User: &github.User{Login: new("alice")}, Body: new("old comment")},
+			{ID: new(int64(20)), User: &github.User{Login: new("bob")}, Body: new("new comment"), Path: new("main.go"), Line: new(5)},
 		}
 		_ = json.NewEncoder(w).Encode(comments)
 	})
@@ -85,7 +85,7 @@ func TestGetPRReviewComments_FiltersBySinceID(t *testing.T) {
 func TestGetPRState_Merged(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1", func(w http.ResponseWriter, r *http.Request) {
-		pr := &github.PullRequest{State: github.Ptr("closed"), Merged: github.Ptr(true)}
+		pr := &github.PullRequest{State: new("closed"), Merged: new(true)}
 		_ = json.NewEncoder(w).Encode(pr)
 	})
 
@@ -102,7 +102,7 @@ func TestGetPRState_Merged(t *testing.T) {
 func TestGetPRState_Closed(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1", func(w http.ResponseWriter, r *http.Request) {
-		pr := &github.PullRequest{State: github.Ptr("closed"), Merged: github.Ptr(false)}
+		pr := &github.PullRequest{State: new("closed"), Merged: new(false)}
 		_ = json.NewEncoder(w).Encode(pr)
 	})
 
@@ -119,7 +119,7 @@ func TestGetPRState_Closed(t *testing.T) {
 func TestGetPRState_Open(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1", func(w http.ResponseWriter, r *http.Request) {
-		pr := &github.PullRequest{State: github.Ptr("open"), Merged: github.Ptr(false)}
+		pr := &github.PullRequest{State: new("open"), Merged: new(false)}
 		_ = json.NewEncoder(w).Encode(pr)
 	})
 
@@ -158,7 +158,7 @@ func TestAddLabel(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/issues/42/labels", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&receivedLabels)
-		_ = json.NewEncoder(w).Encode([]*github.Label{{Name: github.Ptr("ai-failed")}})
+		_ = json.NewEncoder(w).Encode([]*github.Label{{Name: new("ai-failed")}})
 	})
 
 	gh := setupTestClient(t, mux)
@@ -194,10 +194,10 @@ func TestListPRsByHead(t *testing.T) {
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
 		prs := []*github.PullRequest{
 			{
-				Number: github.Ptr(100),
-				State:  github.Ptr("open"),
-				Merged: github.Ptr(false),
-				Head:   &github.PullRequestBranch{Ref: github.Ptr("ai/issue-42")},
+				Number: new(100),
+				State:  new("open"),
+				Merged: new(false),
+				Head:   &github.PullRequestBranch{Ref: new("ai/issue-42")},
 			},
 		}
 		_ = json.NewEncoder(w).Encode(prs)
@@ -231,9 +231,9 @@ func TestHasLinkedPR_FindsOpenPR(t *testing.T) {
 				"source": map[string]any{
 					"type": "issue",
 					"issue": map[string]any{
-						"number":             99,
-						"state":              "open",
-						"pull_request":       map[string]any{"url": "https://api.github.com/repos/owner/repo/pulls/99"},
+						"number":       99,
+						"state":        "open",
+						"pull_request": map[string]any{"url": "https://api.github.com/repos/owner/repo/pulls/99"},
 					},
 				},
 			},
@@ -260,9 +260,9 @@ func TestHasLinkedPR_IgnoresClosedPR(t *testing.T) {
 				"source": map[string]any{
 					"type": "issue",
 					"issue": map[string]any{
-						"number":             99,
-						"state":              "closed",
-						"pull_request":       map[string]any{"url": "https://api.github.com/repos/owner/repo/pulls/99"},
+						"number":       99,
+						"state":        "closed",
+						"pull_request": map[string]any{"url": "https://api.github.com/repos/owner/repo/pulls/99"},
 					},
 				},
 			},
@@ -304,9 +304,9 @@ func TestGetAuthenticatedUser_WithNameAndEmail(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/user", func(w http.ResponseWriter, r *http.Request) {
 		user := &github.User{
-			Login: github.Ptr("jdoe"),
-			Name:  github.Ptr("Jane Doe"),
-			Email: github.Ptr("jane@example.com"),
+			Login: new("jdoe"),
+			Name:  new("Jane Doe"),
+			Email: new("jane@example.com"),
 		}
 		_ = json.NewEncoder(w).Encode(user)
 	})
@@ -331,7 +331,7 @@ func TestGetAuthenticatedUser_FallbackToLogin(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/user", func(w http.ResponseWriter, r *http.Request) {
 		user := &github.User{
-			Login: github.Ptr("jdoe"),
+			Login: new("jdoe"),
 		}
 		_ = json.NewEncoder(w).Encode(user)
 	})
@@ -363,7 +363,7 @@ func TestCreateIssue(t *testing.T) {
 		receivedBody = req.GetBody()
 		receivedLabels = *req.Labels
 		issue := &github.Issue{
-			Number: github.Ptr(123),
+			Number: new(123),
 			Title:  req.Title,
 			Body:   req.Body,
 		}
@@ -393,8 +393,8 @@ func TestGetLatestReleaseSHA(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		release := &github.RepositoryRelease{
-			TargetCommitish: github.Ptr("abc123def456"),
-			TagName:         github.Ptr("latest"),
+			TargetCommitish: new("abc123def456"),
+			TagName:         new("latest"),
 		}
 		_ = json.NewEncoder(w).Encode(release)
 	})
@@ -475,10 +475,10 @@ func TestSearchIssues_FiltersPullRequests(t *testing.T) {
 			"total_count": 2,
 			"items": []map[string]any{
 				{
-					"number":       42,
-					"title":        "Flaky CI: integration-tests",
-					"body":         "Test failure",
-					"labels":       []map[string]any{{"name": "flaky-test"}},
+					"number": 42,
+					"title":  "Flaky CI: integration-tests",
+					"body":   "Test failure",
+					"labels": []map[string]any{{"name": "flaky-test"}},
 				},
 				{
 					"number":       100,

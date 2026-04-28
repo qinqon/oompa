@@ -17,9 +17,9 @@ import (
 type fakeGitHub struct {
 	mu             sync.Mutex
 	issues         []Issue
-	prs            map[int]*PR           // prNumber -> PR
+	prs            map[int]*PR             // prNumber -> PR
 	prComments     map[int][]ReviewComment // prNumber -> comments
-	postedComments []string               // issue comments posted
+	postedComments []string                // issue comments posted
 	addedLabels    []string
 	removedLabels  []string
 	reactions      []string
@@ -235,8 +235,8 @@ func (f *fakeGitHubClient) GetPRHeadCommitDate(_ context.Context, _, _ string, _
 func (f *fakeGitHubClient) CreatePR(_ context.Context, _, _, _, _, head, _ string) (int, error) {
 	// Extract branch from "owner:branch" format if needed
 	branch := head
-	if idx := strings.Index(head, ":"); idx >= 0 {
-		branch = head[idx+1:]
+	if _, after, ok := strings.Cut(head, ":"); ok {
+		branch = after
 	}
 	return f.state.addPR(branch), nil
 }
@@ -353,7 +353,7 @@ func (f *fakeClaudeRunner) Run(_ context.Context, workDir, name string, args ...
 	// If this is a claude invocation, simulate work: create a file, commit, push
 	if name == "claude" {
 		filePath := filepath.Join(workDir, "fix.go")
-		_ = os.WriteFile(filePath, []byte(fmt.Sprintf("package main\n// fix %d\n", time.Now().UnixNano())), 0o644)
+		_ = os.WriteFile(filePath, fmt.Appendf(nil, "package main\n// fix %d\n", time.Now().UnixNano()), 0o644)
 
 		_ = exec.Command("git", "-C", workDir, "add", ".").Run()
 		cmd := exec.Command("git", "-C", workDir, "commit", "-m", "implement fix")
@@ -743,7 +743,7 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 	}
 
 	// CI fails
-	gh.setCheckRuns( []CheckRun{
+	gh.setCheckRuns([]CheckRun{
 		{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "test failed: expected 1 got 2"},
 	})
 
@@ -799,7 +799,7 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 	}
 
 	// CI passes — verify no further action is taken
-	gh.setCheckRuns( []CheckRun{
+	gh.setCheckRuns([]CheckRun{
 		{ID: 2, Name: "test", Status: "completed", Conclusion: "success"},
 	})
 	// Reset attempts to simulate a fresh state after human fix
@@ -962,4 +962,3 @@ func TestIntegration_CIFailureAfterNewPush(t *testing.T) {
 		t.Errorf("expected LastCheckedCISHA to be updated to %s, got %s", currentSHA, work.LastCheckedCISHA)
 	}
 }
-

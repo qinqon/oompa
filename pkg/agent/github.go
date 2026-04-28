@@ -161,7 +161,7 @@ func (g *GoGitHubClient) GetPRState(ctx context.Context, owner, repo string, prN
 }
 
 func (g *GoGitHubClient) AddIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error {
-	comment := &github.IssueComment{Body: github.Ptr(body)}
+	comment := &github.IssueComment{Body: new(body)}
 	_, _, err := g.client.Issues.CreateComment(ctx, owner, repo, issueNumber, comment)
 	if err != nil {
 		return fmt.Errorf("adding comment: %w", err)
@@ -421,10 +421,10 @@ func (g *GoGitHubClient) GetPRHeadCommitDate(ctx context.Context, owner, repo st
 
 func (g *GoGitHubClient) CreatePR(ctx context.Context, owner, repo, title, body, head, base string) (int, error) {
 	pr, _, err := g.client.PullRequests.Create(ctx, owner, repo, &github.NewPullRequest{
-		Title: github.Ptr(title),
-		Body:  github.Ptr(body),
-		Head:  github.Ptr(head),
-		Base:  github.Ptr(base),
+		Title: new(title),
+		Body:  new(body),
+		Head:  new(head),
+		Base:  new(base),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("creating PR: %w", err)

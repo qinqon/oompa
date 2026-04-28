@@ -15,7 +15,7 @@ Claude never merges; a human must approve and merge every PR.
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - A coding agent CLI on `PATH`: either [OpenCode](https://opencode.ai) (recommended) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - Provider credentials configured (e.g. `gcloud auth application-default login` for Vertex AI, or `ANTHROPIC_API_KEY` for direct API)
 - GitHub authentication: either `gh auth login` (recommended), a personal access token (PAT) with repo scope, or a GitHub App (see below)

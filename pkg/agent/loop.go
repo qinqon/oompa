@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,7 +61,7 @@ type Agent struct {
 	cfg       Config
 	logger    *slog.Logger
 	tokenFunc func(context.Context) (string, error) // optional: provides fresh GitHub tokens (for App auth)
-	codeAgent CodeAgent                              // coding agent backend (Claude Code or OpenCode)
+	codeAgent CodeAgent                             // coding agent backend (Claude Code or OpenCode)
 }
 
 // SetTokenFunc sets a function that provides fresh GitHub tokens.
@@ -100,10 +101,7 @@ func runParallel[T any](ctx context.Context, maxWorkers int, items []T, fn func(
 		return
 	}
 
-	workers := maxWorkers
-	if len(items) < workers {
-		workers = len(items)
-	}
+	workers := min(len(items), maxWorkers)
 
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
@@ -1182,12 +1180,7 @@ func (a *Agent) ShouldRunReaction(reaction string) bool {
 	if len(a.cfg.Reactions) == 0 {
 		return true
 	}
-	for _, r := range a.cfg.Reactions {
-		if r == reaction {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.cfg.Reactions, reaction)
 }
 
 // BootstrapWatchedPRs creates IssueWork entries for directly-specified PR numbers.
@@ -1341,7 +1334,7 @@ func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumbe
 // stripSignedOffBy removes "Signed-off-by: ..." trailer lines from a string.
 func stripSignedOffBy(s string) string {
 	var kept []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "Signed-off-by:") {
 			continue
 		}
@@ -1501,12 +1494,7 @@ func (a *Agent) gitAutosquashRebase(ctx context.Context, worktreePath string) er
 
 // issueAssignedTo returns true if the given user is among the issue's assignees.
 func issueAssignedTo(issue Issue, user string) bool {
-	for _, a := range issue.Assignees {
-		if a == user {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(issue.Assignees, user)
 }
 
 // isAllowedReviewer returns true if the user is in the reviewers whitelist.
@@ -1515,12 +1503,7 @@ func (a *Agent) isAllowedReviewer(user string) bool {
 	if len(a.cfg.Reviewers) == 0 {
 		return true
 	}
-	for _, r := range a.cfg.Reviewers {
-		if r == user {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.cfg.Reviewers, user)
 }
 
 // truncateString returns the first maxLen characters of s, with "..." appended if truncated.

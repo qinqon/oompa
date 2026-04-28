@@ -49,13 +49,13 @@ func ParseCIJobURL(jobURL string, ghClient GitHubClient) (CIJobSource, error) {
 // https://prow.ci.kubevirt.io/view/gs/kubevirt-prow/logs/periodic-knmstate-e2e-handler-k8s-latest/
 func parseGCSJobURL(jobURL string) (CIJobSource, error) {
 	// Extract /view/gs/{bucket}/{prefix} from the URL
-	idx := strings.Index(jobURL, "/view/gs/")
-	if idx == -1 {
+	_, after, ok := strings.Cut(jobURL, "/view/gs/")
+	if !ok {
 		return nil, fmt.Errorf("URL must contain /view/gs/: %s", jobURL)
 	}
 
 	// Everything after /view/gs/
-	rest := jobURL[idx+len("/view/gs/"):]
+	rest := after
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid GCS URL format (expected /view/gs/{bucket}/{prefix}): %s", jobURL)

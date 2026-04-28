@@ -139,7 +139,7 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion string) {
 	cfg.LogFile = logFile
 
 	if reviewers != "" {
-		for _, r := range strings.Split(reviewers, ",") {
+		for r := range strings.SplitSeq(reviewers, ",") {
 			r = strings.TrimSpace(r)
 			if r != "" {
 				cfg.Reviewers = append(cfg.Reviewers, r)
@@ -148,7 +148,7 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion string) {
 	}
 
 	if watchPRs != "" {
-		for _, s := range strings.Split(watchPRs, ",") {
+		for s := range strings.SplitSeq(watchPRs, ",") {
 			s = strings.TrimSpace(s)
 			if s == "" {
 				continue
@@ -164,7 +164,7 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion string) {
 
 	if reactions != "" {
 		validReactions := map[string]bool{"reviews": true, "ci": true, "conflicts": true, "rebase": true}
-		for _, r := range strings.Split(reactions, ",") {
+		for r := range strings.SplitSeq(reactions, ",") {
 			r = strings.TrimSpace(r)
 			if r == "" {
 				continue
@@ -178,7 +178,7 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion string) {
 	}
 
 	if triageJobs != "" {
-		for _, url := range strings.Split(triageJobs, ",") {
+		for url := range strings.SplitSeq(triageJobs, ",") {
 			url = strings.TrimSpace(url)
 			if url != "" {
 				cfg.TriageJobs = append(cfg.TriageJobs, url)

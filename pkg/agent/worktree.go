@@ -21,11 +21,11 @@ type WorktreeManager interface {
 type GitWorktreeManager struct {
 	runner         CommandRunner
 	cloneDir       string
-	repoURL        string // upstream repo URL (cloned as origin)
-	forkURL        string // fork repo URL (added as "fork" remote for pushing)
-	gitAuthorName  string // override git user.name in worktrees
-	gitAuthorEmail string // override git user.email in worktrees
-	defaultBranch  string // detected from origin HEAD (e.g. "main", "master")
+	repoURL        string     // upstream repo URL (cloned as origin)
+	forkURL        string     // fork repo URL (added as "fork" remote for pushing)
+	gitAuthorName  string     // override git user.name in worktrees
+	gitAuthorEmail string     // override git user.email in worktrees
+	defaultBranch  string     // detected from origin HEAD (e.g. "main", "master")
 	mu             sync.Mutex // serializes git operations that modify .git state
 }
 
@@ -63,7 +63,7 @@ func (g *GitWorktreeManager) detectDefaultBranch(ctx context.Context) {
 	}
 	// Output is like "refs/remotes/origin/master"
 	ref := strings.TrimSpace(string(out))
-	if branch := strings.TrimPrefix(ref, "refs/remotes/origin/"); branch != ref {
+	if branch, ok := strings.CutPrefix(ref, "refs/remotes/origin/"); ok {
 		g.defaultBranch = branch
 	}
 }
@@ -71,7 +71,6 @@ func (g *GitWorktreeManager) detectDefaultBranch(ctx context.Context) {
 func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-
 
 	if _, err := os.Stat(filepath.Join(g.cloneDir, ".git")); err == nil {
 		// Verify origin URL matches the configured repo to prevent stale clones
@@ -145,7 +144,6 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-
 	worktreePath := filepath.Join(g.cloneDir, "worktrees", branchName)
 
 	// Reuse existing worktree if it's still valid
@@ -156,9 +154,9 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 
 	// Clean up stale worktree state
 	g.runner.Run(ctx, g.cloneDir, "git", "worktree", "remove", "--force", worktreePath) //nolint:errcheck // best-effort
-	os.RemoveAll(worktreePath)                                                           //nolint:errcheck // best-effort
-	g.runner.Run(ctx, g.cloneDir, "git", "worktree", "prune")                            //nolint:errcheck // best-effort
-	g.runner.Run(ctx, g.cloneDir, "git", "branch", "-D", branchName)                     //nolint:errcheck // best-effort
+	os.RemoveAll(worktreePath)                                                          //nolint:errcheck // best-effort
+	g.runner.Run(ctx, g.cloneDir, "git", "worktree", "prune")                           //nolint:errcheck // best-effort
+	g.runner.Run(ctx, g.cloneDir, "git", "branch", "-D", branchName)                    //nolint:errcheck // best-effort
 
 	_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "worktree", "add", "-b", branchName, worktreePath, g.OriginDefaultBranch())
 	if err != nil {

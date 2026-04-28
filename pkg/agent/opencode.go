@@ -16,23 +16,23 @@ type OpenCodeAgent struct {
 // opencodeEvent represents a single event in OpenCode's JSONL output.
 // OpenCode emits newline-delimited JSON with event-specific data nested under "part".
 type opencodeEvent struct {
-	Type      string        `json:"type"`
-	Timestamp int64         `json:"timestamp"`
-	SessionID string        `json:"sessionID"`
-	Part      opencodePart  `json:"part"`
+	Type      string         `json:"type"`
+	Timestamp int64          `json:"timestamp"`
+	SessionID string         `json:"sessionID"`
+	Part      opencodePart   `json:"part"`
 	Error     *opencodeError `json:"error,omitempty"`
 }
 
 // opencodePart contains event-specific data for OpenCode events.
 type opencodePart struct {
-	Type   string `json:"type"`
-	Text   string `json:"text,omitempty"`
-	Tool   string `json:"tool,omitempty"`
-	Reason string `json:"reason,omitempty"` // "stop" or "tool-calls" for step_finish
-	Cost   float64 `json:"cost,omitempty"`
-	Tokens *opencodeTokens `json:"tokens,omitempty"`
+	Type   string             `json:"type"`
+	Text   string             `json:"text,omitempty"`
+	Tool   string             `json:"tool,omitempty"`
+	Reason string             `json:"reason,omitempty"` // "stop" or "tool-calls" for step_finish
+	Cost   float64            `json:"cost,omitempty"`
+	Tokens *opencodeTokens    `json:"tokens,omitempty"`
 	State  *opencodeToolState `json:"state,omitempty"`
-	Time   *opencodeTime `json:"time,omitempty"`
+	Time   *opencodeTime      `json:"time,omitempty"`
 }
 
 // opencodeTokens contains token usage information.
@@ -48,9 +48,9 @@ type opencodeTokens struct {
 
 // opencodeToolState contains tool execution state.
 type opencodeToolState struct {
-	Status string `json:"status,omitempty"`
-	Output string `json:"output,omitempty"`
-	Input  map[string]interface{} `json:"input,omitempty"`
+	Status string         `json:"status,omitempty"`
+	Output string         `json:"output,omitempty"`
+	Input  map[string]any `json:"input,omitempty"`
 }
 
 // opencodeTime contains timing information.

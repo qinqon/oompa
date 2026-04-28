@@ -4,7 +4,7 @@ TAG ?= latest
 IMAGE = $(REGISTRY)/$(REPO):$(TAG)
 CONTAINER_CMD ?= podman
 
-.PHONY: build test lint image push clean
+.PHONY: build test lint fix check-fix image push clean
 
 build:
 	go build -o oompa ./cmd/oompa
@@ -14,6 +14,12 @@ test:
 
 lint:
 	go vet ./...
+
+fix:
+	go fix ./...
+
+check-fix:
+	@go fix ./... && git diff --exit-code || (echo "go fix ./... produced changes; run 'make fix' and commit" && exit 1)
 
 image:
 	$(CONTAINER_CMD) build -t $(IMAGE) -f Containerfile .
