@@ -319,14 +319,18 @@ func (g *GCSJobSource) fetchFinishedJSON(ctx context.Context, buildID string) (s
 	} else {
 		// Fallback: try to fetch started.json
 		startedURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s%s/started.json", g.bucket, g.prefix, buildID)
-		startedReq, _ := http.NewRequestWithContext(ctx, "GET", startedURL, http.NoBody)
-		startedResp, err := g.client.Do(startedReq)
-		if err == nil && startedResp.StatusCode == http.StatusOK {
-			var started gcsStartedJSON
-			if json.NewDecoder(startedResp.Body).Decode(&started) == nil && started.Timestamp > 0 {
-				timestamp = time.Unix(started.Timestamp, 0)
+		startedReq, err := http.NewRequestWithContext(ctx, "GET", startedURL, http.NoBody)
+		if err == nil {
+			startedResp, err := g.client.Do(startedReq)
+			if err == nil {
+				defer startedResp.Body.Close()
+				if startedResp.StatusCode == http.StatusOK {
+					var started gcsStartedJSON
+					if json.NewDecoder(startedResp.Body).Decode(&started) == nil && started.Timestamp > 0 {
+						timestamp = time.Unix(started.Timestamp, 0)
+					}
+				}
 			}
-			startedResp.Body.Close()
 		}
 	}
 
@@ -573,14 +577,18 @@ func (g *GCSDirectoryJobSource) fetchFinishedJSON(ctx context.Context, ref gcsRe
 	} else {
 		// Fallback: try to fetch started.json
 		startedURL := fmt.Sprintf("https://storage.googleapis.com/%s/%sstarted.json", ref.bucket, ref.prefix)
-		startedReq, _ := http.NewRequestWithContext(ctx, "GET", startedURL, http.NoBody)
-		startedResp, err := g.client.Do(startedReq)
-		if err == nil && startedResp.StatusCode == http.StatusOK {
-			var started gcsStartedJSON
-			if json.NewDecoder(startedResp.Body).Decode(&started) == nil && started.Timestamp > 0 {
-				timestamp = time.Unix(started.Timestamp, 0)
+		startedReq, err := http.NewRequestWithContext(ctx, "GET", startedURL, http.NoBody)
+		if err == nil {
+			startedResp, err := g.client.Do(startedReq)
+			if err == nil {
+				defer startedResp.Body.Close()
+				if startedResp.StatusCode == http.StatusOK {
+					var started gcsStartedJSON
+					if json.NewDecoder(startedResp.Body).Decode(&started) == nil && started.Timestamp > 0 {
+						timestamp = time.Unix(started.Timestamp, 0)
+					}
+				}
 			}
-			startedResp.Body.Close()
 		}
 	}
 
