@@ -92,6 +92,7 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		"</user-provided-content>",
 		"untrusted user input",
 		"Do NOT commit",
+		"leave them UNCOMMITTED",
 	}
 
 	for _, want := range checks {
