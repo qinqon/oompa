@@ -834,6 +834,37 @@ func TestProcessCIFailures_SkipsPendingCI(t *testing.T) {
 	}
 }
 
+func TestProcessCIFailures_NoRunsDoesNotMarkChecked(t *testing.T) {
+	// Issue #139: When no check runs are registered yet (e.g., oompa polls
+	// before GitHub registers CI), allCompleted is vacuously true. The agent
+	// must NOT set LastCheckedCISHA in this case, otherwise real CI failures
+	// that appear later will be skipped by the fast path.
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{}, // No check runs registered yet
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber: 42,
+		PRNumber:    100,
+		BranchName:  "ai/issue-42",
+		Status:      "pr-open",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke claude when no check runs exist")
+	}
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastCheckedCISHA != "" {
+		t.Errorf("expected LastCheckedCISHA to remain empty when no check runs registered, got %q", work.LastCheckedCISHA)
+	}
+}
+
 func TestProcessCIFailures_CreatesFlakyIssueWhenUnrelated(t *testing.T) {
 	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED\nFAILING_TEST: TestDB/connection_timeout\nThe test database connection times out intermittently"})
 	gh := &mockGitHubClient{
