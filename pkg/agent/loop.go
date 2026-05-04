@@ -572,6 +572,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			// No check runs registered yet — don't mark as checked.
 			// This avoids the vacuous-truth bug where allCompleted is true
 			// (its initial value) because the loop over runs never executed.
+			a.logger.Debug("no check runs registered yet, waiting", "pr", work.PRNumber, "sha", shortSHA(headSHA))
 			continue
 		}
 		if len(failures) == 0 {
