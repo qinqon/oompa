@@ -126,6 +126,23 @@ func TestBuildStateFromGitHub_WatchPRsSkipsLabeledIssues(t *testing.T) {
 	}
 }
 
+func TestBuildStateFromGitHub_EmptyLabelSkipsScan(t *testing.T) {
+	gh := &mockGitHubClient{
+		issues: []Issue{
+			{Number: 42, Title: "Unrelated issue", Labels: []string{"ai-failed"}},
+			{Number: 99, Title: "Another issue", Labels: []string{"ai-failed"}},
+		},
+	}
+	// Triage role: no label set, no watch PRs
+	cfg := Config{Owner: "owner", Repo: "repo", Label: ""}
+
+	state := BuildStateFromGitHub(context.Background(), gh, cfg, "/tmp/clone", slog.Default())
+
+	if len(state.ActiveIssues) != 0 {
+		t.Errorf("expected empty state when label is empty, got %d issues", len(state.ActiveIssues))
+	}
+}
+
 func TestState_MarkRunInvestigated(t *testing.T) {
 	s := NewState()
 

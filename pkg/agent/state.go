@@ -47,7 +47,7 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 
 	// Skip labeled issue scanning when --watch-prs is configured
 	// (watch mode bypasses issue discovery)
-	if len(cfg.WatchPRs) == 0 {
+	if len(cfg.WatchPRs) == 0 && cfg.Label != "" {
 		issues, err := gh.ListLabeledIssues(ctx, cfg.Owner, cfg.Repo, cfg.Label)
 		if err != nil {
 			logger.Error("failed to list issues for state rebuild", "error", err)
