@@ -34,7 +34,7 @@ type mockGitHubClient struct {
 	searchResults   []Issue       // results to return from SearchIssues
 	workflowRuns    []WorkflowRun // workflow runs to return from ListWorkflowRuns
 
-	listIssuesCalled bool  // tracks whether ListLabeledIssues was called
+	listIssuesCalled bool // tracks whether ListLabeledIssues was called
 	listIssuesErr    error
 	replyErr         error // error to return from ReplyToPRComment
 }
@@ -649,6 +649,170 @@ func (m *sequentialMockCodeAgent) Run(_ context.Context, _ CommandRunner, _, pro
 		return m.results[idx].result, m.results[idx].err
 	}
 	return AgentResult{}, fmt.Errorf("unexpected call %d", idx)
+}
+
+func TestProcessReviewComments_SquashesAgentCommits(t *testing.T) {
+	// When the agent commits directly (HEAD changes), ProcessReviewComments should
+	// squash the new commits into the original HEAD via git reset --soft + amend.
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	// Use a custom runner that simulates the agent committing directly
+	// by returning different SHAs for sequential git rev-parse HEAD calls.
+	runner := &reviewSquashRunner{
+		mockCommandRunner: &mockCommandRunner{},
+		headSHAs:          []string{"original-sha", "agent-committed-sha"},
+	}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:   42,
+		IssueTitle:    "Fix bug",
+		PRNumber:      100,
+		Status:        "pr-open",
+		WorktreePath:  "/tmp/worktree",
+		LastCommentID: 50,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Verify git add -A, git reset --soft, and git commit --amend were called
+	foundAdd := false
+	foundReset := false
+	foundAmend := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) >= 1 && c.Args[0] == "add" {
+			foundAdd = true
+		}
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[0] == "reset" && c.Args[1] == "--soft" && c.Args[2] == "original-sha" {
+			foundReset = true
+		}
+		if c.Name == "git" && len(c.Args) >= 2 && c.Args[0] == "commit" && c.Args[1] == "--amend" {
+			foundAmend = true
+		}
+	}
+
+	if !foundAdd {
+		t.Error("expected git add -A to stage all changes before squashing")
+	}
+	if !foundReset {
+		t.Error("expected git reset --soft <original-sha> to squash agent commits")
+	}
+	if !foundAmend {
+		t.Error("expected git commit --amend to fold changes into original commit")
+	}
+
+	// Cursor should advance (push succeeded)
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastCommentID != 60 {
+		t.Errorf("expected LastCommentID to advance to 60, got %d", work.LastCommentID)
+	}
+}
+
+// reviewSquashRunner is a test helper that returns different SHAs for sequential
+// git rev-parse HEAD calls, simulating an agent that commits directly.
+type reviewSquashRunner struct {
+	*mockCommandRunner
+	headSHAs  []string
+	headIndex int
+}
+
+func (r *reviewSquashRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
+	// Record the call in the base mock
+	r.mockCommandRunner.Run(ctx, workDir, name, args...) //nolint:errcheck // recording call for test assertions
+
+	// Return different SHAs for git rev-parse HEAD
+	if name == "git" && len(args) >= 2 && args[0] == "rev-parse" && args[1] == "HEAD" {
+		if r.headIndex < len(r.headSHAs) {
+			sha := r.headSHAs[r.headIndex]
+			r.headIndex++
+			return []byte(sha + "\n"), nil, nil
+		}
+		return []byte("unknown-sha\n"), nil, nil
+	}
+
+	// For git status --porcelain, return empty (no uncommitted changes)
+	if name == "git" && len(args) >= 1 && args[0] == "status" {
+		return []byte(""), nil, nil
+	}
+
+	// For git log (fixup commit check), return empty (no fixup commits)
+	if name == "git" && len(args) >= 1 && args[0] == "log" {
+		return []byte(""), nil, nil
+	}
+
+	return nil, nil, nil
+}
+
+func TestProcessReviewComments_AutosquashesFixupCommits(t *testing.T) {
+	// When the agent creates fixup commits, ProcessReviewComments should
+	// autosquash them rather than pushing separate commits.
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	runner := &reviewFixupRunner{
+		mockCommandRunner: &mockCommandRunner{},
+	}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:   42,
+		IssueTitle:    "Fix bug",
+		PRNumber:      100,
+		Status:        "pr-open",
+		WorktreePath:  "/tmp/worktree",
+		LastCommentID: 50,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Verify autosquash rebase was called
+	foundAutosquash := false
+	for _, c := range runner.calls {
+		if c.Name == "sh" && len(c.Args) >= 2 && strings.Contains(c.Args[1], "autosquash") {
+			foundAutosquash = true
+		}
+	}
+
+	if !foundAutosquash {
+		t.Error("expected autosquash rebase to be called for fixup commits")
+	}
+}
+
+// reviewFixupRunner is a test helper that simulates an agent creating fixup commits.
+type reviewFixupRunner struct {
+	*mockCommandRunner
+}
+
+func (r *reviewFixupRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
+	r.mockCommandRunner.Run(ctx, workDir, name, args...) //nolint:errcheck // recording call for test assertions
+
+	// For git log --format=%s (fixup commit check), return a fixup commit
+	if name == "git" && len(args) >= 1 && args[0] == "log" {
+		if slices.Contains(args, "--format=%s") {
+			return []byte("fixup! original commit\n"), nil, nil
+		}
+		return []byte(""), nil, nil
+	}
+
+	// For git status --porcelain, return empty (no uncommitted changes)
+	if name == "git" && len(args) >= 1 && args[0] == "status" {
+		return []byte(""), nil, nil
+	}
+
+	return nil, nil, nil
 }
 
 func TestCleanupDone_MergedPR(t *testing.T) {

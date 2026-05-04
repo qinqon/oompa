@@ -77,7 +77,8 @@ Instructions:
 1. Use /ce-resolve-pr-feedback to evaluate and address all review feedback.
 2. Run "make lint" and "make test" to verify your changes.
 
-Do NOT commit, push, or amend — the agent handles that automatically.`)
+CRITICAL: Do NOT commit, push, or amend — the agent handles git operations automatically.
+If you make code changes, leave them UNCOMMITTED. Do NOT run "git add", "git commit", or "git push".`)
 
 	return prompt.String()
 }

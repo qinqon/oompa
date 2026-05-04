@@ -442,9 +442,22 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 
 		// Push if agent made changes (uncommitted or committed directly)
 		pushed, changeDetected := false, false
-		hasChanges := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
-		changeDetected = hasChanges
-		if hasChanges {
+		hasFixups := a.hasFixupCommits(ctx, task.work.WorktreePath)
+		hasUncommitted := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
+
+		switch {
+		case hasFixups:
+			// Agent created fixup commits — autosquash them into their targets
+			changeDetected = true
+			if err := a.gitAutosquashRebase(ctx, task.work.WorktreePath); err != nil {
+				a.logger.Error("failed to autosquash fixup commits", "pr", task.work.PRNumber, "error", err)
+			} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
+				a.logger.Error("failed to push", "pr", task.work.PRNumber, "error", err)
+			} else {
+				pushed = true
+			}
+		case hasUncommitted:
+			changeDetected = true
 			if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
 				a.logger.Error("failed to amend commit", "pr", task.work.PRNumber, "error", err)
 			} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
@@ -452,13 +465,21 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			} else {
 				pushed = true
 			}
-		} else {
+		default:
 			headAfter, _, revErr := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
 			headSHAAfter := strings.TrimSpace(string(headAfter))
 			if revErr == nil && headSHABefore != "" && headSHAAfter != headSHABefore {
 				changeDetected = true
-				a.logger.Info("agent committed directly, pushing", "pr", task.work.PRNumber)
-				if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
+				// Agent committed directly — squash new commits into the original HEAD
+				// to avoid polluting commit history with "Address PR review feedback" commits.
+				a.logger.Info("agent committed directly, squashing into original HEAD", "pr", task.work.PRNumber)
+				if err := a.gitSquashInto(ctx, task.work.WorktreePath, headSHABefore); err != nil {
+					a.logger.Error("failed to squash agent commits, skipping push to avoid unsquashed commits", "pr", task.work.PRNumber, "error", err)
+					// Restore HEAD so the worktree is usable on the next attempt
+					if _, _, resetErr := a.runner.Run(ctx, task.work.WorktreePath, "git", "reset", "--hard", headSHAAfter); resetErr != nil {
+						a.logger.Error("failed to restore HEAD after squash failure", "pr", task.work.PRNumber, "error", resetErr)
+					}
+				} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 					a.logger.Error("failed to push", "pr", task.work.PRNumber, "error", err)
 				} else {
 					pushed = true
@@ -1603,6 +1624,28 @@ func (a *Agent) gitAmendAll(ctx context.Context, worktreePath string) error {
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "add", "-A"); err != nil {
 		return fmt.Errorf("git add: %w (stderr: %s)", err, string(stderr))
 	}
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "--amend", "--no-edit"); err != nil {
+		return fmt.Errorf("git commit --amend: %w (stderr: %s)", err, string(stderr))
+	}
+	return nil
+}
+
+// gitSquashInto squashes all commits after the given SHA into that commit.
+// Used to fold agent-created review feedback commits back into the original HEAD.
+func (a *Agent) gitSquashInto(ctx context.Context, worktreePath, targetSHA string) error {
+	if a.cfg.DryRun {
+		a.logger.Info("[dry-run] would squash into", "worktree", worktreePath, "target", shortSHA(targetSHA))
+		return nil
+	}
+	// Stage all changes first to capture any unstaged modifications the agent left behind
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "add", "-A"); err != nil {
+		return fmt.Errorf("git add: %w (stderr: %s)", err, string(stderr))
+	}
+	// Reset to the target SHA while keeping all changes staged
+	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "reset", "--soft", targetSHA); err != nil {
+		return fmt.Errorf("git reset --soft %s: %w (stderr: %s)", shortSHA(targetSHA), err, string(stderr))
+	}
+	// Amend the target commit with the staged changes
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "--amend", "--no-edit"); err != nil {
 		return fmt.Errorf("git commit --amend: %w (stderr: %s)", err, string(stderr))
 	}
