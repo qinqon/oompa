@@ -157,6 +157,10 @@ func NewAgent(gh GitHubClient, runner CommandRunner, worktrees WorktreeManager, 
 
 // ProcessNewIssues finds labeled issues and spawns Claude to implement fixes.
 func (a *Agent) ProcessNewIssues(ctx context.Context) {
+	if a.cfg.Label == "" {
+		return
+	}
+
 	issues, err := a.gh.ListLabeledIssues(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.Label)
 	if err != nil {
 		a.logger.Error("failed to list issues", "error", err)

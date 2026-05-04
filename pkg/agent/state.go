@@ -46,7 +46,8 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 	state := NewState()
 
 	// Skip labeled issue scanning when --watch-prs is configured
-	// (watch mode bypasses issue discovery)
+	// (watch mode bypasses issue discovery) or when no label is set
+	// (triage roles have no label and should not scan for issues)
 	if len(cfg.WatchPRs) == 0 && cfg.Label != "" {
 		issues, err := gh.ListLabeledIssues(ctx, cfg.Owner, cfg.Repo, cfg.Label)
 		if err != nil {

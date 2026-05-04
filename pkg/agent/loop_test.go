@@ -34,11 +34,13 @@ type mockGitHubClient struct {
 	searchResults   []Issue       // results to return from SearchIssues
 	workflowRuns    []WorkflowRun // workflow runs to return from ListWorkflowRuns
 
-	listIssuesErr error
-	replyErr      error // error to return from ReplyToPRComment
+	listIssuesCalled bool  // tracks whether ListLabeledIssues was called
+	listIssuesErr    error
+	replyErr         error // error to return from ReplyToPRComment
 }
 
 func (m *mockGitHubClient) ListLabeledIssues(_ context.Context, _, _, _ string) ([]Issue, error) {
+	m.listIssuesCalled = true
 	return m.issues, m.listIssuesErr
 }
 
@@ -406,6 +408,26 @@ func TestProcessNewIssues_ClaudeFailure(t *testing.T) {
 	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
 	if work == nil || work.Status != "failed" {
 		t.Error("expected issue status to be 'failed'")
+	}
+}
+
+func TestProcessNewIssues_EmptyLabelSkips(t *testing.T) {
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 42, Title: "Should not be processed"}},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.Label = "" // Triage role: no label set
+
+	agent.ProcessNewIssues(context.Background())
+
+	if gh.listIssuesCalled {
+		t.Error("ListLabeledIssues should not be called when label is empty")
+	}
+	if len(agent.state.ActiveIssues) != 0 {
+		t.Error("no issues should be processed when label is empty")
 	}
 }
 
