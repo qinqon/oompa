@@ -568,7 +568,14 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			}
 		}
 
-		if len(runs) == 0 || len(failures) == 0 {
+		if len(runs) == 0 {
+			// No check runs registered yet — don't mark as checked.
+			// This avoids the vacuous-truth bug where allCompleted is true
+			// (its initial value) because the loop over runs never executed.
+			a.logger.Debug("no check runs registered yet, waiting", "pr", work.PRNumber, "sha", shortSHA(headSHA))
+			continue
+		}
+		if len(failures) == 0 {
 			// If all checks completed with no failures and this SHA was already
 			// checked, skip. Only set LastCheckedCISHA when all checks are done
 			// to avoid skipping late-finishing failures.

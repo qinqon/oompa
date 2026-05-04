@@ -834,6 +834,78 @@ func TestProcessCIFailures_SkipsPendingCI(t *testing.T) {
 	}
 }
 
+func TestProcessCIFailures_NoRunsDoesNotMarkChecked(t *testing.T) {
+	// Issue #139: When no check runs are registered yet (e.g., oompa polls
+	// before GitHub registers CI), allCompleted is vacuously true. The agent
+	// must NOT set LastCheckedCISHA in this case, otherwise real CI failures
+	// that appear later will be skipped by the fast path.
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{}, // No check runs registered yet
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber: 42,
+		PRNumber:    100,
+		BranchName:  "ai/issue-42",
+		Status:      "pr-open",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke claude when no check runs exist")
+	}
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastCheckedCISHA != "" {
+		t.Errorf("expected LastCheckedCISHA to remain empty when no check runs registered, got %q", work.LastCheckedCISHA)
+	}
+}
+
+func TestProcessCIFailures_NoRunsThenFailuresAreInvestigated(t *testing.T) {
+	// Issue #139 end-to-end regression: when no check runs exist on poll 1,
+	// LastCheckedCISHA must stay empty so that poll 2 (when runs appear with
+	// a failure) actually invokes Claude instead of silently skipping.
+	claudeResult := streamResultJSON(AgentResult{Result: "RELATED Fixed CI"})
+	gh := &mockGitHubClient{
+		checkRuns:  []CheckRun{}, // empty on first poll
+		prHeadSHAs: []string{"sha1", "sha1", "sha1"},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	// Poll 1: no runs yet — must not mark SHA as checked
+	agent.ProcessCIFailures(context.Background())
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastCheckedCISHA != "" {
+		t.Fatalf("poll 1: expected LastCheckedCISHA empty, got %q", work.LastCheckedCISHA)
+	}
+	if countClaudeCalls(runner.calls) != 0 {
+		t.Fatalf("poll 1: expected 0 claude calls, got %d", countClaudeCalls(runner.calls))
+	}
+
+	// Poll 2: CI runs now registered with a failure
+	gh.checkRuns = []CheckRun{
+		{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
+	}
+	agent.ProcessCIFailures(context.Background())
+	if countClaudeCalls(runner.calls) != 1 {
+		t.Errorf("poll 2: expected 1 claude call, got %d", countClaudeCalls(runner.calls))
+	}
+}
+
 func TestProcessCIFailures_CreatesFlakyIssueWhenUnrelated(t *testing.T) {
 	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED\nFAILING_TEST: TestDB/connection_timeout\nThe test database connection times out intermittently"})
 	gh := &mockGitHubClient{
