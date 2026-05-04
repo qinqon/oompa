@@ -259,13 +259,13 @@ func TestGCSDirectoryJobSource_ListRecentRuns(t *testing.T) {
 					{
 						Name: "pr-logs/directory/pull-job/111.txt",
 						Metadata: map[string]string{
-							"x-goog-meta-link": "gs://test-bucket/pr-logs/pull/org_repo/10/pull-job/111",
+							"link": "gs://test-bucket/pr-logs/pull/org_repo/10/pull-job/111",
 						},
 					},
 					{
 						Name: "pr-logs/directory/pull-job/222.txt",
 						Metadata: map[string]string{
-							"x-goog-meta-link": "gs://test-bucket/pr-logs/pull/org_repo/20/pull-job/222",
+							"link": "gs://test-bucket/pr-logs/pull/org_repo/20/pull-job/222",
 						},
 					},
 					{

@@ -477,9 +477,14 @@ func (g *GCSDirectoryJobSource) ListRecentRuns(ctx context.Context, limit int) (
 			continue
 		}
 
-		// Resolve target build path from metadata
-		link, ok := item.Metadata["x-goog-meta-link"]
-		if !ok {
+		// Resolve target build path from metadata.
+		// GCS JSON API exposes custom metadata with bare keys (e.g. "link"),
+		// while the x-goog-meta- prefix is used in XML API / HTTP headers.
+		link := item.Metadata["link"]
+		if link == "" {
+			link = item.Metadata["x-goog-meta-link"]
+		}
+		if link == "" {
 			continue
 		}
 
