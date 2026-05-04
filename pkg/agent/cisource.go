@@ -29,11 +29,19 @@ type CIJobSource interface {
 func ParseCIJobURL(jobURL string, ghClient GitHubClient) (CIJobSource, error) {
 	// GCS-backed CI: any URL containing /view/gs/{bucket}/{prefix}
 	if strings.Contains(jobURL, "/view/gs/") {
+		bucket, prefix := extractBucketPrefix(jobURL)
+		if strings.HasPrefix(prefix, "pr-logs/directory/") {
+			return newGCSDirectoryJobSource(bucket, prefix)
+		}
 		return parseGCSJobURL(jobURL)
 	}
 
 	// GCS-backed CI: direct GCS URL (https://storage.googleapis.com/...)
 	if strings.Contains(jobURL, "storage.googleapis.com") {
+		bucket, prefix := extractDirectGCSBucketPrefix(jobURL)
+		if strings.HasPrefix(prefix, "pr-logs/directory/") {
+			return newGCSDirectoryJobSource(bucket, prefix)
+		}
 		return parseDirectGCSURL(jobURL)
 	}
 
@@ -43,6 +51,41 @@ func ParseCIJobURL(jobURL string, ghClient GitHubClient) (CIJobSource, error) {
 	}
 
 	return nil, fmt.Errorf("unrecognized CI job URL format: %s", jobURL)
+}
+
+// extractBucketPrefix extracts bucket and prefix from a /view/gs/ URL.
+func extractBucketPrefix(jobURL string) (bucket, prefix string) {
+	_, after, ok := strings.Cut(jobURL, "/view/gs/")
+	if !ok {
+		return "", ""
+	}
+	parts := strings.SplitN(after, "/", 2)
+	if len(parts) < 2 {
+		return parts[0], ""
+	}
+	prefix = parts[1]
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return parts[0], prefix
+}
+
+// extractDirectGCSBucketPrefix extracts bucket and prefix from a storage.googleapis.com URL.
+func extractDirectGCSBucketPrefix(jobURL string) (bucket, prefix string) {
+	parsedURL, err := url.Parse(jobURL)
+	if err != nil {
+		return "", ""
+	}
+	path := strings.TrimPrefix(parsedURL.Path, "/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) < 2 {
+		return parts[0], ""
+	}
+	prefix = parts[1]
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return parts[0], prefix
 }
 
 // parseGCSJobURL parses a Prow-style GCS URL like:
@@ -276,14 +319,18 @@ func (g *GCSJobSource) fetchFinishedJSON(ctx context.Context, buildID string) (s
 	} else {
 		// Fallback: try to fetch started.json
 		startedURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s%s/started.json", g.bucket, g.prefix, buildID)
-		startedReq, _ := http.NewRequestWithContext(ctx, "GET", startedURL, http.NoBody)
-		startedResp, err := g.client.Do(startedReq)
-		if err == nil && startedResp.StatusCode == http.StatusOK {
-			var started gcsStartedJSON
-			if json.NewDecoder(startedResp.Body).Decode(&started) == nil && started.Timestamp > 0 {
-				timestamp = time.Unix(started.Timestamp, 0)
+		startedReq, err := http.NewRequestWithContext(ctx, "GET", startedURL, http.NoBody)
+		if err == nil {
+			startedResp, err := g.client.Do(startedReq)
+			if err == nil {
+				defer startedResp.Body.Close()
+				if startedResp.StatusCode == http.StatusOK {
+					var started gcsStartedJSON
+					if json.NewDecoder(startedResp.Body).Decode(&started) == nil && started.Timestamp > 0 {
+						timestamp = time.Unix(started.Timestamp, 0)
+					}
+				}
 			}
-			startedResp.Body.Close()
 		}
 	}
 
@@ -292,6 +339,274 @@ func (g *GCSJobSource) fetchFinishedJSON(ctx context.Context, buildID string) (s
 
 func (g *GCSJobSource) FetchLog(ctx context.Context, runID string) (string, error) {
 	logURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s%s/build-log.txt", g.bucket, g.prefix, runID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", logURL, http.NoBody)
+	if err != nil {
+		return "", fmt.Errorf("creating log request: %w", err)
+	}
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetching log: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("log fetch failed (status %d)", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading log: %w", err)
+	}
+
+	return string(body), nil
+}
+
+// gcsRef holds a resolved GCS bucket and prefix for a symlink-based build directory.
+type gcsRef struct {
+	bucket string
+	prefix string // e.g. "pr-logs/pull/org_repo/PR/job/buildID/"
+}
+
+// GCSDirectoryJobSource implements CIJobSource for Prow presubmit jobs listed
+// via the pr-logs/directory/ symlink index. Each entry is a .txt object whose
+// x-goog-meta-link metadata points to the actual build directory.
+type GCSDirectoryJobSource struct {
+	bucket       string
+	prefix       string            // e.g. "pr-logs/directory/pull-job-name/"
+	jobName      string
+	client       *http.Client
+	resolvedRuns map[string]gcsRef // buildID → resolved bucket+prefix
+}
+
+// newGCSDirectoryJobSource creates a GCSDirectoryJobSource from bucket and prefix.
+func newGCSDirectoryJobSource(bucket, prefix string) (*GCSDirectoryJobSource, error) {
+	if bucket == "" || prefix == "" {
+		return nil, fmt.Errorf("invalid GCS directory URL: bucket=%q prefix=%q", bucket, prefix)
+	}
+
+	// Extract job name from prefix (last non-empty path component)
+	jobName := strings.TrimSuffix(prefix, "/")
+	if idx := strings.LastIndex(jobName, "/"); idx >= 0 {
+		jobName = jobName[idx+1:]
+	}
+
+	return &GCSDirectoryJobSource{
+		bucket:       bucket,
+		prefix:       prefix,
+		jobName:      jobName,
+		client:       &http.Client{Timeout: 30 * time.Second},
+		resolvedRuns: make(map[string]gcsRef),
+	}, nil
+}
+
+func (g *GCSDirectoryJobSource) JobName() string {
+	return g.jobName
+}
+
+// gcsDirectoryListResponse is the JSON response from the GCS list API
+// when listing objects (not prefixes) in a directory index.
+type gcsDirectoryListResponse struct {
+	Items         []gcsDirectoryItem `json:"items"`
+	NextPageToken string             `json:"nextPageToken"`
+}
+
+// gcsDirectoryItem represents an object in the GCS list response.
+type gcsDirectoryItem struct {
+	Name     string            `json:"name"`
+	Metadata map[string]string `json:"metadata"`
+}
+
+func (g *GCSDirectoryJobSource) ListRecentRuns(ctx context.Context, limit int) ([]JobRun, error) {
+	// Clear resolved runs for fresh listing
+	g.resolvedRuns = make(map[string]gcsRef)
+
+	var allItems []gcsDirectoryItem
+	pageToken := ""
+
+	// Paginate through all items in the directory index
+	for {
+		listURL := fmt.Sprintf("https://storage.googleapis.com/storage/v1/b/%s/o?prefix=%s",
+			url.PathEscape(g.bucket), url.PathEscape(g.prefix))
+		if pageToken != "" {
+			listURL += "&pageToken=" + url.QueryEscape(pageToken)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", listURL, http.NoBody)
+		if err != nil {
+			return nil, fmt.Errorf("creating list request: %w", err)
+		}
+
+		resp, err := g.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("listing GCS directory: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("GCS directory list failed (status %d): %s", resp.StatusCode, string(body))
+		}
+
+		var listResp gcsDirectoryListResponse
+		if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decoding GCS directory list response: %w", err)
+		}
+		resp.Body.Close()
+
+		allItems = append(allItems, listResp.Items...)
+
+		if listResp.NextPageToken == "" {
+			break
+		}
+		pageToken = listResp.NextPageToken
+	}
+
+	// Process items: extract build IDs and resolve target paths
+	var runs []JobRun
+	for _, item := range allItems {
+		// Extract build ID from object name: strip prefix and .txt suffix
+		name := strings.TrimPrefix(item.Name, g.prefix)
+		if !strings.HasSuffix(name, ".txt") {
+			continue
+		}
+		buildID := strings.TrimSuffix(name, ".txt")
+		if buildID == "" {
+			continue
+		}
+
+		// Resolve target build path from metadata.
+		// GCS JSON API exposes custom metadata with bare keys (e.g. "link"),
+		// while the x-goog-meta- prefix is used in XML API / HTTP headers.
+		link := item.Metadata["link"]
+		if link == "" {
+			link = item.Metadata["x-goog-meta-link"]
+		}
+		if link == "" {
+			continue
+		}
+
+		ref, err := parseGCSURI(link)
+		if err != nil {
+			continue
+		}
+
+		g.resolvedRuns[buildID] = ref
+
+		// Fetch finished.json from the resolved path
+		status, timestamp, err := g.fetchFinishedJSON(ctx, ref)
+		if err != nil {
+			// Skip builds without finished.json (still running or incomplete)
+			continue
+		}
+
+		runs = append(runs, JobRun{
+			ID:        buildID,
+			JobName:   g.jobName,
+			Status:    status,
+			Timestamp: timestamp,
+			LogURL:    fmt.Sprintf("https://storage.googleapis.com/%s/%sbuild-log.txt", ref.bucket, ref.prefix),
+		})
+	}
+
+	// Sort by timestamp descending
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].Timestamp.After(runs[j].Timestamp)
+	})
+
+	// Return up to limit
+	if len(runs) > limit {
+		runs = runs[:limit]
+	}
+
+	return runs, nil
+}
+
+// parseGCSURI parses a gs:// URI into a gcsRef.
+func parseGCSURI(uri string) (gcsRef, error) {
+	if !strings.HasPrefix(uri, "gs://") {
+		return gcsRef{}, fmt.Errorf("not a gs:// URI: %s", uri)
+	}
+	rest := strings.TrimPrefix(uri, "gs://")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) < 2 {
+		return gcsRef{}, fmt.Errorf("invalid gs:// URI (no path): %s", uri)
+	}
+	prefix := parts[1]
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return gcsRef{
+		bucket: parts[0],
+		prefix: prefix,
+	}, nil
+}
+
+func (g *GCSDirectoryJobSource) fetchFinishedJSON(ctx context.Context, ref gcsRef) (string, time.Time, error) {
+	finishedURL := fmt.Sprintf("https://storage.googleapis.com/%s/%sfinished.json", ref.bucket, ref.prefix)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", finishedURL, http.NoBody)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", time.Time{}, fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	var finished gcsFinishedJSON
+	if err := json.NewDecoder(resp.Body).Decode(&finished); err != nil {
+		return "", time.Time{}, err
+	}
+
+	// Determine status from finished.json
+	status := "failure"
+	if finished.Passed != nil && *finished.Passed {
+		status = "success"
+	} else if strings.ToUpper(finished.Result) == "SUCCESS" {
+		status = "success"
+	}
+
+	// Use timestamp from finished.json if available
+	timestamp := time.Time{}
+	if finished.Timestamp > 0 {
+		timestamp = time.Unix(finished.Timestamp, 0)
+	} else {
+		// Fallback: try to fetch started.json
+		startedURL := fmt.Sprintf("https://storage.googleapis.com/%s/%sstarted.json", ref.bucket, ref.prefix)
+		startedReq, err := http.NewRequestWithContext(ctx, "GET", startedURL, http.NoBody)
+		if err == nil {
+			startedResp, err := g.client.Do(startedReq)
+			if err == nil {
+				defer startedResp.Body.Close()
+				if startedResp.StatusCode == http.StatusOK {
+					var started gcsStartedJSON
+					if json.NewDecoder(startedResp.Body).Decode(&started) == nil && started.Timestamp > 0 {
+						timestamp = time.Unix(started.Timestamp, 0)
+					}
+				}
+			}
+		}
+	}
+
+	return status, timestamp, nil
+}
+
+func (g *GCSDirectoryJobSource) FetchLog(ctx context.Context, runID string) (string, error) {
+	ref, ok := g.resolvedRuns[runID]
+	if !ok {
+		return "", fmt.Errorf("unknown run ID %q (not resolved during ListRecentRuns)", runID)
+	}
+
+	logURL := fmt.Sprintf("https://storage.googleapis.com/%s/%sbuild-log.txt", ref.bucket, ref.prefix)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", logURL, http.NoBody)
 	if err != nil {
