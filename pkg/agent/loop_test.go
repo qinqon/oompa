@@ -2740,6 +2740,155 @@ func TestProcessCIFailures_DetectsCommitStatusFailures(t *testing.T) {
 	}
 }
 
+func TestIsUnstagedChangesError(t *testing.T) {
+	tests := []struct {
+		stderr string
+		want   bool
+	}{
+		{"error: cannot rebase: You have unstaged changes.\nerror: Please commit or stash them.\n", true},
+		{"error: unstaged changes would be overwritten by rebase", true},
+		{"error: could not apply 3a35b4e... Migrate remaining features\nCONFLICT (content): Merge conflict in main.go", false},
+		{"fatal: some other error", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		got := isUnstagedChangesError(tt.stderr)
+		if got != tt.want {
+			t.Errorf("isUnstagedChangesError(%q) = %v, want %v", tt.stderr, got, tt.want)
+		}
+	}
+}
+
+func TestProcessRebase_CleansUnstagedChangesAndRetries(t *testing.T) {
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+	}
+	runner := &unstagedChangesRebaseRunner{
+		mockCommandRunner: &mockCommandRunner{},
+	}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessRebase(context.Background())
+
+	// Should have called git checkout -- . to clean unstaged changes
+	foundCheckout := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[0] == "checkout" && c.Args[1] == "--" && c.Args[2] == "." {
+			foundCheckout = true
+		}
+	}
+	if !foundCheckout {
+		t.Error("expected git checkout -- . to be called to clean unstaged changes")
+	}
+
+	// Should have attempted rebase twice (first fails with unstaged, second succeeds)
+	rebaseCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" && !slices.Contains(c.Args, "--abort") {
+			rebaseCalls++
+		}
+	}
+	if rebaseCalls != 2 {
+		t.Errorf("expected 2 rebase calls (initial + retry), got %d", rebaseCalls)
+	}
+
+	// Should NOT have called git rebase --abort (retry succeeded)
+	abortCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" && slices.Contains(c.Args, "--abort") {
+			abortCalls++
+		}
+	}
+	if abortCalls != 0 {
+		t.Errorf("expected 0 rebase --abort calls (retry succeeded), got %d", abortCalls)
+	}
+}
+
+func TestProcessConflicts_CleansUnstagedChangesAndRetries(t *testing.T) {
+	gh := &mockGitHubClient{
+		mergeableState: "dirty",
+	}
+	runner := &unstagedChangesRebaseRunner{
+		mockCommandRunner: &mockCommandRunner{},
+	}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessConflicts(context.Background())
+
+	// Should have called git checkout -- . to clean unstaged changes
+	foundCheckout := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[0] == "checkout" && c.Args[1] == "--" && c.Args[2] == "." {
+			foundCheckout = true
+		}
+	}
+	if !foundCheckout {
+		t.Error("expected git checkout -- . to be called to clean unstaged changes")
+	}
+
+	// Should have attempted rebase twice (first fails with unstaged, second succeeds)
+	rebaseCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" && !slices.Contains(c.Args, "--abort") {
+			rebaseCalls++
+		}
+	}
+	if rebaseCalls != 2 {
+		t.Errorf("expected 2 rebase calls (initial + retry), got %d", rebaseCalls)
+	}
+
+	// Should NOT have called git rebase --abort (retry succeeded)
+	abortCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" && slices.Contains(c.Args, "--abort") {
+			abortCalls++
+		}
+	}
+	if abortCalls != 0 {
+		t.Errorf("expected 0 rebase --abort calls (retry succeeded), got %d", abortCalls)
+	}
+}
+
+// unstagedChangesRebaseRunner simulates a rebase that fails on the first attempt
+// with "unstaged changes" and succeeds on the second attempt after cleanup.
+type unstagedChangesRebaseRunner struct {
+	*mockCommandRunner
+	rebaseAttempts int
+}
+
+func (r *unstagedChangesRebaseRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
+	r.mockCommandRunner.Run(ctx, workDir, name, args...) //nolint:errcheck // recording call for test assertions
+
+	// Return "unstaged changes" error on the first rebase attempt, succeed on retry
+	if name == "git" && len(args) > 0 && args[0] == "rebase" && !slices.Contains(args, "--abort") {
+		r.rebaseAttempts++
+		if r.rebaseAttempts == 1 {
+			return nil, []byte("error: cannot rebase: You have unstaged changes.\nerror: Please commit or stash them.\n"), fmt.Errorf("rebase failed")
+		}
+		return nil, nil, nil // retry succeeds
+	}
+
+	return nil, nil, nil
+}
+
 func TestProcessCIFailures_MergesCheckRunsAndCommitStatuses(t *testing.T) {
 	claudeResult := streamResultJSON(AgentResult{Result: "RELATED Fixed both failures"})
 	gh := &mockGitHubClient{
