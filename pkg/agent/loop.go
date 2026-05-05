@@ -1056,8 +1056,8 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		// Fetch all remotes and try automatic rebase against the upstream default branch
 		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all") //nolint:errcheck // best-effort
 
-		// Try automatic rebase
-		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", a.originDefaultBranch())
+		// Try automatic rebase (with retry on unstaged changes)
+		stderr, rebaseErr := a.gitRebaseWithRetry(ctx, work.WorktreePath, work.PRNumber)
 		if rebaseErr == nil {
 			// Rebase succeeded, force push
 			if pushErr := a.gitPush(ctx, work.WorktreePath, true); pushErr != nil {
@@ -1074,13 +1074,13 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 
 		// Rebase failed — abort and let Claude try
 		a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
-		a.logger.Info("automatic rebase failed, invoking Claude to resolve conflicts", "pr", work.PRNumber, "stderr", string(stderr))
+		a.logger.Info("automatic rebase failed, invoking Claude to resolve conflicts", "pr", work.PRNumber, "stderr", stderr)
 
 		tasks = append(tasks, conflictTask{
 			work:         work,
 			headSHA:      headSHA,
 			rebaseErr:    rebaseErr,
-			rebaseStderr: string(stderr),
+			rebaseStderr: stderr,
 		})
 	}
 
@@ -1138,22 +1138,22 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 
 		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all") //nolint:errcheck // best-effort
 
-		_, stderr, rebaseErr := a.runner.Run(ctx, work.WorktreePath, "git", "rebase", a.originDefaultBranch())
+		stderr, rebaseErr := a.gitRebaseWithRetry(ctx, work.WorktreePath, work.PRNumber)
 		if rebaseErr != nil {
 			a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
 
 			// Check if the rebase failed due to conflicts
-			if isConflictError(string(stderr)) {
+			if isConflictError(stderr) {
 				a.logger.Info("rebase failed with conflicts, will invoke conflict resolution", "pr", work.PRNumber)
 				tasks = append(tasks, conflictTask{
 					work:         work,
 					headSHA:      headSHA,
 					rebaseErr:    rebaseErr,
-					rebaseStderr: string(stderr),
+					rebaseStderr: stderr,
 				})
 			} else {
 				// Non-conflict rebase failure (e.g., corrupt repo state, hook failure)
-				a.logger.Error("rebase failed for non-conflict reason", "pr", work.PRNumber, "stderr", string(stderr))
+				a.logger.Error("rebase failed for non-conflict reason", "pr", work.PRNumber, "stderr", stderr)
 			}
 			continue
 		}
@@ -1761,6 +1761,21 @@ func (a *Agent) hasFixupCommits(ctx context.Context, worktreePath string) bool {
 	return strings.Contains(string(logOut), "fixup!")
 }
 
+// gitRebaseWithRetry attempts a rebase and, if it fails due to unstaged changes
+// (e.g. upstream file deletions), cleans the worktree and retries once.
+// Returns the stderr output (as a string) and any error from the final rebase attempt.
+func (a *Agent) gitRebaseWithRetry(ctx context.Context, worktreePath string, prNumber int) (string, error) {
+	_, stderr, rebaseErr := a.runner.Run(ctx, worktreePath, "git", "rebase", a.originDefaultBranch())
+	if rebaseErr != nil && isUnstagedChangesError(string(stderr)) {
+		// Upstream file deletions can leave unstaged changes that block rebase.
+		// Clean the worktree and retry.
+		a.logger.Info("cleaning unstaged changes before rebase retry", "pr", prNumber)
+		a.runner.Run(ctx, worktreePath, "git", "checkout", "--", ".") //nolint:errcheck // best-effort
+		_, stderr, rebaseErr = a.runner.Run(ctx, worktreePath, "git", "rebase", a.originDefaultBranch())
+	}
+	return string(stderr), rebaseErr
+}
+
 // gitAutosquashRebase performs an interactive rebase with autosquash to merge fixup commits.
 func (a *Agent) gitAutosquashRebase(ctx context.Context, worktreePath string) error {
 	// Set GIT_SEQUENCE_EDITOR to cat so rebase doesn't wait for interactive input
@@ -1798,6 +1813,12 @@ func truncateString(s string, maxLen int) string {
 func isConflictError(stderr string) bool {
 	lowerStderr := strings.ToLower(stderr)
 	return strings.Contains(lowerStderr, "conflict") || strings.Contains(lowerStderr, "could not apply")
+}
+
+// isUnstagedChangesError returns true if the stderr from a git rebase indicates
+// unstaged changes are blocking the rebase (e.g. upstream file deletions).
+func isUnstagedChangesError(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "unstaged changes")
 }
 
 // resolveConflictsParallel invokes the coding agent to resolve conflicts for a list of tasks in parallel.
