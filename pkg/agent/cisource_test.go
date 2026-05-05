@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -347,6 +348,155 @@ func TestGCSDirectoryJobSource_ListRecentRuns(t *testing.T) {
 	}
 	if runs[0].ID != "111" {
 		t.Errorf("limited run ID = %q, want %q (most recent)", runs[0].ID, "111")
+	}
+}
+
+func TestGCSDirectoryJobSource_ListRecentRuns_OnlyFetchesRecentItems(t *testing.T) {
+	// Create 200 items but only the most recent ones (by build ID) should have
+	// their finished.json fetched. Old items should never be accessed.
+	const totalItems = 200
+
+	// Track which finished.json URLs were fetched
+	fetchedBuildIDs := make(map[string]bool)
+
+	passed := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/storage/v1/b/test-bucket/o":
+			// Generate items with build IDs from 1 to totalItems
+			var items []gcsDirectoryItem
+			for i := 1; i <= totalItems; i++ {
+				items = append(items, gcsDirectoryItem{
+					Name: fmt.Sprintf("pr-logs/directory/pull-job/%d.txt", i),
+					Metadata: map[string]string{
+						"link": fmt.Sprintf("gs://test-bucket/pr-logs/pull/org_repo/10/pull-job/%d", i),
+					},
+				})
+			}
+			resp := gcsDirectoryListResponse{Items: items}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+
+		default:
+			// Handle finished.json requests
+			// Extract build ID from path like /test-bucket/pr-logs/pull/org_repo/10/pull-job/{id}/finished.json
+			path := r.URL.Path
+			if path != "" && path[0] == '/' {
+				path = path[1:]
+			}
+			parts := strings.Split(path, "/")
+			if len(parts) >= 7 && parts[len(parts)-1] == "finished.json" {
+				buildID := parts[len(parts)-2]
+				fetchedBuildIDs[buildID] = true
+
+				finished := gcsFinishedJSON{
+					Passed:    &passed,
+					Result:    "SUCCESS",
+					Timestamp: 1700000000 + int64(len(buildID)), // slightly different timestamps
+				}
+				finishedBytes, _ := json.Marshal(finished)
+				_, _ = w.Write(finishedBytes)
+				return
+			}
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	source := &GCSDirectoryJobSource{
+		bucket:       "test-bucket",
+		prefix:       "pr-logs/directory/pull-job/",
+		jobName:      "pull-job",
+		client:       &http.Client{Transport: &rewriteTransport{base: server.URL}},
+		resolvedRuns: make(map[string]gcsRef),
+	}
+
+	runs, err := source.ListRecentRuns(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(runs) != 10 {
+		t.Fatalf("expected 10 runs, got %d", len(runs))
+	}
+
+	// Verify that we fetched at most 50 finished.json files (not all 200)
+	if len(fetchedBuildIDs) > 50 {
+		t.Errorf("fetched finished.json for %d items, expected at most 50 (out of %d total)",
+			len(fetchedBuildIDs), totalItems)
+	}
+
+	// Verify that old build IDs (low numbers) were NOT fetched
+	for i := 1; i <= totalItems-50; i++ {
+		buildID := fmt.Sprintf("%d", i)
+		if fetchedBuildIDs[buildID] {
+			t.Errorf("fetched finished.json for old build ID %s, expected it to be skipped", buildID)
+			break // one error is enough to demonstrate the issue
+		}
+	}
+
+	// Verify that recent build IDs (high numbers) WERE fetched
+	for i := totalItems - 49; i <= totalItems; i++ {
+		buildID := fmt.Sprintf("%d", i)
+		if !fetchedBuildIDs[buildID] {
+			t.Errorf("expected finished.json to be fetched for recent build ID %s", buildID)
+			break
+		}
+	}
+}
+
+func TestExtractBuildIDNumeric(t *testing.T) {
+	testCases := []struct {
+		name   string
+		input  string
+		prefix string
+		want   int64
+	}{
+		{
+			name:   "valid numeric build ID",
+			input:  "pr-logs/directory/pull-job/12345.txt",
+			prefix: "pr-logs/directory/pull-job/",
+			want:   12345,
+		},
+		{
+			name:   "zero build ID",
+			input:  "pr-logs/directory/pull-job/0.txt",
+			prefix: "pr-logs/directory/pull-job/",
+			want:   0,
+		},
+		{
+			name:   "non-numeric build ID",
+			input:  "pr-logs/directory/pull-job/abc.txt",
+			prefix: "pr-logs/directory/pull-job/",
+			want:   -1,
+		},
+		{
+			name:   "empty after prefix strip",
+			input:  "pr-logs/directory/pull-job/.txt",
+			prefix: "pr-logs/directory/pull-job/",
+			want:   -1,
+		},
+		{
+			name:   "missing .txt suffix",
+			input:  "pr-logs/directory/pull-job/12345.log",
+			prefix: "pr-logs/directory/pull-job/",
+			want:   -1,
+		},
+		{
+			name:   "large build ID",
+			input:  "pr-logs/directory/pull-job/1700000000.txt",
+			prefix: "pr-logs/directory/pull-job/",
+			want:   1700000000,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractBuildIDNumeric(tc.input, tc.prefix)
+			if got != tc.want {
+				t.Errorf("extractBuildIDNumeric(%q, %q) = %d, want %d", tc.input, tc.prefix, got, tc.want)
+			}
+		})
 	}
 }
 

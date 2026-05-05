@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -374,7 +375,7 @@ type gcsRef struct {
 // x-goog-meta-link metadata points to the actual build directory.
 type GCSDirectoryJobSource struct {
 	bucket       string
-	prefix       string            // e.g. "pr-logs/directory/pull-job-name/"
+	prefix       string // e.g. "pr-logs/directory/pull-job-name/"
 	jobName      string
 	client       *http.Client
 	resolvedRuns map[string]gcsRef // buildID → resolved bucket+prefix
@@ -405,6 +406,22 @@ func (g *GCSDirectoryJobSource) JobName() string {
 	return g.jobName
 }
 
+// extractBuildIDNumeric extracts the numeric build ID from a directory item name.
+// Given "pr-logs/directory/pull-job/12345.txt", it returns 12345.
+// Returns -1 if the name doesn't end with ".txt" or doesn't contain a valid numeric build ID.
+func extractBuildIDNumeric(name, prefix string) int64 {
+	trimmed := strings.TrimPrefix(name, prefix)
+	if !strings.HasSuffix(trimmed, ".txt") {
+		return -1
+	}
+	trimmed = strings.TrimSuffix(trimmed, ".txt")
+	id, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil {
+		return -1
+	}
+	return id
+}
+
 // gcsDirectoryListResponse is the JSON response from the GCS list API
 // when listing objects (not prefixes) in a directory index.
 type gcsDirectoryListResponse struct {
@@ -425,7 +442,7 @@ func (g *GCSDirectoryJobSource) ListRecentRuns(ctx context.Context, limit int) (
 	var allItems []gcsDirectoryItem
 	pageToken := ""
 
-	// Paginate through all items in the directory index
+	// Phase 1: Paginate through all items in the directory index (metadata only, no per-item HTTP calls)
 	for {
 		listURL := fmt.Sprintf("https://storage.googleapis.com/storage/v1/b/%s/o?prefix=%s",
 			url.PathEscape(g.bucket), url.PathEscape(g.prefix))
@@ -464,18 +481,38 @@ func (g *GCSDirectoryJobSource) ListRecentRuns(ctx context.Context, limit int) (
 		pageToken = listResp.NextPageToken
 	}
 
-	// Process items: extract build IDs and resolve target paths
-	var runs []JobRun
+	// Phase 2: Filter out non-build items to prevent them from consuming
+	// the fetch limit. Items without a valid numeric build ID (e.g. .log
+	// or .bak files) are excluded. Cache parsed IDs alongside items so
+	// the sort avoids redundant string parsing.
+	type itemWithID struct {
+		item gcsDirectoryItem
+		id   int64
+	}
+	var filtered []itemWithID
 	for _, item := range allItems {
+		if id := extractBuildIDNumeric(item.Name, g.prefix); id >= 0 {
+			filtered = append(filtered, itemWithID{item: item, id: id})
+		}
+	}
+
+	// Sort by build ID descending (numeric, monotonically increasing)
+	// so we process the most recent builds first.
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].id > filtered[j].id })
+
+	// Phase 3: Only fetch finished.json for the most recent items.
+	// Use a safety multiplier to account for items that may be skipped
+	// (missing metadata, still running, etc.)
+	fetchLimit := min(max(limit*3, 50), len(filtered))
+
+	// Phase 4: Process only the most recent items
+	var runs []JobRun
+	for _, fi := range filtered[:fetchLimit] {
+		item := fi.item
+
 		// Extract build ID from object name: strip prefix and .txt suffix
 		name := strings.TrimPrefix(item.Name, g.prefix)
-		if !strings.HasSuffix(name, ".txt") {
-			continue
-		}
 		buildID := strings.TrimSuffix(name, ".txt")
-		if buildID == "" {
-			continue
-		}
 
 		// Resolve target build path from metadata.
 		// GCS JSON API exposes custom metadata with bare keys (e.g. "link"),
