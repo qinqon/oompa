@@ -213,8 +213,8 @@ type tickMsg struct{}
 type disconnectedMsg struct{}
 
 func newTUIModel(snap agent.StatusSnapshot, eventCh <-chan agent.Event, streamClient *agent.EventClient) TUIModel {
-	// Sort workers once at construction
-	workers := snap.Workers
+	// Copy and sort workers to avoid mutating the caller's snapshot slice
+	workers := append([]agent.WorkerState(nil), snap.Workers...)
 	sort.Slice(workers, func(i, j int) bool {
 		return workers[i].Worker < workers[j].Worker
 	})
@@ -431,9 +431,10 @@ func (m TUIModel) renderOompaCard(w agent.WorkerState) string {
 
 	// Role + PRs
 	// Extract role from worker name (format: "owner/repo:role")
-	role := w.Worker
-	if idx := strings.LastIndex(role, ":"); idx >= 0 {
-		role = role[idx+1:]
+	// For legacy names without ":", default to "worker"
+	role := "worker"
+	if idx := strings.LastIndex(w.Worker, ":"); idx >= 0 {
+		role = w.Worker[idx+1:]
 	}
 	roleLine := roleStyle.Render(role)
 	if len(w.PRNumbers) > 0 {
@@ -590,15 +591,20 @@ func (m TUIModel) View() string {
 	minutes := int(uptime.Minutes()) % 60
 	connStatus := "● Connected"
 	if !m.connected {
-		connStatus = "● Disconnected"
+		connStatus = "○ Disconnected"
 	}
+	leftPart := "  🏭 OOMPA FACTORY"
+	rightPart := fmt.Sprintf("%s  %02d:%02d UTC  uptime %dh%02dm",
+		connStatus,
+		time.Now().UTC().Hour(),
+		time.Now().UTC().Minute(),
+		hours, minutes,
+	)
+	gap := max(
+		// 4 for padding
+		m.width-lipgloss.Width(leftPart)-lipgloss.Width(rightPart)-4, 2)
 	header := tuiHeaderStyle.Width(m.width).Render(
-		fmt.Sprintf("  🏭 OOMPA FACTORY                                       %s  %02d:%02d UTC  uptime %dh%02dm",
-			connStatus,
-			time.Now().UTC().Hour(),
-			time.Now().UTC().Minute(),
-			hours, minutes,
-		),
+		leftPart + strings.Repeat(" ", gap) + rightPart,
 	)
 	b.WriteString(header + "\n\n")
 
@@ -657,8 +663,10 @@ func (m TUIModel) renderTUIActivityLog(height int) string {
 
 	// Iterate in reverse (newest first) instead of copying and sorting.
 	// Events are appended chronologically, so reverse iteration gives newest first.
-	maxEntries := height - 2
-	startFromEnd := m.logOffset
+	maxEntries := max(height-2, 0)
+	// Clamp offset so we always show at least some events when available
+	maxOffset := max(len(m.events)-maxEntries, 0)
+	startFromEnd := min(m.logOffset, maxOffset)
 	var lines []string
 	lines = append(lines, tuiTitleStyle.Render(title))
 
@@ -677,7 +685,8 @@ func (m TUIModel) renderTUIActivityLog(height int) string {
 		}
 		maxActionLen := max(m.width-35, 20)
 		action = truncateRunes(action, maxActionLen)
-		line := fmt.Sprintf(" %s  %-18s %s", tuiDimStyle.Render(ts), e.Worker, action)
+		worker := truncateRunes(e.Worker, 18)
+		line := fmt.Sprintf(" %s  %-18s %s", tuiDimStyle.Render(ts), worker, action)
 		lines = append(lines, line)
 		count++
 	}
