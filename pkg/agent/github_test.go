@@ -82,6 +82,90 @@ func TestGetPRReviewComments_FiltersBySinceID(t *testing.T) {
 	}
 }
 
+func TestGetPRReviewComments_Paginates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1/comments", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			t.Fatalf("expected per_page=100, got %q", got)
+		}
+		page := r.URL.Query().Get("page")
+		if page == "" || page == "1" {
+			// Page 1: return comments and indicate there's a next page
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			comments := []*github.PullRequestComment{
+				{ID: new(int64(10)), User: &github.User{Login: new("alice")}, Body: new("page 1 comment"), Path: new("file1.go"), Line: new(1)},
+			}
+			_ = json.NewEncoder(w).Encode(comments)
+		} else {
+			// Page 2: return more comments, no next page
+			comments := []*github.PullRequestComment{
+				{ID: new(int64(20)), User: &github.User{Login: new("bob")}, Body: new("page 2 comment"), Path: new("file2.go"), Line: new(5)},
+			}
+			_ = json.NewEncoder(w).Encode(comments)
+		}
+	})
+
+	gh := setupTestClient(t, mux)
+	comments, err := gh.GetPRReviewComments(context.Background(), "owner", "repo", 1, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("expected 2 comments across pages, got %d", len(comments))
+	}
+	if comments[0].ID != 10 {
+		t.Errorf("expected first comment ID 10, got %d", comments[0].ID)
+	}
+	if comments[0].Body != "page 1 comment" {
+		t.Errorf("expected first comment body 'page 1 comment', got %q", comments[0].Body)
+	}
+	if comments[1].ID != 20 {
+		t.Errorf("expected second comment ID 20, got %d", comments[1].ID)
+	}
+	if comments[1].Body != "page 2 comment" {
+		t.Errorf("expected second comment body 'page 2 comment', got %q", comments[1].Body)
+	}
+}
+
+func TestGetPRReviewComments_SinceIDFilterAcrossPages(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1/comments", func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		if page == "" || page == "1" {
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			comments := []*github.PullRequestComment{
+				{ID: new(int64(5)), User: &github.User{Login: new("alice")}, Body: new("old comment")},
+				{ID: new(int64(10)), User: &github.User{Login: new("bob")}, Body: new("boundary comment")},
+			}
+			_ = json.NewEncoder(w).Encode(comments)
+		} else {
+			comments := []*github.PullRequestComment{
+				{ID: new(int64(15)), User: &github.User{Login: new("charlie")}, Body: new("new comment page 2"), Path: new("main.go"), Line: new(42)},
+			}
+			_ = json.NewEncoder(w).Encode(comments)
+		}
+	})
+
+	gh := setupTestClient(t, mux)
+	// sinceID=10 should filter out IDs 5 and 10, keeping only ID 15 from page 2
+	comments, err := gh.GetPRReviewComments(context.Background(), "owner", "repo", 1, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("expected 1 comment after filtering, got %d", len(comments))
+	}
+	if comments[0].ID != 15 {
+		t.Errorf("expected comment ID 15, got %d", comments[0].ID)
+	}
+	if comments[0].Path != "main.go" {
+		t.Errorf("expected path 'main.go', got %q", comments[0].Path)
+	}
+	if comments[0].Line != 42 {
+		t.Errorf("expected line 42, got %d", comments[0].Line)
+	}
+}
+
 func TestGetPRState_Merged(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/1", func(w http.ResponseWriter, r *http.Request) {
