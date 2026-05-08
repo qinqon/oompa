@@ -463,6 +463,18 @@ func buildAgentForConfig(cfg agent.Config, ghClient *agent.GoGitHubClient, token
 }
 
 func main() {
+	// Check for subcommands before flag parsing
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "status":
+			runStatusCommand(os.Args[2:])
+			return
+		case "tui":
+			runTUICommand(os.Args[2:])
+			return
+		}
+	}
+
 	cfg, exitOnNewVersion, configPath := parseConfig()
 
 	logger, closeLog := setupLogger(cfg.LogLevel, cfg.LogFile)
@@ -475,6 +487,20 @@ func main() {
 
 	commitSHA := getCommitSHA()
 	cfg.Version = commitSHA
+
+	// Start event server for observability
+	socketPath := agent.DefaultSocketPath()
+	eventServer := agent.NewSocketEventServer(socketPath, 1000, logger)
+	eventCtx, eventCancel := context.WithCancel(context.Background())
+	defer eventCancel()
+	serverStarted := false
+	if err := eventServer.Start(eventCtx); err != nil {
+		logger.Warn("failed to start event server (observability disabled)", "error", err)
+	} else {
+		logger.Info("event server started", "socket", socketPath)
+		serverStarted = true
+		defer eventServer.Stop()
+	}
 
 	// Parse exit-on-new-version
 	var exitOnNewVersionOwner, exitOnNewVersionRepo string
@@ -493,17 +519,23 @@ func main() {
 		}
 	}
 
+	// Only pass event server to agents when it started successfully
+	var emitter agent.EventEmitter
+	if serverStarted {
+		emitter = eventServer
+	}
+
 	if configPath != "" {
 		// Multi-project mode
-		runMultiProject(cfg, configPath, ghClient, tokenFunc, useAppAuth, exitOnNewVersionOwner, exitOnNewVersionRepo, commitSHA, logger)
+		runMultiProject(cfg, configPath, ghClient, tokenFunc, useAppAuth, exitOnNewVersionOwner, exitOnNewVersionRepo, commitSHA, logger, emitter)
 	} else {
 		// Single-repo mode (backward compatible)
-		runSingleRepo(cfg, ghClient, tokenFunc, useAppAuth, exitOnNewVersionOwner, exitOnNewVersionRepo, commitSHA, logger)
+		runSingleRepo(cfg, ghClient, tokenFunc, useAppAuth, exitOnNewVersionOwner, exitOnNewVersionRepo, commitSHA, logger, emitter)
 	}
 }
 
 // runSingleRepo runs the original single-repo mode.
-func runSingleRepo(cfg agent.Config, ghClient *agent.GoGitHubClient, tokenFunc func(context.Context) (string, error), useAppAuth bool, exitOwner, exitRepo, commitSHA string, logger *slog.Logger) {
+func runSingleRepo(cfg agent.Config, ghClient *agent.GoGitHubClient, tokenFunc func(context.Context) (string, error), useAppAuth bool, exitOwner, exitRepo, commitSHA string, logger *slog.Logger, emitter agent.EventEmitter) {
 	// Validate agent backend
 	if cfg.Agent != "claudecode" && cfg.Agent != "opencode" {
 		fmt.Fprintf(os.Stderr, "invalid --agent %q: must be claudecode or opencode\n", cfg.Agent)
@@ -526,6 +558,9 @@ func runSingleRepo(cfg agent.Config, ghClient *agent.GoGitHubClient, tokenFunc f
 	)
 
 	a := buildAgentForConfig(cfg, ghClient, tokenFunc, useAppAuth, logger)
+	if emitter != nil {
+		a.SetEmitter(emitter)
+	}
 
 	runLoop(ctx, a, logger)
 
@@ -551,7 +586,7 @@ func runSingleRepo(cfg agent.Config, ghClient *agent.GoGitHubClient, tokenFunc f
 }
 
 // runMultiProject runs the multi-project orchestrator with per-role goroutines.
-func runMultiProject(globalCfg agent.Config, configPath string, ghClient *agent.GoGitHubClient, tokenFunc func(context.Context) (string, error), useAppAuth bool, exitOwner, exitRepo, commitSHA string, logger *slog.Logger) {
+func runMultiProject(globalCfg agent.Config, configPath string, ghClient *agent.GoGitHubClient, tokenFunc func(context.Context) (string, error), useAppAuth bool, exitOwner, exitRepo, commitSHA string, logger *slog.Logger, emitter agent.EventEmitter) {
 	fc, err := agent.LoadFileConfig(configPath)
 	if err != nil {
 		logger.Error("failed to load config file", "path", configPath, "error", err)
@@ -630,6 +665,9 @@ func runMultiProject(globalCfg agent.Config, configPath string, ghClient *agent.
 			}()
 
 			a := buildAgentForConfig(entry.Config, ghClient, tokenFunc, useAppAuth, roleLogger)
+			if emitter != nil {
+				a.SetEmitter(emitter)
+			}
 
 			roleLogger.Info("role goroutine started")
 
@@ -717,6 +755,7 @@ func runScheduledTriage(ctx context.Context, a *agent.Agent, entry agent.RoleEnt
 
 func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 	logger.Debug("starting poll cycle")
+	a.EmitPollCycleStart()
 	if err := a.RefreshToken(ctx); err != nil {
 		logger.Error("failed to refresh GitHub token", "error", err)
 	}
@@ -744,5 +783,6 @@ func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 	// ProcessTriageJobs is independent of other reactions and runs when triage jobs are configured
 	a.ProcessTriageJobs(ctx)
 
+	a.EmitPollCycleEnd()
 	logger.Debug("poll cycle complete")
 }

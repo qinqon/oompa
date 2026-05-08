@@ -13,10 +13,17 @@ Single long-running Go binary with a sequential polling loop.
 
 ```
 cmd/oompa/
-  main.go              -- entry point, config parsing, polling loop
+  main.go              -- entry point, config parsing, subcommand dispatch, polling loop
+  status.go            -- `oompa status` subcommand (print-and-exit snapshot)
+  tui.go               -- `oompa tui` subcommand (live bubbletea dashboard)
 pkg/agent/
   types.go             -- shared types (Issue, ReviewComment, PR, ClaudeResult, IssueWork)
   config.go            -- Config struct
+  event.go             -- EventEmitter interface, Event/WorkerState types, NoopEmitter, RingBuffer
+  event_test.go        -- tests for event model and ring buffer
+  eventserver.go       -- SocketEventServer (Unix socket server, client registry, broadcasting)
+  eventserver_test.go  -- tests for socket server
+  eventclient.go       -- EventClient (connects to daemon socket for status/tui)
   github.go            -- GitHubClient interface + go-github implementation
   github_test.go       -- tests for GitHub client (httptest mock server)
   claude.go            -- CommandRunner interface + Claude Code CLI invocation
