@@ -1,7 +1,12 @@
 version: "2"
 linters:
   enable:
+    - errcheck
     - gocritic
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
   settings:
     gocritic:
       enabled-tags:

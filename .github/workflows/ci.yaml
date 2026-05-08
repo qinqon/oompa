@@ -24,11 +24,16 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Typecheck
+        run: go vet ./...
+
+      - name: Static Analysis
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          staticcheck ./...
+
       - name: Test
         run: go test -v -race ./...
-
-      - name: Vet
-        run: go vet ./...
 
       - name: Check go fix
         run: make check-fix
