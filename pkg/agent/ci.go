@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -73,6 +74,10 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		var failures []CheckRun
 		allCompleted := true
 		for _, r := range runs {
+			if slices.Contains(a.cfg.SkipChecks, r.Name) {
+				a.logger.Debug("skipping excluded CI check", "pr", work.PRNumber, "check", r.Name)
+				continue
+			}
 			if r.Status == "completed" && r.Conclusion == "failure" {
 				failures = append(failures, r)
 			}

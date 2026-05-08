@@ -2936,3 +2936,102 @@ func TestProcessCIFailures_MergesCheckRunsAndCommitStatuses(t *testing.T) {
 		t.Errorf("expected one prompt to contain commit status failure 'pull-unit-test'")
 	}
 }
+
+func TestProcessCIFailures_SkipChecksExcludesFromFailures(t *testing.T) {
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "can-be-merged", Status: "completed", Conclusion: "failure", Output: "merge gate failed"},
+			{ID: 2, Name: "unit-tests", Status: "completed", Conclusion: "failure", Output: "test failed"},
+		},
+	}
+	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED this is flaky"})
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.SkipChecks = []string{"can-be-merged"}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Only the non-skipped check should be investigated
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+			// Verify the prompt does NOT mention the skipped check
+			if strings.Contains(c.Args[len(c.Args)-1], "can-be-merged") {
+				t.Error("skipped check 'can-be-merged' should not appear in claude prompt")
+			}
+		}
+	}
+	if claudeCalls != 1 {
+		t.Fatalf("expected 1 claude call for non-skipped check, got %d", claudeCalls)
+	}
+}
+
+func TestProcessCIFailures_SkipChecksAllFailuresSkipped(t *testing.T) {
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "can-be-merged", Status: "completed", Conclusion: "failure", Output: "merge gate failed"},
+			{ID: 2, Name: "verified", Status: "completed", Conclusion: "failure", Output: "not verified"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.SkipChecks = []string{"can-be-merged", "verified"}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// No claude calls since all failures are skipped
+	if len(runner.calls) != 0 {
+		t.Errorf("expected no claude calls when all failures are skipped, got %d", len(runner.calls))
+	}
+}
+
+func TestProcessCIFailures_SkipChecksDoesNotAffectAllCompleted(t *testing.T) {
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "can-be-merged", Status: "in_progress", Conclusion: ""},
+			{ID: 2, Name: "unit-tests", Status: "completed", Conclusion: "success"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.SkipChecks = []string{"can-be-merged"}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber: 42,
+		PRNumber:    100,
+		BranchName:  "ai/issue-42",
+		Status:      "pr-open",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// The skipped in_progress check should not prevent allCompleted from being true.
+	// With can-be-merged skipped, only unit-tests (completed+success) remains,
+	// so allCompleted=true and LastCheckedCISHA should be set.
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastCheckedCISHA != "abc123" {
+		t.Errorf("expected LastCheckedCISHA to be set when skipped check is the only non-completed, got %q", work.LastCheckedCISHA)
+	}
+}

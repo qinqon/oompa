@@ -56,6 +56,9 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 	var skipComments string
 	flag.StringVar(&skipComments, "skip-comment", os.Getenv("OOMPA_SKIP_COMMENTS"), "Comma-separated list of comment categories to suppress: ci-unrelated, ci-infrastructure, ci-related, conflict, rebase, flaky, issue-in-progress")
 
+	var skipChecks string
+	flag.StringVar(&skipChecks, "skip-checks", os.Getenv("OOMPA_SKIP_CHECKS"), "Comma-separated list of CI check names to ignore entirely")
+
 	var triageJobs string
 	flag.StringVar(&triageJobs, "triage-jobs", os.Getenv("OOMPA_TRIAGE_JOBS"), "Comma-separated CI job URLs to monitor for periodic job triage")
 	triageLookback := time.Duration(0)
@@ -226,6 +229,15 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 				os.Exit(1)
 			}
 			cfg.SkipComments = append(cfg.SkipComments, c)
+		}
+	}
+
+	if skipChecks != "" {
+		for c := range strings.SplitSeq(skipChecks, ",") {
+			c = strings.TrimSpace(c)
+			if c != "" {
+				cfg.SkipChecks = append(cfg.SkipChecks, c)
+			}
 		}
 	}
 
