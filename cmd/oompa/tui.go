@@ -360,7 +360,7 @@ func (m TUIModel) renderBelt(state string, width int) string {
 
 	switch state {
 	case "working", "reviewing", "rebasing":
-		for i := 0; i < dotsLen; i++ {
+		for i := range dotsLen {
 			pos := (i + m.frame) % beltWaveLen
 			if pos < beltWaveFill {
 				buf.WriteRune('●')
@@ -373,11 +373,11 @@ func (m TUIModel) renderBelt(state string, width int) string {
 		if m.frame%beltBlinkLen < beltBlinkFill {
 			dot = '○'
 		}
-		for i := 0; i < dotsLen; i++ {
+		for range dotsLen {
 			buf.WriteRune(dot)
 		}
 	default:
-		for i := 0; i < dotsLen; i++ {
+		for range dotsLen {
 			buf.WriteRune('○')
 		}
 	}
@@ -683,7 +683,7 @@ func (m TUIModel) renderTUIActivityLog(height int) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return tuiLogStyle.Width(m.width - 2).Render(content) + "\n"
+	return tuiLogStyle.Width(m.width-2).Render(content) + "\n"
 }
 
 // truncateRunes truncates a string to maxLen runes, appending "..." if truncated.
