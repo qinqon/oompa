@@ -18,6 +18,8 @@ This project uses spec-driven development. **Read the relevant spec before imple
 | [specs/config.md](specs/config.md) | `cmd/oompa/main.go` (config parsing) + `pkg/agent/config.go` (Config struct) |
 | [specs/error-handling.md](specs/error-handling.md) | Error handling and safety constraints |
 | [specs/testing.md](specs/testing.md) | Mock types, test strategy, verification |
+| [specs/event.md](specs/event.md) | `pkg/agent/event.go` + `pkg/agent/eventserver.go` + `pkg/agent/eventclient.go` + tests |
+| [specs/tui.md](specs/tui.md) | `cmd/oompa/status.go` + `cmd/oompa/tui.go` |
 
 ### Rules
 

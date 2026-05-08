@@ -62,6 +62,7 @@ type Agent struct {
 	logger    *slog.Logger
 	tokenFunc func(context.Context) (string, error) // optional: provides fresh GitHub tokens (for App auth)
 	codeAgent CodeAgent                             // coding agent backend (Claude Code or OpenCode)
+	emitter   EventEmitter                          // optional: event emitter for observability (default: NoopEmitter)
 }
 
 // botComment returns the bot marker with the agent version embedded.
@@ -154,7 +155,57 @@ func NewAgent(gh GitHubClient, runner CommandRunner, worktrees WorktreeManager, 
 		cfg:       cfg,
 		logger:    logger,
 		codeAgent: codeAgent,
+		emitter:   &NoopEmitter{},
 	}
+}
+
+// SetEmitter sets the event emitter for observability.
+// If not called, a NoopEmitter is used (zero overhead).
+// Passing nil is ignored to prevent panics.
+func (a *Agent) SetEmitter(emitter EventEmitter) {
+	if emitter == nil {
+		return
+	}
+	a.emitter = emitter
+}
+
+// emit is a convenience method to emit an event with the current timestamp.
+// The nil guard exists because tests may construct Agent via struct literals
+// without using NewAgent, leaving emitter uninitialized.
+func (a *Agent) emit(event Event) {
+	if a.emitter == nil {
+		return
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+	a.emitter.Emit(event)
+}
+
+// workerName returns the worker identifier for event emission.
+// Uses the config's Owner/Repo as the worker name.
+func (a *Agent) workerName() string {
+	return a.cfg.Owner + "/" + a.cfg.Repo
+}
+
+// EmitPollCycleStart emits a poll cycle start event.
+func (a *Agent) EmitPollCycleStart() {
+	a.emit(Event{
+		Type:   EventPollCycleStart,
+		Worker: a.workerName(),
+		State:  "working",
+		Action: "Poll cycle started",
+	})
+}
+
+// EmitPollCycleEnd emits a poll cycle end event.
+func (a *Agent) EmitPollCycleEnd() {
+	a.emit(Event{
+		Type:   EventPollCycleEnd,
+		Worker: a.workerName(),
+		State:  "idle",
+		Action: "Poll cycle completed",
+	})
 }
 
 // ProcessNewIssues finds labeled issues and spawns Claude to implement fixes.
@@ -163,9 +214,23 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		return
 	}
 
+	a.emit(Event{
+		Type:   EventActionStarted,
+		Worker: a.workerName(),
+		State:  "working",
+		Action: "Scanning for new issues",
+	})
+	defer a.emit(Event{
+		Type:   EventActionCompleted,
+		Worker: a.workerName(),
+		State:  "idle",
+		Action: "Issue scanning complete",
+	})
+
 	issues, err := a.gh.ListLabeledIssues(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.Label)
 	if err != nil {
 		a.logger.Error("failed to list issues", "error", err)
+		a.emit(Event{Type: EventError, Worker: a.workerName(), State: "error", Error: "failed to list issues: " + err.Error()})
 		return
 	}
 
@@ -334,6 +399,18 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 
 // ProcessReviewComments checks for new review comments and review bodies, then runs Claude to address them.
 func (a *Agent) ProcessReviewComments(ctx context.Context) {
+	a.emit(Event{
+		Type:   EventActionStarted,
+		Worker: a.workerName(),
+		State:  "reviewing",
+		Action: "Checking for review comments",
+	})
+	defer a.emit(Event{
+		Type:   EventActionCompleted,
+		Worker: a.workerName(),
+		State:  "idle",
+		Action: "Review check complete",
+	})
 	// Sequential phase: filter comments, prepare worktrees, add reactions, build tasks
 	var tasks []reviewTask
 
@@ -456,6 +533,15 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 
 	// Parallel phase: run agent to address review feedback, then push changes
 	runSequential(ctx, tasks, func(ctx context.Context, task reviewTask) {
+		a.emit(Event{
+			Type:      EventAgentInvocation,
+			Worker:    a.workerName(),
+			State:     "working",
+			Action:    "Addressing review feedback",
+			PRNumbers: []int{task.work.PRNumber},
+		})
+		agentStart := time.Now()
+
 		// Capture local HEAD before agent runs so we can detect if it committed directly
 		headBefore, _, err := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
 		if err != nil {
@@ -467,8 +553,25 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		_, err = a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		if err != nil {
 			a.logger.Error("agent failed to address review", "pr", task.work.PRNumber, "error", err)
+			a.emit(Event{
+				Type:      EventError,
+				Worker:    a.workerName(),
+				State:     "error",
+				Action:    "Agent failed to address review",
+				PRNumbers: []int{task.work.PRNumber},
+				Duration:  time.Since(agentStart).Seconds(),
+				Error:     err.Error(),
+			})
 			return
 		}
+		a.emit(Event{
+			Type:      EventAgentCompleted,
+			Worker:    a.workerName(),
+			State:     "idle",
+			Action:    "Review feedback addressed",
+			PRNumbers: []int{task.work.PRNumber},
+			Duration:  time.Since(agentStart).Seconds(),
+		})
 
 		// Push if agent made changes (uncommitted or committed directly).
 		// Track whether push succeeded so we can gate cursor advancement:
@@ -540,6 +643,18 @@ const maxCIFixAttempts = 3
 
 // ProcessCIFailures checks CI status for open PRs and invokes Claude to fix failures.
 func (a *Agent) ProcessCIFailures(ctx context.Context) {
+	a.emit(Event{
+		Type:   EventActionStarted,
+		Worker: a.workerName(),
+		State:  "working",
+		Action: "Checking CI status",
+	})
+	defer a.emit(Event{
+		Type:   EventActionCompleted,
+		Worker: a.workerName(),
+		State:  "idle",
+		Action: "CI check complete",
+	})
 	// Sequential phase: GitHub API calls, check run fetching, worktree setup
 	var tasks []ciTask
 
@@ -1028,6 +1143,18 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 // ProcessConflicts checks for merge conflicts (dirty mergeable_state) and tries to resolve them.
 // For simple rebases when a PR is just behind the base branch, use ProcessRebase instead.
 func (a *Agent) ProcessConflicts(ctx context.Context) {
+	a.emit(Event{
+		Type:   EventActionStarted,
+		Worker: a.workerName(),
+		State:  "working",
+		Action: "Checking for merge conflicts",
+	})
+	defer a.emit(Event{
+		Type:   EventActionCompleted,
+		Worker: a.workerName(),
+		State:  "idle",
+		Action: "Conflict check complete",
+	})
 	// Sequential phase: GitHub API calls, worktree setup, git fetch, automatic rebase attempts
 	var tasks []conflictTask
 
@@ -1101,6 +1228,18 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 // For PRs with actual merge conflicts (dirty state), use ProcessConflicts instead.
 // If a rebase fails due to conflicts, this delegates to the conflict resolution flow.
 func (a *Agent) ProcessRebase(ctx context.Context) {
+	a.emit(Event{
+		Type:   EventActionStarted,
+		Worker: a.workerName(),
+		State:  "rebasing",
+		Action: "Checking for outdated PRs",
+	})
+	defer a.emit(Event{
+		Type:   EventActionCompleted,
+		Worker: a.workerName(),
+		State:  "idle",
+		Action: "Rebase check complete",
+	})
 	// Sequential phase: check states, try automatic rebase, collect failed conflicts into tasks
 	var tasks []conflictTask
 
@@ -1364,6 +1503,17 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 
 // CleanupDone removes worktrees for merged or closed PRs.
 func (a *Agent) CleanupDone(ctx context.Context) {
+	a.emit(Event{
+		Type:   EventActionStarted,
+		Worker: a.workerName(),
+		Action: "Cleaning up merged/closed PRs",
+	})
+	defer a.emit(Event{
+		Type:   EventActionCompleted,
+		Worker: a.workerName(),
+		State:  "idle",
+		Action: "Cleanup complete",
+	})
 	for key, work := range a.state.ActiveIssues {
 		if work.PRNumber == 0 {
 			continue
