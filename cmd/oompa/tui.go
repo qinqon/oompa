@@ -49,71 +49,150 @@ func runTUICommand(args []string) {
 	}
 }
 
-// Sprite layout constants.
-const (
-	spriteWidth  = 11 // characters per sprite frame (padded)
-	spriteHeight = 5  // lines per sprite (all frames normalized)
-	spriteGap    = 2  // characters between adjacent oompas
-)
+// ── Styles ──────────────────────────────────────────────────────────
 
-// TUI styles
+const cardInnerWidth = 22
+
 var (
-	headerStyle = lipgloss.NewStyle().
+	tuiHeaderStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("229")).
 			Background(lipgloss.Color("57")).
 			Padding(0, 1)
 
-	logStyle = lipgloss.NewStyle().
+	// Inner oompa card styles
+	oompaCardIdle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("238")).
+			Padding(0, 1).
+			Width(cardInnerWidth + 4)
+
+	oompaCardActive = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("39")).
+			Padding(0, 1).
+			Width(cardInnerWidth + 4)
+
+	oompaCardError = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("196")).
+			Padding(0, 1).
+			Width(cardInnerWidth + 4)
+
+	oompaCardScheduled = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("141")).
+				Padding(0, 1).
+				Width(cardInnerWidth + 4)
+
+	// Super box styles (thick border to distinguish from inner cards)
+	superBoxIdle = lipgloss.NewStyle().
+			Border(lipgloss.ThickBorder()).
+			BorderForeground(lipgloss.Color("238")).
+			Padding(0, 1)
+
+	superBoxActive = lipgloss.NewStyle().
+			Border(lipgloss.ThickBorder()).
+			BorderForeground(lipgloss.Color("39")).
+			Padding(0, 1)
+
+	superBoxError = lipgloss.NewStyle().
+			Border(lipgloss.ThickBorder()).
+			BorderForeground(lipgloss.Color("196")).
+			Padding(0, 1)
+
+	superBoxMixed = lipgloss.NewStyle().
+			Border(lipgloss.ThickBorder()).
+			BorderForeground(lipgloss.Color("214")).
+			Padding(0, 1)
+
+	projectNameStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("214")).
+				Bold(true)
+
+	roleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("250"))
+
+	prStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("117"))
+
+	stateWorkingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
+	stateIdleStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
+	stateErrorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	stateScheduleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
+
+	tuiDimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	beltActiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	beltIdleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	beltErrorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+
+	tuiLogStyle = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("240")).
 			Padding(0, 1)
 
-	titleStyle = lipgloss.NewStyle().Bold(true)
-
-	dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
-	statusWorking = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
-	statusIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	statusError   = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-
-	beltStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
-
-	conveyorTitleStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("208"))
-
+	tuiTitleStyle = lipgloss.NewStyle().Bold(true)
 )
 
+// ── Sprite frames ───────────────────────────────────────────────────
+
 // spriteFrames defines animation frames for oompa-loompa sprites per state.
-// All frames are normalized to spriteWidth (11) chars wide and spriteHeight (5) lines tall.
-var spriteFrames = map[string][][]string{
-	"working": {
-		{"   ___     ", "  (o.o)    ", " --|--|--  ", "   |  |    ", "  _/  \\_   "},
-		{"   ___     ", "  (o.o)    ", " --|--|--  ", "   |  |    ", "  _/  \\_   "},
-	},
+var tuiSpriteFrames = map[string][][4]string{
 	"idle": {
-		{"   ___     ", "  (o.o)    ", " --|--|--  ", "   |  |    ", "  _/  \\_   "},
-		{"   ___     ", "  (o.o)    ", " --|--|--  ", "   |  |    ", " _/  \\_    "},
+		{"   ___   ", "  (o.o)  ", " --|--|-- ", "  _/ \\_ "},
+		{"   ___   ", "  (o.o)  ", " --|--|-- ", "  _/ \\_ "},
+	},
+	"working": {
+		{"   ___   ", "  (o.o)  ", " --|--|\\  ", "  _/ \\_🔨"},
+		{"   ___  🔨", "  (o.o)/  ", " --|--|  ", "  _/ \\_  "},
 	},
 	"sleeping": {
-		{"   ___     ", "  (-.- ) Z ", "   |__|    ", "  _/  \\_   ", "           "},
-		{"   ___     ", "  (-.- ) Zz", "   |__|    ", "  _/  \\_   ", "           "},
-		{"   ___     ", "  (-.- )Zzz", "   |__|    ", "  _/  \\_   ", "           "},
-	},
-	"error": {
-		{"   ___     ", "  (x.x)    ", " --|--|--  ", "   |  |    ", "  _/  \\_   "},
-		{"   ___     ", "  (x.x)  * ", " --|--|--  ", "   |  |    ", "  _/  \\_   "},
-	},
-	"reviewing": {
-		{"   ___     ", "  (o.o)    ", " --|--|Q   ", "   |  |    ", "  _/  \\_   "},
-		{"   ___     ", "  (o.o)    ", " --|--|q   ", "   |  |    ", "  _/  \\_   "},
+		{"   ___  Z", "  (-.-) z", "   |__|  ", "  _/ \\_  "},
+		{"   ___ Zz", "  (-.-)  ", "   |__|  ", "  _/ \\_  "},
+		{"   ___Zzz", "  (-.-)  ", "   |__|  ", "  _/ \\_  "},
 	},
 	"rebasing": {
-		{"   ___     ", "  (o.o)    ", " --|--|>   ", "   |  |    ", "  _/  \\_   "},
-		{"   ___     ", "  (o.o)    ", " --|--|]   ", "   |  |    ", "  _/  \\_   "},
+		{"  ╠═╬═╣  ", "  ╠═╬═╣  ", "  ╠═╬═╣  ", "  ╠(o.o) "},
+		{"  ╠═╬═╣  ", "  ╠═╬═╣  ", "  ╠(o.o) ", "  ╠--|-- "},
+		{"  ╠═╬═╣  ", "  ╠(o.o) ", "  ╠--|-- ", "  ╠═╬═╣  "},
+		{"  ╠(o.o) ", "  ╠--|-- ", "  ╠═╬═╣  ", "  ╠═╬═╣  "},
+		{"  ╠═╬═╣  ", "  ╠═╬═╣  ", "  ╠═╬═╣  ", "  ╠═╬═╣  "},
+	},
+	"reviewing": {
+		{"   ___   ", "  (o.o)  ", " --|--|🔍 ", "  _/ \\_  "},
+		{"   ___   ", "  (o.o)  ", " --|--|🔎 ", "  _/ \\_  "},
+	},
+	"error": {
+		{"   ___   ", "  (x.x)  ", " --|--|-- ", "  _/ \\_  "},
+		{"   ___ ★ ", "  (x.x)  ", " --|--|-- ", "  _/ \\_  "},
+		{" ★ ___ ★ ", "  (x.x)  ", " --|--|-- ", "  _/ \\_  "},
+	},
+	"scheduled": {
+		{"   ___   ", "  (-.-) ☽", "   |__|  ", "  _/ \\_  "},
+		{"   ___ ☽ ", "  (-.-)  ", "   |__|  ", "  _/ \\_  "},
 	},
 }
+
+// stateLabels maps states to plain descriptive words.
+var stateLabels = map[string]string{
+	"idle":      "idle",
+	"working":   "working",
+	"sleeping":  "sleeping",
+	"rebasing":  "rebasing",
+	"reviewing": "reviewing",
+	"error":     "error",
+	"scheduled": "scheduled",
+}
+
+// ── ProjectGroup ────────────────────────────────────────────────────
+
+type projectGroup struct {
+	name    string
+	workers []agent.WorkerState
+}
+
+// ── TUI Model ───────────────────────────────────────────────────────
 
 // TUIModel is the bubbletea model for the live TUI dashboard.
 type TUIModel struct {
@@ -121,8 +200,8 @@ type TUIModel struct {
 	events       []agent.Event
 	width        int
 	height       int
-	frame        int // animation frame counter
-	logOffset    int // scroll position in activity log
+	frame        int
+	logOffset    int
 	connected    bool
 	eventCh      <-chan agent.Event
 	streamClient *agent.EventClient
@@ -149,7 +228,7 @@ func (m TUIModel) Init() tea.Cmd {
 }
 
 func tickAnimation() tea.Cmd {
-	return tea.Tick(250*time.Millisecond, func(_ time.Time) tea.Msg {
+	return tea.Tick(150*time.Millisecond, func(_ time.Time) tea.Msg {
 		return tickMsg{}
 	})
 }
@@ -190,7 +269,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.frame++
-		m.uptime += 0.25
+		m.uptime += 0.15
 		return m, tickAnimation()
 
 	case disconnectedMsg:
@@ -234,54 +313,229 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 
-		// Auto-scroll to top (newest event first in the sorted view)
 		m.logOffset = 0
-
 		return m, listenForEvents(m.eventCh)
 	}
 
 	return m, nil
 }
 
-// projectGroup holds workers grouped by project (owner/repo).
-type projectGroup struct {
-	project string
-	workers []agent.WorkerState
-}
+// ── Rendering ───────────────────────────────────────────────────────
 
-// parseWorkerProject splits a worker name "owner/repo:role" into project and role.
-func parseWorkerProject(worker string) (project, role string) {
-	if idx := strings.LastIndex(worker, ":"); idx != -1 {
-		return worker[:idx], worker[idx+1:]
+func tuiStateIcon(state string) string {
+	switch state {
+	case "working", "reviewing", "rebasing":
+		return "●"
+	case "error":
+		return "✖"
+	case "scheduled":
+		return "◐"
+	default:
+		return "○"
 	}
-	return worker, ""
 }
 
-// groupWorkersByProject groups workers into project groups, sorted by project name.
-// Workers within each group are sorted by name for stable UI ordering.
-func groupWorkersByProject(workers []agent.WorkerState) []projectGroup {
-	grouped := make(map[string][]agent.WorkerState)
-	var projectOrder []string
+func (m TUIModel) renderBelt(state string, width int) string {
+	if width < 4 {
+		width = 4
+	}
+	dotsLen := width - 2
 
+	var buf strings.Builder
+	for i := 0; i < dotsLen; i++ {
+		switch state {
+		case "working", "reviewing", "rebasing":
+			pos := (i + m.frame) % 5
+			if pos < 3 {
+				buf.WriteRune('●')
+			} else {
+				buf.WriteRune('○')
+			}
+		case "error":
+			if m.frame%6 < 3 {
+				buf.WriteRune('○')
+			} else {
+				buf.WriteRune('●')
+			}
+		default:
+			buf.WriteRune('○')
+		}
+	}
+
+	dots := buf.String() + "━▶"
+	switch state {
+	case "working", "reviewing", "rebasing":
+		return beltActiveStyle.Render(dots)
+	case "error":
+		return beltErrorStyle.Render(dots)
+	default:
+		return beltIdleStyle.Render(dots)
+	}
+}
+
+func (m TUIModel) renderOompaCard(w agent.WorkerState) string {
+	cw := cardInnerWidth
+
+	state := w.State
+	if state == "" {
+		state = "idle"
+	}
+
+	// Sprite
+	frames, ok := tuiSpriteFrames[state]
+	if !ok {
+		frames = tuiSpriteFrames["idle"]
+	}
+	frameIdx := (m.frame / 3) % len(frames)
+	sprite := frames[frameIdx]
+
+	// State label
+	label := stateLabels[state]
+	if label == "" {
+		label = state
+	}
+	var labelLine string
+	switch state {
+	case "working", "reviewing", "rebasing":
+		labelLine = stateWorkingStyle.Render("  ~ " + label + " ~")
+	case "error":
+		labelLine = stateErrorStyle.Render("  ~ " + label + " ~")
+	case "scheduled":
+		labelLine = stateScheduleStyle.Render("  ~ " + label + " ~")
+	default:
+		labelLine = stateIdleStyle.Render("  ~ " + label + " ~")
+	}
+
+	// Belt
+	belt := m.renderBelt(state, cw)
+
+	// Role + PRs
+	// Extract role from worker name (format: "owner/repo:role")
+	role := w.Worker
+	if idx := strings.LastIndex(role, ":"); idx >= 0 {
+		role = role[idx+1:]
+	}
+	roleLine := roleStyle.Render(role)
+	if len(w.PRNumbers) > 0 {
+		nums := make([]string, len(w.PRNumbers))
+		for i, n := range w.PRNumbers {
+			nums[i] = fmt.Sprintf("#%d", n)
+		}
+		roleLine += " " + prStyle.Render(strings.Join(nums, ","))
+	}
+
+	// State + action
+	icon := tuiStateIcon(state)
+	stateText := icon + " " + truncateRunes(w.Action, cw-4)
+	var stateLine string
+	switch state {
+	case "working", "reviewing", "rebasing":
+		stateLine = stateWorkingStyle.Render(stateText)
+	case "error":
+		stateLine = stateErrorStyle.Render(stateText)
+	case "scheduled":
+		stateLine = stateScheduleStyle.Render(stateText)
+	default:
+		stateLine = stateIdleStyle.Render(stateText)
+	}
+
+	content := strings.Join([]string{
+		sprite[0],
+		sprite[1],
+		sprite[2],
+		sprite[3],
+		labelLine,
+		belt,
+		roleLine,
+		stateLine,
+	}, "\n")
+
+	// Pick card border style
+	cardStyle := oompaCardIdle
+	switch state {
+	case "working", "reviewing", "rebasing":
+		cardStyle = oompaCardActive
+	case "error":
+		cardStyle = oompaCardError
+	case "scheduled":
+		cardStyle = oompaCardScheduled
+	}
+
+	return cardStyle.Render(content)
+}
+
+// groupWorkersByProject groups workers by project name, preserving order.
+func groupWorkersByProject(workers []agent.WorkerState) []projectGroup {
+	projectMap := make(map[string][]agent.WorkerState)
+	var projectOrder []string
 	for _, w := range workers {
-		project, _ := parseWorkerProject(w.Worker)
-		if _, exists := grouped[project]; !exists {
+		// Extract project from worker name (format: "owner/repo:role" or "owner/repo")
+		project := w.Worker
+		if idx := strings.LastIndex(project, ":"); idx >= 0 {
+			project = project[:idx]
+		}
+		if _, exists := projectMap[project]; !exists {
 			projectOrder = append(projectOrder, project)
 		}
-		grouped[project] = append(grouped[project], w)
+		projectMap[project] = append(projectMap[project], w)
 	}
-
-	sort.Strings(projectOrder)
-
-	groups := make([]projectGroup, 0, len(projectOrder))
-	for _, p := range projectOrder {
-		ws := grouped[p]
-		sort.Slice(ws, func(i, j int) bool {
-			return ws[i].Worker < ws[j].Worker
-		})
-		groups = append(groups, projectGroup{project: p, workers: ws})
+	var groups []projectGroup
+	for _, name := range projectOrder {
+		groups = append(groups, projectGroup{name: name, workers: projectMap[name]})
 	}
 	return groups
+}
+
+// bestGroupState returns the most important state for super box border coloring.
+func bestGroupState(workers []agent.WorkerState) string {
+	hasActive := false
+	hasError := false
+	for _, w := range workers {
+		switch w.State {
+		case "working", "reviewing", "rebasing":
+			hasActive = true
+		case "error":
+			hasError = true
+		}
+	}
+	if hasError {
+		return "error"
+	}
+	if hasActive {
+		return "active"
+	}
+	return "idle"
+}
+
+func (m TUIModel) renderSuperBox(group projectGroup) string {
+	// Render each oompa card
+	var cards []string
+	for _, w := range group.workers {
+		cards = append(cards, m.renderOompaCard(w))
+	}
+
+	// Join cards horizontally
+	innerContent := lipgloss.JoinHorizontal(lipgloss.Top, cards...)
+
+	// Project name header
+	header := " " + projectNameStyle.Render(group.name)
+
+	// Full content
+	fullContent := header + "\n" + innerContent
+
+	// Pick super box style
+	boxStyle := superBoxIdle
+	switch bestGroupState(group.workers) {
+	case "active":
+		boxStyle = superBoxActive
+	case "error":
+		boxStyle = superBoxError
+	}
+	if len(group.workers) > 1 {
+		boxStyle = superBoxMixed
+	}
+
+	return boxStyle.Render(fullContent)
 }
 
 func (m TUIModel) View() string {
@@ -292,343 +546,109 @@ func (m TUIModel) View() string {
 	var b strings.Builder
 
 	// Header
-	connStatus := "\u25cf Connected"
+	uptime := time.Duration(m.uptime * float64(time.Second))
+	hours := int(uptime.Hours())
+	minutes := int(uptime.Minutes()) % 60
+	connStatus := "● Connected"
 	if !m.connected {
-		connStatus = "\u25cb Disconnected"
+		connStatus = "● Disconnected"
 	}
-	now := time.Now().UTC()
-	header := headerStyle.Width(m.width).Render(
-		fmt.Sprintf("\U0001f3ed OOMPA FACTORY%s%s  %02d:%02d UTC",
-			strings.Repeat(" ", max(m.width-55, 1)),
+	header := tuiHeaderStyle.Width(m.width).Render(
+		fmt.Sprintf("  🏭 OOMPA FACTORY                                       %s  %02d:%02d UTC  uptime %dh%02dm",
 			connStatus,
-			now.Hour(),
-			now.Minute(),
+			time.Now().UTC().Hour(),
+			time.Now().UTC().Minute(),
+			hours, minutes,
 		),
 	)
 	b.WriteString(header + "\n\n")
 
-	// Group workers by project and render conveyor belts
+	// Sort workers alphabetically
+	sort.Slice(m.workers, func(i, j int) bool {
+		return m.workers[i].Worker < m.workers[j].Worker
+	})
+
+	// Group workers by project
 	groups := groupWorkersByProject(m.workers)
 
-	// Tile projects into columns based on terminal width
-	if len(groups) > 0 {
-		b.WriteString(m.renderConveyorBelts(groups))
+	// Render all super boxes
+	type renderedBox struct {
+		content string
+		width   int
+	}
+	var boxes []renderedBox
+	for _, g := range groups {
+		rendered := m.renderSuperBox(g)
+		w := lipgloss.Width(rendered)
+		boxes = append(boxes, renderedBox{content: rendered, width: w})
+	}
+
+	// Adaptive layout: pack super boxes into rows
+	gap := 1
+	var currentRow []string
+	currentWidth := 0
+
+	for _, box := range boxes {
+		needed := box.width
+		if currentWidth > 0 {
+			needed += gap
+		}
+		if currentWidth > 0 && currentWidth+needed > m.width {
+			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, currentRow...) + "\n")
+			currentRow = nil
+			currentWidth = 0
+		}
+		if currentWidth > 0 {
+			currentRow = append(currentRow, strings.Repeat(" ", gap))
+			currentWidth += gap
+		}
+		currentRow = append(currentRow, box.content)
+		currentWidth += box.width
+	}
+	if len(currentRow) > 0 {
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, currentRow...) + "\n")
 	}
 
 	// Activity log
-	availableHeight := max(m.height-lipgloss.Height(b.String())-4, 3)
-	b.WriteString(m.renderActivityLog(availableHeight))
-	b.WriteString(dimStyle.Render("  q: quit  j/k: scroll log"))
+	linesUsed := strings.Count(b.String(), "\n")
+	logHeight := max(m.height-linesUsed-2, 3)
+	b.WriteString(m.renderTUIActivityLog(logHeight))
+	b.WriteString(tuiDimStyle.Render("  q: quit  j/k: scroll log"))
 
 	return b.String()
 }
 
-// beltWidth returns the width of a conveyor belt based on the number of oompas
-// and the project name length, ensuring the title line fits.
-func beltWidth(numOompas int, project string) int {
-	// Width based on oompa count: spriteWidth per oompa + spriteGap between + margins
-	minSingleOompa := 28
-	w := (spriteWidth+spriteGap)*numOompas + 4
-	if numOompas <= 1 {
-		w = minSingleOompa
-	}
-	// Ensure belt is at least as wide as the project title
-	// (title has ═══ padding + ▶ arrow = ~8 extra chars)
-	titleOverhead := 8
-	if titleLen := len(project) + titleOverhead; titleLen > w {
-		return titleLen
-	}
-	return w
-}
-
-// renderConveyorBelts renders all project groups as conveyor belts tiled into columns.
-func (m TUIModel) renderConveyorBelts(groups []projectGroup) string {
-	var rows []string
-	usedWidth := 0
-	var currentRow []string
-	const interBeltGap = 4 // gap between adjacent belts in a row
-
-	for _, g := range groups {
-		bw := beltWidth(len(g.workers), g.project)
-		neededWidth := bw
-		if usedWidth > 0 {
-			neededWidth += interBeltGap // only add gap after the first belt
-		}
-		if usedWidth > 0 && usedWidth+neededWidth > m.width {
-			// Wrap to next row
-			rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, currentRow...))
-			currentRow = nil
-			usedWidth = 0
-		}
-
-		belt := m.renderConveyorBelt(g, bw)
-		// Pad belt to its full width so JoinHorizontal aligns columns correctly
-		belt = lipgloss.NewStyle().Width(bw + interBeltGap).Render(belt)
-		currentRow = append(currentRow, belt)
-		usedWidth += bw + interBeltGap
-	}
-	if len(currentRow) > 0 {
-		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, currentRow...))
-	}
-
-	return strings.Join(rows, "\n") + "\n"
-}
-
-// renderConveyorBelt renders a single project as a conveyor belt with oompas on top.
-func (m TUIModel) renderConveyorBelt(g projectGroup, width int) string {
-	var lines []string
-
-	// Belt title line: ═══ project-name ═══▶
-	// Total visible width = leftEquals + titleText + rightEquals + 1 (arrow) = width
-	titleText := " " + g.project + " "
-	remainingWidth := max(width-len(titleText)-1, 4) // -1 for the trailing ▶ arrow
-	leftEquals := remainingWidth / 2
-	rightEquals := remainingWidth - leftEquals
-	beltTitle := conveyorTitleStyle.Render(
-		strings.Repeat("\u2550", leftEquals) + titleText + strings.Repeat("\u2550", rightEquals) + "\u25b6",
-	)
-	lines = append(lines, beltTitle)
-
-	// Render oompa sprites side-by-side
-	for row := range spriteHeight {
-		var rowStr strings.Builder
-		for _, w := range g.workers {
-			state := w.State
-			if state == "" {
-				state = "idle"
-			}
-			frames, ok := spriteFrames[state]
-			if !ok {
-				frames = spriteFrames["idle"]
-			}
-			frameIdx := (m.frame / 2) % len(frames)
-			frame := frames[frameIdx]
-			if row < len(frame) {
-				rowStr.WriteString(frame[row])
-			} else {
-				rowStr.WriteString(strings.Repeat(" ", spriteWidth))
-			}
-			rowStr.WriteString(strings.Repeat(" ", spriteGap))
-		}
-		lines = append(lines, rowStr.String())
-	}
-
-	// Conveyor belt surface: ●●●● dots
-	beltActive := false
-	for _, w := range g.workers {
-		s := w.State
-		if s == "working" || s == "reviewing" || s == "rebasing" {
-			beltActive = true
-			break
-		}
-	}
-	beltDots := m.renderBeltDots(width, beltActive)
-	lines = append(lines, beltStyle.Render(beltDots))
-
-	// Role labels and status line
-	var roleLabels []string
-	var statusParts []string
-	for _, w := range g.workers {
-		_, role := parseWorkerProject(w.Worker)
-		if role == "" {
-			role = "worker"
-		}
-
-		// Build role label with PR numbers
-		label := role
-		if len(w.PRNumbers) > 0 {
-			nums := make([]string, len(w.PRNumbers))
-			for i, n := range w.PRNumbers {
-				nums[i] = fmt.Sprintf("#%d", n)
-			}
-			label += " [" + strings.Join(nums, ",") + "]"
-		}
-		roleLabels = append(roleLabels, label)
-
-		// Status indicator
-		state := w.State
-		if state == "" {
-			state = "idle"
-		}
-		icon := stateIcon(state)
-		action := truncateRunes(w.Action, 20)
-		statusLine := icon + " " + action
-		switch state {
-		case "working", "reviewing", "rebasing":
-			statusParts = append(statusParts, statusWorking.Render(statusLine))
-		case "error", "stuck":
-			statusParts = append(statusParts, statusError.Render(statusLine))
-		default:
-			statusParts = append(statusParts, statusIdle.Render(statusLine))
-		}
-	}
-	lines = append(lines, "  "+strings.Join(roleLabels, "    "))
-	lines = append(lines, "  "+strings.Join(statusParts, "  "))
-	lines = append(lines, "") // blank separator
-
-	return strings.Join(lines, "\n")
-}
-
-// renderBeltDots renders the conveyor belt surface with optional animation.
-func (m TUIModel) renderBeltDots(width int, active bool) string {
-	dotCount := max(width-2, 10)
-	if !active {
-		return "  " + strings.Repeat("\u25cf", dotCount)
-	}
-	// Animated: shift dots right
-	offset := m.frame % 3
-	var dots strings.Builder
-	dots.WriteString("  ")
-	for i := range dotCount {
-		if (i+offset)%3 == 0 {
-			dots.WriteString("\u25cb") // hollow dot for animation
-		} else {
-			dots.WriteString("\u25cf") // filled dot
-		}
-	}
-	return dots.String()
-}
-
-// shortWorkerName returns a compact worker name for the activity log.
-// "nmstate/kubernetes-nmstate:prs" -> "kubernetes-nmstate:prs"
-// "qinqon/oompa:issues" -> "oompa:issues"
-func shortWorkerName(worker string) string {
-	project, role := parseWorkerProject(worker)
-	// Use just the repo part (strip owner prefix)
-	if idx := strings.Index(project, "/"); idx != -1 {
-		project = project[idx+1:]
-	}
-	if role != "" {
-		return project + ":" + role
-	}
-	return project
-}
-
-func (m TUIModel) renderWorkerCard(w agent.WorkerState) string {
-	state := w.State
-	if state == "" {
-		state = "idle"
-	}
-
-	// Get sprite for this state
-	spriteKey := state
-	frames, ok := spriteFrames[spriteKey]
-	if !ok {
-		frames = spriteFrames["idle"]
-	}
-
-	frameIdx := (m.frame / 2) % len(frames) // change every 500ms
-	sprite := frames[frameIdx]
-
-	// Build card content
-	var lines []string
-
-	// Worker name with PR info
-	name := w.Worker
-	if len(w.PRNumbers) > 0 {
-		nums := make([]string, len(w.PRNumbers))
-		for i, n := range w.PRNumbers {
-			nums[i] = fmt.Sprintf("%d", n)
-		}
-		name += " [" + strings.Join(nums, ",") + "]"
-	}
-	lines = append(lines, titleStyle.Render(truncateRunes(name, 26)))
-
-	// Sprite
-	lines = append(lines, sprite...)
-
-	// State
-	stateStr := stateIcon(state) + " " + state
-	switch state {
-	case "working", "reviewing", "rebasing":
-		lines = append(lines, statusWorking.Render(stateStr))
-	case "error", "stuck":
-		lines = append(lines, statusError.Render(stateStr))
-	default:
-		lines = append(lines, statusIdle.Render(stateStr))
-	}
-
-	// Action
-	action := w.Action
-	if action != "" {
-		lines = append(lines, truncateRunes(action, 26))
-	}
-	// Detail
-	detail := w.Detail
-	if detail != "" {
-		lines = append(lines, dimStyle.Render(truncateRunes(detail, 26)))
-	}
-
-	return strings.Join(lines, "\n")
-}
-
-// Layout thresholds for the activity log.
-const (
-	twoColumnMinWidth = 100 // minimum terminal width for 2-column activity log
-	logWorkerWidth    = 16  // fixed column width for worker names in the log
-)
-
-func (m TUIModel) renderActivityLog(height int) string {
+func (m TUIModel) renderTUIActivityLog(height int) string {
 	title := fmt.Sprintf(" Activity Log (%d events)", len(m.events))
 
-	// Sort events newest first for display
 	sortedEvents := make([]agent.Event, len(m.events))
 	copy(sortedEvents, m.events)
 	sort.Slice(sortedEvents, func(i, j int) bool {
 		return sortedEvents[i].Timestamp.After(sortedEvents[j].Timestamp)
 	})
 
-	// Apply scroll offset
 	startIdx := m.logOffset
 	if startIdx >= len(sortedEvents) {
 		startIdx = 0
 	}
-	endIdx := min(
-		// -2 for title and border
-		startIdx+height-2, len(sortedEvents))
-
-	visibleEvents := sortedEvents[startIdx:endIdx]
+	endIdx := min(startIdx+height-2, len(sortedEvents))
 
 	var lines []string
-	lines = append(lines, titleStyle.Render(title))
-
-	if m.width < twoColumnMinWidth {
-		// Single-column layout for narrow terminals
-		for _, e := range visibleEvents {
-			lines = append(lines, formatLogEntry(e, m.width-4))
+	lines = append(lines, tuiTitleStyle.Render(title))
+	for _, e := range sortedEvents[startIdx:endIdx] {
+		ts := e.Timestamp.Local().Format("15:04:05")
+		action := e.Action
+		if e.Detail != "" {
+			action += " - " + e.Detail
 		}
-	} else {
-		// Two-column layout: split available events into two columns.
-		// Use lipgloss.Width for column padding because log entries contain
-		// ANSI escape sequences that break fmt.Sprintf byte-based %-*s padding.
-		halfWidth := (m.width - 8) / 2
-		colStyle := lipgloss.NewStyle().Width(halfWidth)
-		for i := 0; i < len(visibleEvents); i += 2 {
-			left := colStyle.Render(formatLogEntry(visibleEvents[i], halfWidth))
-			right := ""
-			if i+1 < len(visibleEvents) {
-				right = formatLogEntry(visibleEvents[i+1], halfWidth)
-			}
-			lines = append(lines, " "+left+"  "+right)
-		}
+		maxActionLen := max(m.width-35, 20)
+		action = truncateRunes(action, maxActionLen)
+		line := fmt.Sprintf(" %s  %-18s %s", tuiDimStyle.Render(ts), e.Worker, action)
+		lines = append(lines, line)
 	}
 
 	content := strings.Join(lines, "\n")
-	return logStyle.Width(m.width-2).Render(content) + "\n"
-}
-
-// formatLogEntry formats a single log entry for the activity log.
-func formatLogEntry(e agent.Event, maxWidth int) string {
-	ts := e.Timestamp.Local().Format("15:04")
-	worker := truncateRunes(shortWorkerName(e.Worker), logWorkerWidth)
-	action := e.Action
-	if e.Detail != "" {
-		action += " - " + e.Detail
-	}
-	// 5 for "HH:MM" + 2 spaces + 1 gap between worker and action = 8
-	maxActionLen := max(maxWidth-8-logWorkerWidth, 10)
-	action = truncateRunes(action, maxActionLen)
-	return fmt.Sprintf("%s  %-*s %s", dimStyle.Render(ts), logWorkerWidth, worker, action)
+	return tuiLogStyle.Width(m.width - 2).Render(content) + "\n"
 }
 
 // truncateRunes truncates a string to maxLen runes, appending "..." if truncated.
