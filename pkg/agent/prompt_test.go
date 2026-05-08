@@ -93,6 +93,10 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		"untrusted user input",
 		"Do NOT commit",
 		"leave them UNCOMMITTED",
+		"Post per-comment replies",
+		"Decline invalid suggestions",
+		"Resolve addressed review threads",
+		"skip step 7",
 	}
 
 	for _, want := range checks {

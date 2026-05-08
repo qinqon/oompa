@@ -18,17 +18,18 @@ Tells Claude to:
 - This is a READ-ONLY step: do NOT modify any files, commit, or push
 - Output format: `TRIAGE:` header followed by one line per comment
 
-## `buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, reviews []PRReview, owner, repo, triageSummary string) string`
+## `buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, reviews []PRReview, owner, repo string) string`
 
 Tells Claude to:
-- Use the provided triage summary to guide which comments to implement vs decline
-- For accepted comments: implement the suggested change
-- For declined comments: reply with explanation but do NOT implement
-- Always reply to every comment, even when implementing the suggestion
-- Reply using `gh api` to post comment replies
+- Use `/ce-resolve-pr-feedback` to evaluate and address all review feedback
+- The skill evaluates each comment independently and:
+  - Fixes valid issues (leaves changes uncommitted)
+  - Declines invalid suggestions with specific rationale
+  - Posts per-comment replies quoting the original feedback
+  - Resolves addressed review threads via GraphQL
 - Run lint/test
-- No force-push
-- Do NOT commit, push, or amend — the agent handles that automatically
+- Do NOT commit, push, or amend — the outer agent handles git operations
+- Skip step 7 (commit/push) from the skill workflow
 
 ## `buildCIFixPrompt(work IssueWork, failures []CheckRun, diff string, commits []Commit, signedOffBy string) string`
 
@@ -63,5 +64,4 @@ Tells Claude to:
 ## Tests (`prompt_test.go`)
 
 - `TestBuildImplementationPrompt` -- verifies issue number, title, body are interpolated; verifies push/PR instructions are absent
-- `TestBuildReviewResponsePrompt` -- verifies each comment's file/line/body is included; verifies triage summary is included when provided
-- `TestBuildReviewTriagePrompt` -- verifies comment details are included; verifies READ-ONLY instructions; verifies TRIAGE output format instructions
+- `TestBuildReviewResponsePrompt` -- verifies each comment's file/line/body is included; verifies per-comment reply instructions, decline-with-rationale, thread resolution, and skip-step-7 constraints

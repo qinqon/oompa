@@ -36,11 +36,15 @@ When `--watch-prs` is set, `BootstrapWatchedPRs` runs instead of `ProcessNewIssu
 ### ProcessReviewComments behavior
 - Filters comments through the reviewers whitelist
 - Adds :eyes: reaction to each comment before invoking Claude
-- Two-step flow:
-  1. **Triage step**: invokes agent with `buildReviewTriagePrompt` (read-only, no code changes). Agent produces a structured triage summary classifying each comment as ACCEPT or DECLINE
-  2. **Implementation step**: invokes agent with `buildReviewResponsePrompt` (includes triage summary). Agent implements accepted changes and replies to all comments
-- Triage summary is logged at Info level for observability
-- Always replies to every comment
+- Invokes agent with `buildReviewResponsePrompt`. The agent uses `/ce-resolve-pr-feedback` to:
+  - Evaluate each comment independently (accept/decline with rationale)
+  - Fix valid issues (changes left uncommitted for oompa to handle)
+  - Post per-comment replies via GraphQL
+  - Resolve addressed review threads
+- Oompa does NOT post its own replies — the skill handles all per-comment communication
+- Cursor advances to the max ID of ALL fetched comments/reviews (including filtered ones) to avoid re-fetching bot-posted or already-replied comments
+- When changes were detected but push failed, cursor does NOT advance so comments are retried on the next poll cycle
+- When no actionable comments remain after filtering, cursor still advances past filtered items
 
 ## Tests (`loop_test.go`)
 
@@ -50,9 +54,7 @@ All interfaces mocked:
 - `TestProcessNewIssues_HappyPath` -- creates worktree, runs claude, agent pushes and creates PR, updates state
 - `TestProcessNewIssues_ClaudeFailure` -- adds `ai-failed` label, comments on issue
 - `TestProcessReviewComments_NoNewComments` -- no action taken
-- `TestProcessReviewComments_AddressesHumanComments` -- runs two agent calls (triage + implement), updates lastCommentID
-- `TestProcessReviewComments_TriageSummaryLogged` -- verifies triage summary is logged
-- `TestProcessReviewComments_TriageFailureFallsBack` -- if triage agent call fails, falls back to implementation without triage
+- `TestProcessReviewComments_AddressesHumanComments` -- runs agent call, updates lastCommentID, verifies no hardcoded replies
 - `TestProcessNewIssues_RechecksForPR` -- re-checks for PR when prNumber is 0
 - `TestProcessReviewComments_SkipsNonWhitelistedUsers` -- skips comments from users not in whitelist
 - `TestProcessReviewComments_AllowsAllWhenWhitelistEmpty` -- allows all when whitelist is empty
