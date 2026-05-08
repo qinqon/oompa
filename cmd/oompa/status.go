@@ -52,8 +52,8 @@ func printStatus(snap agent.StatusSnapshot, since time.Duration) {
 	})
 
 	// Table header
-	fmt.Printf("%-35s %-14s %-30s %s\n", "WORKER", "STATE", "CURRENT ACTION", "LAST EVENT")
-	fmt.Println(strings.Repeat("\u2500", 100))
+	fmt.Printf("%-40s %-14s %-30s %s\n", "WORKER", "STATE", "CURRENT ACTION", "LAST EVENT")
+	fmt.Println(strings.Repeat("\u2500", 105))
 
 	for _, w := range snap.Workers {
 		icon := stateIcon(w.State)
@@ -67,11 +67,8 @@ func printStatus(snap agent.StatusSnapshot, since time.Duration) {
 			prInfo = " [" + strings.Join(nums, ",") + "]"
 		}
 		workerCol := w.Worker + prInfo
-		action := w.Action
-		if len(action) > 30 {
-			action = action[:27] + "..."
-		}
-		fmt.Printf("%-35s %s %-12s %-30s %s\n", workerCol, icon, w.State, action, ago)
+		action := truncateRunes(w.Action, 30)
+		fmt.Printf("%-40s %s %-12s %-30s %s\n", workerCol, icon, w.State, action, ago)
 	}
 
 	// Recent activity

@@ -341,6 +341,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 		// PRs role entries
 		for _, pr := range p.PRs {
 			cfg := baseCfg
+			cfg.Role = "prs"
 			cfg.WatchPRs = pr.Watch
 			cfg.Reactions = stringsOr(pr.Reactions, projReactions)
 			cfg.SkipComments = stringsOr(pr.SkipComment, projSkipComment)
@@ -355,6 +356,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 		// Issues role entries
 		for _, issue := range p.Issues {
 			cfg := baseCfg
+			cfg.Role = "issues"
 			cfg.Label = stringOr(issue.Label, projLabel)
 			cfg.OnlyAssigned = boolOr(issue.OnlyAssigned, projOnlyAssigned)
 			cfg.SkipFix = boolOr(issue.SkipFix, projSkipFix)
@@ -376,6 +378,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 		// Triage role entries
 		for _, triage := range p.Triage {
 			cfg := baseCfg
+			cfg.Role = "triage"
 			cfg.TriageJobs = triage.Jobs
 			cfg.CreateFlakyIssues = boolOr(triage.CreateFlakyIssues, projCreateFlaky)
 			cfg.FlakyLabel = stringOr(triage.FlakyLabel, projFlakyLabel)

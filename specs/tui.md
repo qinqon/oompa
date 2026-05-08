@@ -71,10 +71,15 @@ RECENT ACTIVITY (last Xh, N events)
 
 ### Layout
 
+Factory floor theme where each project is a conveyor belt line with oompas standing on it:
+
 - Header: "OOMPA FACTORY" with connection status and time
-- Grid: worker cards arranged in rows of 3 (responsive)
-- Each card: ASCII oompa-loompa sprite + state + action description
-- Footer: scrollable activity log with keyboard navigation
+- Conveyor belts: workers grouped by project (owner/repo), each project rendered as a belt (`═══ project-name ═══▶`) with oompa sprites standing on `●●●` dot surfaces
+- Multi-role projects: oompas stand side-by-side on the same belt (e.g., a project with prs, issues, triage roles has 3 oompas on one belt)
+- Column tiling: belts tile left-to-right, wrapping to next row when terminal width runs out
+- Belt sizing: single-oompa belts are ~28 chars wide, multi-oompa belts expand proportionally
+- Belt animation: active oompas have scrolling dots, idle/sleeping oompas have static dots
+- Footer: compact 2-column activity log using short worker names (e.g., `oompa:issues`)
 
 ### Oompa-Loompa Sprites
 
@@ -100,6 +105,17 @@ Sprites animate at ~4 FPS (250ms tick). Animations:
 - `q` / `Ctrl+C` -- quit
 - `↑` / `↓` -- scroll activity log
 - `Tab` -- cycle focus between cards and log
+
+### Worker Name Format
+
+Worker names use the format `"owner/repo:role"` where role is `prs`, `issues`, or `triage`.
+Workers without a role (backward compat) use `"owner/repo"`.
+
+Workers are grouped by project (`owner/repo`) for belt rendering:
+```
+worker "nmstate/kubernetes-nmstate:prs"    -> project "nmstate/kubernetes-nmstate", role "prs"
+worker "nmstate/kubernetes-nmstate:issues" -> project "nmstate/kubernetes-nmstate", role "issues"
+```
 
 ### Bubbletea Model
 
@@ -154,3 +170,9 @@ type EventClient struct {
 - `TestTUIModel_WorkerCards` -- worker cards render correctly
 - `TestTUIModel_ScrollLog` -- log scrolling works
 - `TestSpriteAnimation` -- sprite frames cycle correctly
+- `TestParseWorkerProject` -- parses "owner/repo:role" into project and role
+- `TestGroupWorkersByProject` -- groups workers by project correctly
+- `TestConveyorBeltRendering` -- single-oompa and multi-oompa belts render correctly
+- `TestBeltWidthAdapts` -- belt width scales with number of oompas
+- `TestColumnTilingAdaptsToWidth` -- belts wrap to next row based on terminal width
+- `TestShortWorkerName` -- compact names for activity log
