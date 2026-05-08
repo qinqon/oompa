@@ -32,6 +32,7 @@ type ProjectConfig struct {
 	CreateFlakyIssues *bool    `yaml:"create-flaky-issues"`
 	FlakyLabel        string   `yaml:"flaky-label"`
 	SkipComment       []string `yaml:"skip-comment"`
+	SkipChecks        []string `yaml:"skip-checks"`
 	SkipFix           *bool    `yaml:"skip-fix"`
 	Reactions         []string `yaml:"reactions"`
 	Label             string   `yaml:"label"`
@@ -49,6 +50,7 @@ type PRsRoleConfig struct {
 	Watch             []int    `yaml:"watch"`
 	Reactions         []string `yaml:"reactions"`
 	SkipComment       []string `yaml:"skip-comment"`
+	SkipChecks        []string `yaml:"skip-checks"`
 	SkipFix           *bool    `yaml:"skip-fix"`
 	CreateFlakyIssues *bool    `yaml:"create-flaky-issues"`
 	FlakyLabel        string   `yaml:"flaky-label"`
@@ -61,6 +63,7 @@ type IssuesRoleConfig struct {
 	OnlyAssigned      *bool    `yaml:"only-assigned"`
 	SkipFix           *bool    `yaml:"skip-fix"`
 	SkipComment       []string `yaml:"skip-comment"`
+	SkipChecks        []string `yaml:"skip-checks"`
 	Fork              string   `yaml:"fork"`
 	CreateFlakyIssues *bool    `yaml:"create-flaky-issues"`
 	FlakyLabel        string   `yaml:"flaky-label"`
@@ -75,6 +78,7 @@ type TriageRoleConfig struct {
 	CreateFlakyIssues *bool    `yaml:"create-flaky-issues"`
 	FlakyLabel        string   `yaml:"flaky-label"`
 	SkipComment       []string `yaml:"skip-comment"`
+	SkipChecks        []string `yaml:"skip-checks"`
 	SkipFix           *bool    `yaml:"skip-fix"`
 	Reviewers         []string `yaml:"reviewers"` // overrides project-level reviewers
 }
@@ -294,6 +298,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 		projCreateFlaky := boolOr(p.CreateFlakyIssues, false)
 		projFlakyLabel := stringOr(p.FlakyLabel, "flaky-test")
 		projSkipComment := p.SkipComment
+		projSkipChecks := p.SkipChecks
 		projSkipFix := boolOr(p.SkipFix, false)
 		projReactions := p.Reactions
 		projLabel := stringOr(p.Label, "good-for-ai")
@@ -339,6 +344,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			cfg.WatchPRs = pr.Watch
 			cfg.Reactions = stringsOr(pr.Reactions, projReactions)
 			cfg.SkipComments = stringsOr(pr.SkipComment, projSkipComment)
+			cfg.SkipChecks = stringsOr(pr.SkipChecks, projSkipChecks)
 			cfg.SkipFix = boolOr(pr.SkipFix, projSkipFix)
 			cfg.CreateFlakyIssues = boolOr(pr.CreateFlakyIssues, projCreateFlaky)
 			cfg.FlakyLabel = stringOr(pr.FlakyLabel, projFlakyLabel)
@@ -353,6 +359,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			cfg.OnlyAssigned = boolOr(issue.OnlyAssigned, projOnlyAssigned)
 			cfg.SkipFix = boolOr(issue.SkipFix, projSkipFix)
 			cfg.SkipComments = stringsOr(issue.SkipComment, projSkipComment)
+			cfg.SkipChecks = stringsOr(issue.SkipChecks, projSkipChecks)
 			cfg.CreateFlakyIssues = boolOr(issue.CreateFlakyIssues, projCreateFlaky)
 			cfg.FlakyLabel = stringOr(issue.FlakyLabel, projFlakyLabel)
 			cfg.Reviewers = stringsOr(issue.Reviewers, projReviewers)
@@ -373,6 +380,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			cfg.CreateFlakyIssues = boolOr(triage.CreateFlakyIssues, projCreateFlaky)
 			cfg.FlakyLabel = stringOr(triage.FlakyLabel, projFlakyLabel)
 			cfg.SkipComments = stringsOr(triage.SkipComment, projSkipComment)
+			cfg.SkipChecks = stringsOr(triage.SkipChecks, projSkipChecks)
 			cfg.SkipFix = boolOr(triage.SkipFix, projSkipFix)
 			cfg.TriageLookback = globalCfg.TriageLookback
 			if triage.Lookback != "" {

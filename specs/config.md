@@ -20,6 +20,7 @@ type Config struct {
     Reactions         []string // which reactions to run: "reviews", "ci", "conflicts" (empty = all)
     CreateFlakyIssues bool     // when true, create issues for unrelated CI failures (opt-in)
     SkipComments      []string // comment categories to suppress (empty = none suppressed)
+    SkipChecks        []string // CI check names to ignore entirely (filtered before investigation)
 }
 ```
 
@@ -41,6 +42,7 @@ type Config struct {
 | `OOMPA_WATCH_PRS` | `--watch-prs` | (empty) | Comma-separated PR numbers to monitor directly (bypasses issue discovery) |
 | `OOMPA_REACTIONS` | `--reactions` | (empty = all) | Comma-separated list of reactions to run: `reviews`, `ci`, `conflicts` |
 | `OOMPA_SKIP_COMMENTS` | `--skip-comment` | (empty) | Comma-separated list of comment categories to suppress: `ci-unrelated`, `ci-infrastructure`, `ci-related`, `conflict`, `rebase`, `flaky`, `issue-in-progress` |
+| `OOMPA_SKIP_CHECKS` | `--skip-checks` | (empty) | Comma-separated list of CI check names to ignore entirely |
 | `OOMPA_CREATE_FLAKY_ISSUES` | `--create-flaky-issues` | `false` | When true, create issues for unrelated CI failures (opt-in) |
 
 Config from env vars (`OOMPA_*`) with flag overrides, read in `main()`.

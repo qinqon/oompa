@@ -868,6 +868,142 @@ func TestBuildRoleEntries_TriageLookback(t *testing.T) {
 	}
 }
 
+func TestBuildRoleEntries_SkipChecksTwoTierInheritance(t *testing.T) {
+	fc := &FileConfig{
+		Projects: []ProjectConfig{
+			{
+				Repo:       "owner/repo",
+				SkipChecks: []string{"can-be-merged"},
+				PRs: []PRsRoleConfig{
+					{
+						Watch: []int{100},
+						// Inherits project-level skip-checks
+					},
+					{
+						Watch:      []int{200},
+						SkipChecks: []string{"can-be-merged", "verified"}, // Override
+					},
+				},
+			},
+		},
+	}
+
+	entries := BuildRoleEntries(fc, "/tmp/work", Config{Agent: "claudecode"})
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	// First entry inherits project-level skip-checks
+	e1 := entries[0]
+	if len(e1.Config.SkipChecks) != 1 || e1.Config.SkipChecks[0] != "can-be-merged" {
+		t.Errorf("expected inherited skip-checks [can-be-merged], got %v", e1.Config.SkipChecks)
+	}
+
+	// Second entry overrides with role-level skip-checks
+	e2 := entries[1]
+	if len(e2.Config.SkipChecks) != 2 || e2.Config.SkipChecks[0] != "can-be-merged" || e2.Config.SkipChecks[1] != "verified" {
+		t.Errorf("expected overridden skip-checks [can-be-merged verified], got %v", e2.Config.SkipChecks)
+	}
+}
+
+func TestBuildRoleEntries_SkipChecksIssuesAndTriageInheritance(t *testing.T) {
+	fc := &FileConfig{
+		Projects: []ProjectConfig{
+			{
+				Repo:       "owner/repo",
+				SkipChecks: []string{"can-be-merged"},
+				Issues: []IssuesRoleConfig{
+					{
+						Label: "ai",
+						// Inherits project-level skip-checks
+					},
+					{
+						Label:      "special",
+						SkipChecks: []string{"can-be-merged", "verified"}, // Override
+					},
+				},
+				Triage: []TriageRoleConfig{
+					{
+						Jobs: []string{"https://ci.example.com/job1"},
+						// Inherits project-level skip-checks
+					},
+					{
+						Jobs:       []string{"https://ci.example.com/job2"},
+						SkipChecks: []string{"e2e-check"}, // Override
+					},
+				},
+			},
+		},
+	}
+
+	entries := BuildRoleEntries(fc, "/tmp/work", Config{Agent: "claudecode"})
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(entries))
+	}
+
+	// Issues[0]: inherits project-level skip-checks
+	if len(entries[0].Config.SkipChecks) != 1 || entries[0].Config.SkipChecks[0] != "can-be-merged" {
+		t.Errorf("Issues[0]: expected inherited skip-checks [can-be-merged], got %v", entries[0].Config.SkipChecks)
+	}
+
+	// Issues[1]: overrides with role-level skip-checks
+	if len(entries[1].Config.SkipChecks) != 2 || entries[1].Config.SkipChecks[0] != "can-be-merged" || entries[1].Config.SkipChecks[1] != "verified" {
+		t.Errorf("Issues[1]: expected overridden skip-checks [can-be-merged verified], got %v", entries[1].Config.SkipChecks)
+	}
+
+	// Triage[0]: inherits project-level skip-checks
+	if len(entries[2].Config.SkipChecks) != 1 || entries[2].Config.SkipChecks[0] != "can-be-merged" {
+		t.Errorf("Triage[0]: expected inherited skip-checks [can-be-merged], got %v", entries[2].Config.SkipChecks)
+	}
+
+	// Triage[1]: overrides with role-level skip-checks
+	if len(entries[3].Config.SkipChecks) != 1 || entries[3].Config.SkipChecks[0] != "e2e-check" {
+		t.Errorf("Triage[1]: expected overridden skip-checks [e2e-check], got %v", entries[3].Config.SkipChecks)
+	}
+}
+
+func TestLoadFileConfig_SkipChecksAccepted(t *testing.T) {
+	yaml := `
+projects:
+  - repo: owner/repo
+    skip-checks:
+      - can-be-merged
+    prs:
+      - watch: [1]
+        skip-checks:
+          - verified
+    issues:
+      - label: ai
+        skip-checks:
+          - e2e-check
+    triage:
+      - jobs: [https://ci.example.com/job]
+        skip-checks:
+          - lint-check
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
+
+	cfg, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.Projects[0].SkipChecks) != 1 || cfg.Projects[0].SkipChecks[0] != "can-be-merged" {
+		t.Errorf("expected project skip-checks [can-be-merged], got %v", cfg.Projects[0].SkipChecks)
+	}
+	if len(cfg.Projects[0].PRs[0].SkipChecks) != 1 || cfg.Projects[0].PRs[0].SkipChecks[0] != "verified" {
+		t.Errorf("expected PR skip-checks [verified], got %v", cfg.Projects[0].PRs[0].SkipChecks)
+	}
+	if len(cfg.Projects[0].Issues[0].SkipChecks) != 1 || cfg.Projects[0].Issues[0].SkipChecks[0] != "e2e-check" {
+		t.Errorf("expected Issues skip-checks [e2e-check], got %v", cfg.Projects[0].Issues[0].SkipChecks)
+	}
+	if len(cfg.Projects[0].Triage[0].SkipChecks) != 1 || cfg.Projects[0].Triage[0].SkipChecks[0] != "lint-check" {
+		t.Errorf("expected Triage skip-checks [lint-check], got %v", cfg.Projects[0].Triage[0].SkipChecks)
+	}
+}
+
 func TestLoadFileConfig_UnknownKeysRejected(t *testing.T) {
 	yaml := `
 agent: opencode
