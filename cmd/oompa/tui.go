@@ -213,8 +213,13 @@ type tickMsg struct{}
 type disconnectedMsg struct{}
 
 func newTUIModel(snap agent.StatusSnapshot, eventCh <-chan agent.Event, streamClient *agent.EventClient) TUIModel {
+	// Sort workers once at construction
+	workers := snap.Workers
+	sort.Slice(workers, func(i, j int) bool {
+		return workers[i].Worker < workers[j].Worker
+	})
 	return TUIModel{
-		workers:      snap.Workers,
+		workers:      workers,
 		events:       snap.Events,
 		connected:    true,
 		eventCh:      eventCh,
@@ -311,6 +316,10 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				PRNumbers: event.PRNumbers,
 				LastEvent: event.Timestamp,
 			})
+			// Re-sort after adding a new worker
+			sort.Slice(m.workers, func(i, j int) bool {
+				return m.workers[i].Worker < m.workers[j].Worker
+			})
 		}
 
 		m.logOffset = 0
@@ -342,22 +351,33 @@ func (m TUIModel) renderBelt(state string, width int) string {
 	dotsLen := width - 2
 
 	var buf strings.Builder
-	for i := 0; i < dotsLen; i++ {
-		switch state {
-		case "working", "reviewing", "rebasing":
-			pos := (i + m.frame) % 5
-			if pos < 3 {
+	const (
+		beltWaveLen   = 5 // wave pattern length for active belts
+		beltWaveFill  = 3 // filled dots per wave cycle
+		beltBlinkLen  = 6 // blink cycle length for error belts
+		beltBlinkFill = 3 // frames with empty dots per blink cycle
+	)
+
+	switch state {
+	case "working", "reviewing", "rebasing":
+		for i := 0; i < dotsLen; i++ {
+			pos := (i + m.frame) % beltWaveLen
+			if pos < beltWaveFill {
 				buf.WriteRune('●')
 			} else {
 				buf.WriteRune('○')
 			}
-		case "error":
-			if m.frame%6 < 3 {
-				buf.WriteRune('○')
-			} else {
-				buf.WriteRune('●')
-			}
-		default:
+		}
+	case "error":
+		dot := '●'
+		if m.frame%beltBlinkLen < beltBlinkFill {
+			dot = '○'
+		}
+		for i := 0; i < dotsLen; i++ {
+			buf.WriteRune(dot)
+		}
+	default:
+		for i := 0; i < dotsLen; i++ {
 			buf.WriteRune('○')
 		}
 	}
@@ -487,15 +507,35 @@ func groupWorkersByProject(workers []agent.WorkerState) []projectGroup {
 }
 
 // bestGroupState returns the most important state for super box border coloring.
+// Returns "mixed" only when workers have heterogeneous state categories.
 func bestGroupState(workers []agent.WorkerState) string {
 	hasActive := false
 	hasError := false
+	hasIdle := false
 	for _, w := range workers {
 		switch w.State {
 		case "working", "reviewing", "rebasing":
 			hasActive = true
 		case "error":
 			hasError = true
+		default:
+			hasIdle = true
+		}
+	}
+	// Mixed: multiple different state categories present in multi-worker groups
+	if len(workers) > 1 {
+		categories := 0
+		if hasActive {
+			categories++
+		}
+		if hasError {
+			categories++
+		}
+		if hasIdle {
+			categories++
+		}
+		if categories > 1 {
+			return "mixed"
 		}
 	}
 	if hasError {
@@ -523,15 +563,14 @@ func (m TUIModel) renderSuperBox(group projectGroup) string {
 	// Full content
 	fullContent := header + "\n" + innerContent
 
-	// Pick super box style
+	// Pick super box style based on group state
 	boxStyle := superBoxIdle
 	switch bestGroupState(group.workers) {
 	case "active":
 		boxStyle = superBoxActive
 	case "error":
 		boxStyle = superBoxError
-	}
-	if len(group.workers) > 1 {
+	case "mixed":
 		boxStyle = superBoxMixed
 	}
 
@@ -563,12 +602,7 @@ func (m TUIModel) View() string {
 	)
 	b.WriteString(header + "\n\n")
 
-	// Sort workers alphabetically
-	sort.Slice(m.workers, func(i, j int) bool {
-		return m.workers[i].Worker < m.workers[j].Worker
-	})
-
-	// Group workers by project
+	// Group workers by project (workers are kept sorted in Update)
 	groups := groupWorkersByProject(m.workers)
 
 	// Render all super boxes
@@ -583,15 +617,15 @@ func (m TUIModel) View() string {
 		boxes = append(boxes, renderedBox{content: rendered, width: w})
 	}
 
-	// Adaptive layout: pack super boxes into rows
-	gap := 1
+	// Adaptive layout: pack super boxes into rows using lipgloss spacing
+	const boxGap = 1
 	var currentRow []string
 	currentWidth := 0
 
 	for _, box := range boxes {
 		needed := box.width
 		if currentWidth > 0 {
-			needed += gap
+			needed += boxGap
 		}
 		if currentWidth > 0 && currentWidth+needed > m.width {
 			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, currentRow...) + "\n")
@@ -599,8 +633,8 @@ func (m TUIModel) View() string {
 			currentWidth = 0
 		}
 		if currentWidth > 0 {
-			currentRow = append(currentRow, strings.Repeat(" ", gap))
-			currentWidth += gap
+			currentRow = append(currentRow, lipgloss.NewStyle().PaddingRight(boxGap).Render(""))
+			currentWidth += boxGap
 		}
 		currentRow = append(currentRow, box.content)
 		currentWidth += box.width
@@ -610,7 +644,7 @@ func (m TUIModel) View() string {
 	}
 
 	// Activity log
-	linesUsed := strings.Count(b.String(), "\n")
+	linesUsed := lipgloss.Height(b.String())
 	logHeight := max(m.height-linesUsed-2, 3)
 	b.WriteString(m.renderTUIActivityLog(logHeight))
 	b.WriteString(tuiDimStyle.Render("  q: quit  j/k: scroll log"))
@@ -621,21 +655,21 @@ func (m TUIModel) View() string {
 func (m TUIModel) renderTUIActivityLog(height int) string {
 	title := fmt.Sprintf(" Activity Log (%d events)", len(m.events))
 
-	sortedEvents := make([]agent.Event, len(m.events))
-	copy(sortedEvents, m.events)
-	sort.Slice(sortedEvents, func(i, j int) bool {
-		return sortedEvents[i].Timestamp.After(sortedEvents[j].Timestamp)
-	})
-
-	startIdx := m.logOffset
-	if startIdx >= len(sortedEvents) {
-		startIdx = 0
-	}
-	endIdx := min(startIdx+height-2, len(sortedEvents))
-
+	// Iterate in reverse (newest first) instead of copying and sorting.
+	// Events are appended chronologically, so reverse iteration gives newest first.
+	maxEntries := height - 2
+	startFromEnd := m.logOffset
 	var lines []string
 	lines = append(lines, tuiTitleStyle.Render(title))
-	for _, e := range sortedEvents[startIdx:endIdx] {
+
+	count := 0
+	skipped := 0
+	for i := len(m.events) - 1; i >= 0 && count < maxEntries; i-- {
+		if skipped < startFromEnd {
+			skipped++
+			continue
+		}
+		e := m.events[i]
 		ts := e.Timestamp.Local().Format("15:04:05")
 		action := e.Action
 		if e.Detail != "" {
@@ -645,6 +679,7 @@ func (m TUIModel) renderTUIActivityLog(height int) string {
 		action = truncateRunes(action, maxActionLen)
 		line := fmt.Sprintf(" %s  %-18s %s", tuiDimStyle.Render(ts), e.Worker, action)
 		lines = append(lines, line)
+		count++
 	}
 
 	content := strings.Join(lines, "\n")
