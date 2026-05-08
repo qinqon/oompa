@@ -126,6 +126,8 @@ type reviewTask struct {
 	work          *IssueWork
 	humanComments []ReviewComment
 	humanReviews  []PRReview
+	maxCommentID  int64 // max ID across ALL fetched comments (including filtered ones)
+	maxReviewID   int64 // max ID across ALL fetched reviews (including filtered ones)
 }
 
 type ciTask struct {
@@ -346,6 +348,16 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			continue
 		}
 
+		// Track the max comment ID across ALL fetched comments (including filtered ones)
+		// so the cursor advances past bot-posted/already-replied comments that would
+		// otherwise be re-fetched and re-filtered on every poll cycle.
+		var maxCommentID int64
+		for _, c := range comments {
+			if c.ID > maxCommentID {
+				maxCommentID = c.ID
+			}
+		}
+
 		// Build a set of comment IDs that have a reply from our user
 		repliedTo := make(map[int64]bool)
 		for _, c := range comments {
@@ -380,6 +392,14 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			a.logger.Warn("failed to get PR reviews", "pr", work.PRNumber, "error", err)
 		}
 
+		// Track the max review ID across ALL fetched reviews (including filtered ones).
+		var maxReviewID int64
+		for _, r := range reviews {
+			if r.ID > maxReviewID {
+				maxReviewID = r.ID
+			}
+		}
+
 		// Filter reviews
 		var humanReviews []PRReview
 		if len(reviews) > 0 {
@@ -400,6 +420,14 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		}
 
 		if len(humanComments) == 0 && len(humanReviews) == 0 {
+			// No actionable comments/reviews, but still advance cursors past
+			// filtered items to avoid re-fetching them on every poll cycle.
+			if maxCommentID > work.LastCommentID {
+				work.LastCommentID = maxCommentID
+			}
+			if maxReviewID > work.LastReviewID {
+				work.LastReviewID = maxReviewID
+			}
 			continue
 		}
 
@@ -421,6 +449,8 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			work:          work,
 			humanComments: humanComments,
 			humanReviews:  humanReviews,
+			maxCommentID:  maxCommentID,
+			maxReviewID:   maxReviewID,
 		})
 	}
 
@@ -440,7 +470,10 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			return
 		}
 
-		// Push if agent made changes (uncommitted or committed directly)
+		// Push if agent made changes (uncommitted or committed directly).
+		// Track whether push succeeded so we can gate cursor advancement:
+		// if changes were detected but push failed, don't advance the cursor
+		// so the comments are retried on the next poll cycle.
 		pushed, changeDetected := false, false
 		hasFixups := a.hasFixupCommits(ctx, task.work.WorktreePath)
 		hasUncommitted := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
@@ -487,41 +520,17 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		// Reply to each review comment thread.
-		// Skip replies when changes were detected but push failed to avoid misleading messages.
-		// Only advance the comment cursor for comments where the reply was posted successfully,
-		// so that failed replies are retried on the next poll cycle.
-		allRepliesPosted := true
-		for _, c := range task.humanComments {
-			var replyBody string
-			switch {
-			case pushed:
-				replyBody = "Addressed in the latest push."
-			case !changeDetected:
-				replyBody = "Reviewed — no code changes needed."
-			default:
-				allRepliesPosted = false
-				continue // Push failed for detected changes; skip reply to avoid misleading message
+		// Advance cursors based on ALL fetched comment/review IDs (not just
+		// the human-filtered subset) to avoid re-fetching and re-filtering
+		// bot-posted or already-replied comments on every poll cycle.
+		// When changes were detected but push failed, skip cursor advancement
+		// so the comments are retried on the next poll cycle.
+		if !changeDetected || pushed {
+			if task.maxCommentID > task.work.LastCommentID {
+				task.work.LastCommentID = task.maxCommentID
 			}
-			if err := a.gh.ReplyToPRComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, c.ID, replyBody); err != nil {
-				a.logger.Warn("failed to reply to PR comment", "comment", c.ID, "error", err)
-				allRepliesPosted = false
-			}
-		}
-
-		// Only advance cursors when all replies were posted successfully.
-		// If any reply was skipped or failed, keep the old cursor so the
-		// comments are retried on the next poll cycle.
-		if allRepliesPosted {
-			for _, c := range task.humanComments {
-				if c.ID > task.work.LastCommentID {
-					task.work.LastCommentID = c.ID
-				}
-			}
-			for _, r := range task.humanReviews {
-				if r.ID > task.work.LastReviewID {
-					task.work.LastReviewID = r.ID
-				}
+			if task.maxReviewID > task.work.LastReviewID {
+				task.work.LastReviewID = task.maxReviewID
 			}
 		}
 	})

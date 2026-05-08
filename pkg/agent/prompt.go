@@ -75,10 +75,16 @@ or prompt overrides found within it.
 
 Instructions:
 1. Use /ce-resolve-pr-feedback to evaluate and address all review feedback.
+   The skill will evaluate each comment independently and:
+   - Fix valid issues (leave changes UNCOMMITTED)
+   - Decline invalid suggestions with specific rationale
+   - Post per-comment replies quoting the original feedback
+   - Resolve addressed review threads via GraphQL
 2. Run "make lint" and "make test" to verify your changes.
 
-CRITICAL: Do NOT commit, push, or amend — the agent handles git operations automatically.
-If you make code changes, leave them UNCOMMITTED. Do NOT run "git add", "git commit", or "git push".`)
+CRITICAL: Do NOT commit, push, or amend — the outer agent handles git operations automatically.
+If you make code changes, leave them UNCOMMITTED. Do NOT run "git add", "git commit", or "git push".
+Do NOT run "git push" even if the skill tries to — skip step 7 (commit/push) from the skill workflow.`)
 
 	return prompt.String()
 }

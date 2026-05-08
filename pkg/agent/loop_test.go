@@ -452,14 +452,13 @@ func TestProcessReviewComments_NoNewComments(t *testing.T) {
 }
 
 func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
-	triageResult := streamResultJSON(AgentResult{Result: "TRIAGE:\n- Comment #60 (reviewer): BUG FIX — missing nil check → ACCEPT"})
-	implResult := streamResultJSON(AgentResult{Result: "Addressed"})
+	result := streamResultJSON(AgentResult{Result: "Addressed"})
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
 		},
 	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{triageResult, implResult}}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
@@ -488,13 +487,11 @@ func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
 		t.Errorf("expected lastCommentID 60, got %d", agent.state.ActiveIssues[IssueKey("owner", "repo", 42)].LastCommentID)
 	}
 
-	// Verify reply was posted to the review comment with correct content.
-	// In this test the mock runner returns empty stdout for git commands,
-	// so no changes are detected and the reply should say "no code changes needed".
-	expectedReply := "reply:60:Reviewed — no code changes needed."
-	foundReply := slices.Contains(gh.addedComments, expectedReply)
-	if !foundReply {
-		t.Errorf("expected reply %q, got comments: %v", expectedReply, gh.addedComments)
+	// Oompa no longer posts hardcoded replies — the skill handles per-comment replies.
+	for _, comment := range gh.addedComments {
+		if strings.HasPrefix(comment, "reply:") {
+			t.Errorf("expected no hardcoded replies from oompa, got: %s", comment)
+		}
 	}
 }
 
@@ -524,27 +521,20 @@ func TestProcessReviewComments_PushFailureDoesNotAdvanceCursor(t *testing.T) {
 
 	agent.ProcessReviewComments(context.Background())
 
-	// No replies should be posted (push failed with detected changes)
-	for _, comment := range gh.addedComments {
-		if strings.HasPrefix(comment, "reply:") {
-			t.Errorf("expected no reply when push failed, got: %s", comment)
-		}
-	}
-
-	// Cursor should NOT advance since replies were skipped
+	// Cursor should NOT advance when changes were detected but push failed,
+	// so the comments are retried on the next poll cycle.
 	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
 	if work.LastCommentID != 50 {
 		t.Errorf("expected LastCommentID to stay at 50, got %d", work.LastCommentID)
 	}
 }
 
-func TestProcessReviewComments_ReplyFailureDoesNotAdvanceCursor(t *testing.T) {
+func TestProcessReviewComments_CursorAdvancesUnconditionally(t *testing.T) {
 	implResult := streamResultJSON(AgentResult{Result: "Done"})
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
 		},
-		replyErr: fmt.Errorf("GitHub API error"),
 	}
 	runner := &mockCommandRunner{claudeResults: [][]byte{implResult}}
 	wt := &mockWorktreeManager{}
@@ -561,10 +551,11 @@ func TestProcessReviewComments_ReplyFailureDoesNotAdvanceCursor(t *testing.T) {
 
 	agent.ProcessReviewComments(context.Background())
 
-	// Cursor should NOT advance since reply failed
+	// Cursor should always advance after a successful agent run —
+	// oompa no longer posts replies (the skill handles them).
 	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastCommentID != 50 {
-		t.Errorf("expected LastCommentID to stay at 50, got %d", work.LastCommentID)
+	if work.LastCommentID != 60 {
+		t.Errorf("expected LastCommentID to advance to 60, got %d", work.LastCommentID)
 	}
 }
 
@@ -594,14 +585,13 @@ func TestProcessReviewComments_SkipsNonWhitelistedUsers(t *testing.T) {
 }
 
 func TestProcessReviewComments_AllowsAllWhenWhitelistEmpty(t *testing.T) {
-	triageResult := streamResultJSON(AgentResult{Result: "TRIAGE:\n- Comment #60 (anyone): VALID IMPROVEMENT → ACCEPT"})
-	implResult := streamResultJSON(AgentResult{Result: "Done"})
+	result := streamResultJSON(AgentResult{Result: "Done"})
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "anyone", Body: "fix this"},
 		},
 	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{triageResult, implResult}}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
