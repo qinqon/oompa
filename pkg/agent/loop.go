@@ -183,9 +183,13 @@ func (a *Agent) emit(event Event) {
 }
 
 // workerName returns the worker identifier for event emission.
-// Uses the config's Owner/Repo as the worker name.
+// Uses the config's Owner/Repo as the base, with an optional :Role suffix.
 func (a *Agent) workerName() string {
-	return a.cfg.Owner + "/" + a.cfg.Repo
+	name := a.cfg.Owner + "/" + a.cfg.Repo
+	if a.cfg.Role != "" {
+		name += ":" + a.cfg.Role
+	}
+	return name
 }
 
 // EmitPollCycleStart emits a poll cycle start event.

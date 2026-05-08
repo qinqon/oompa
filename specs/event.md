@@ -29,7 +29,7 @@ const (
 type Event struct {
     Type      EventType `json:"type"`
     Timestamp time.Time `json:"timestamp"`
-    Worker    string    `json:"worker"`              // e.g. "ovn-k/prs"
+    Worker    string    `json:"worker"`              // e.g. "ovn-kubernetes/ovn-kubernetes:prs" (owner/repo:role)
     State     string    `json:"state,omitempty"`      // idle, working, reviewing, rebasing, error, sleeping
     Action    string    `json:"action,omitempty"`     // human-readable description
     Detail    string    `json:"detail,omitempty"`     // extra context

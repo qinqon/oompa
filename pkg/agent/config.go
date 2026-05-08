@@ -29,6 +29,7 @@ type Config struct {
 	OnlyAssigned      bool     // when true, only process issues assigned to the agent user
 	TriageJobs        []string       // CI job URLs to monitor for periodic job triage
 	TriageLookback    time.Duration  // time window to check for failed triage runs (0 = latest only)
+	Role              string   // role identifier: "prs", "issues", "triage" (set by BuildRoleEntries)
 	Agent             string   // coding agent backend: "claudecode" or "opencode"
 	AgentModel        string   // model override for OpenCode (empty = default)
 	Version           string   // build version (commit SHA) for comment watermarks

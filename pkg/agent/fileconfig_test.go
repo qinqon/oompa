@@ -55,7 +55,6 @@ projects:
 	if len(fc.Projects) != 2 {
 		t.Fatalf("expected 2 projects, got %d", len(fc.Projects))
 	}
-
 	// First project
 	p := fc.Projects[0]
 	if p.Repo != "ovn-kubernetes/ovn-kubernetes" {
@@ -73,7 +72,6 @@ projects:
 	if len(p.PRs[0].Watch) != 2 || p.PRs[0].Watch[0] != 6252 {
 		t.Errorf("unexpected watch list %v", p.PRs[0].Watch)
 	}
-
 	// Second project
 	p2 := fc.Projects[1]
 	if p2.Repo != "qinqon/oompa" {
@@ -242,11 +240,13 @@ func TestBuildRoleEntries_TwoTierInheritance(t *testing.T) {
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
-
 	// First PRs entry inherits project defaults
 	e1 := entries[0]
 	if e1.Role != "prs" {
 		t.Errorf("expected role 'prs', got %q", e1.Role)
+	}
+	if e1.Config.Role != "prs" {
+		t.Errorf("expected Config.Role 'prs', got %q", e1.Config.Role)
 	}
 	if e1.Config.Owner != "owner" || e1.Config.Repo != "repo" {
 		t.Errorf("unexpected owner/repo %s/%s", e1.Config.Owner, e1.Config.Repo)
@@ -266,7 +266,6 @@ func TestBuildRoleEntries_TwoTierInheritance(t *testing.T) {
 	if e1.Config.Agent != "opencode" {
 		t.Errorf("expected agent 'opencode' from file config, got %q", e1.Config.Agent)
 	}
-
 	// Second PRs entry overrides project defaults
 	e2 := entries[1]
 	if e2.Config.CreateFlakyIssues {
@@ -278,11 +277,13 @@ func TestBuildRoleEntries_TwoTierInheritance(t *testing.T) {
 	if len(e2.Config.SkipComments) != 1 || e2.Config.SkipComments[0] != "ci-infrastructure" {
 		t.Errorf("expected overridden skip-comment, got %v", e2.Config.SkipComments)
 	}
-
 	// Issues entry
 	e3 := entries[2]
 	if e3.Role != "issues" {
 		t.Errorf("expected role 'issues', got %q", e3.Role)
+	}
+	if e3.Config.Role != "issues" {
+		t.Errorf("expected Config.Role 'issues', got %q", e3.Config.Role)
 	}
 	if e3.Config.Label != "ai-label" {
 		t.Errorf("expected label 'ai-label', got %q", e3.Config.Label)
@@ -308,7 +309,6 @@ func TestBuildRoleEntries_MultipleProjectsAndRoles(t *testing.T) {
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
-
 	// Check each entry's project is correct
 	if entries[0].Config.Owner != "org1" || entries[0].Config.Repo != "repo1" {
 		t.Error("entry 0 has wrong owner/repo")
@@ -319,7 +319,6 @@ func TestBuildRoleEntries_MultipleProjectsAndRoles(t *testing.T) {
 	if entries[2].Config.Owner != "org2" || entries[2].Config.Repo != "repo2" {
 		t.Error("entry 2 has wrong owner/repo")
 	}
-
 	// Check clone dirs are per-project
 	if entries[0].Config.CloneDir != "/tmp/work/org1/repo1" {
 		t.Errorf("unexpected clone dir %q", entries[0].Config.CloneDir)
@@ -327,10 +326,12 @@ func TestBuildRoleEntries_MultipleProjectsAndRoles(t *testing.T) {
 	if entries[1].Config.CloneDir != "/tmp/work/org2/repo2" {
 		t.Errorf("unexpected clone dir %q", entries[1].Config.CloneDir)
 	}
-
-	// Check triage entry has schedule
+	// Check triage entry has schedule and Config.Role
 	if entries[2].Schedule != "09:00 UTC" {
 		t.Errorf("expected schedule '09:00 UTC', got %q", entries[2].Schedule)
+	}
+	if entries[2].Config.Role != "triage" {
+		t.Errorf("expected Config.Role 'triage', got %q", entries[2].Config.Role)
 	}
 }
 
@@ -353,7 +354,6 @@ func TestBuildRoleEntries_ForkInheritance(t *testing.T) {
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
-
 	// PRs entry inherits project fork
 	if entries[0].Config.ForkOwner != "myfork" || entries[0].Config.ForkRepo != "repo" {
 		t.Errorf("PRs: expected fork myfork/repo, got %s/%s", entries[0].Config.ForkOwner, entries[0].Config.ForkRepo)
@@ -361,12 +361,10 @@ func TestBuildRoleEntries_ForkInheritance(t *testing.T) {
 	if entries[0].Config.GitHubHeadOwner != "myfork" {
 		t.Errorf("PRs: expected head owner 'myfork', got %q", entries[0].Config.GitHubHeadOwner)
 	}
-
 	// First issues entry inherits project fork
 	if entries[1].Config.ForkOwner != "myfork" {
 		t.Errorf("Issues[0]: expected fork owner 'myfork', got %q", entries[1].Config.ForkOwner)
 	}
-
 	// Second issues entry overrides fork
 	if entries[2].Config.ForkOwner != "otherfork" || entries[2].Config.ForkRepo != "myrepo" {
 		t.Errorf("Issues[1]: expected fork otherfork/myrepo, got %s/%s", entries[2].Config.ForkOwner, entries[2].Config.ForkRepo)
@@ -389,7 +387,6 @@ func TestParseSchedule_Daily(t *testing.T) {
 	if !next.Equal(expected) {
 		t.Errorf("expected %v, got %v", expected, next)
 	}
-
 	// Schedule for 13:00 UTC — should be tomorrow since it's in the past
 	next, err = ParseSchedule("13:00 UTC", now)
 	if err != nil {
@@ -414,7 +411,6 @@ func TestParseSchedule_Weekly(t *testing.T) {
 	if !next.Equal(expected) {
 		t.Errorf("expected %v, got %v", expected, next)
 	}
-
 	// Schedule for Wednesday 09:00 UTC — time has passed today, should be next Wednesday
 	next, err = ParseSchedule("09:00 Wednesday UTC", now)
 	if err != nil {
@@ -424,7 +420,6 @@ func TestParseSchedule_Weekly(t *testing.T) {
 	if !next.Equal(expected) {
 		t.Errorf("expected %v, got %v", expected, next)
 	}
-
 	// Schedule for Wednesday 15:00 UTC — hasn't happened yet today, should be today
 	next, err = ParseSchedule("15:00 Wednesday UTC", now)
 	if err != nil {
@@ -462,7 +457,6 @@ func TestNewRoleLogger_PRs(t *testing.T) {
 		Config: Config{Owner: "org", Repo: "repo", WatchPRs: []int{1, 2, 3}},
 		Role:   "prs",
 	}
-
 	logger := NewRoleLogger(base, entry)
 	if logger == nil {
 		t.Fatal("expected non-nil logger")
@@ -475,7 +469,6 @@ func TestNewRoleLogger_Issues(t *testing.T) {
 		Config: Config{Owner: "org", Repo: "repo", Label: "good-for-ai"},
 		Role:   "issues",
 	}
-
 	logger := NewRoleLogger(base, entry)
 	if logger == nil {
 		t.Fatal("expected non-nil logger")
@@ -550,37 +543,30 @@ func TestBuildRoleEntries_ReviewersInheritance(t *testing.T) {
 	if len(entries) != 7 {
 		t.Fatalf("expected 7 entries, got %d", len(entries))
 	}
-
 	// PRs[0]: inherits project-level reviewers
 	if len(entries[0].Config.Reviewers) != 2 || entries[0].Config.Reviewers[0] != "proj-reviewer1" {
 		t.Errorf("PRs[0]: expected project reviewers, got %v", entries[0].Config.Reviewers)
 	}
-
 	// PRs[1]: overrides with role-level reviewers
 	if len(entries[1].Config.Reviewers) != 1 || entries[1].Config.Reviewers[0] != "role-reviewer" {
 		t.Errorf("PRs[1]: expected role reviewers, got %v", entries[1].Config.Reviewers)
 	}
-
 	// Issues[0]: inherits project-level reviewers
 	if len(entries[2].Config.Reviewers) != 2 || entries[2].Config.Reviewers[0] != "proj-reviewer1" {
 		t.Errorf("Issues[0]: expected project reviewers, got %v", entries[2].Config.Reviewers)
 	}
-
 	// Issues[1]: overrides with role-level reviewers
 	if len(entries[3].Config.Reviewers) != 1 || entries[3].Config.Reviewers[0] != "issue-reviewer" {
 		t.Errorf("Issues[1]: expected role reviewers, got %v", entries[3].Config.Reviewers)
 	}
-
 	// Triage[0]: inherits project-level reviewers
 	if len(entries[4].Config.Reviewers) != 2 || entries[4].Config.Reviewers[0] != "proj-reviewer1" {
 		t.Errorf("Triage[0]: expected project reviewers, got %v", entries[4].Config.Reviewers)
 	}
-
 	// Triage[1]: overrides with role-level reviewers
 	if len(entries[5].Config.Reviewers) != 1 || entries[5].Config.Reviewers[0] != "triage-reviewer" {
 		t.Errorf("Triage[1]: expected role reviewers, got %v", entries[5].Config.Reviewers)
 	}
-
 	// Second project PRs[0]: no project reviewers, inherits global
 	if len(entries[6].Config.Reviewers) != 1 || entries[6].Config.Reviewers[0] != "global-reviewer" {
 		t.Errorf("Project2 PRs[0]: expected global reviewers, got %v", entries[6].Config.Reviewers)
@@ -612,7 +598,6 @@ projects:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	p := fc.Projects[0]
 	if len(p.Reviewers) != 2 || p.Reviewers[0] != "alice" || p.Reviewers[1] != "bob" {
 		t.Errorf("expected project reviewers [alice bob], got %v", p.Reviewers)
@@ -651,7 +636,6 @@ func TestBuildRoleEntries_GlobalOverrides(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
-
 	if !entries[0].Config.DryRun {
 		t.Error("expected dry-run to propagate from file config")
 	}
@@ -822,7 +806,6 @@ projects:
 	if err != nil {
 		t.Fatalf("unexpected error for valid lookback: %v", err)
 	}
-
 	if fc.Projects[0].Triage[0].Lookback != "24h" {
 		t.Errorf("expected lookback '24h', got %q", fc.Projects[0].Triage[0].Lookback)
 	}
@@ -856,12 +839,10 @@ func TestBuildRoleEntries_TriageLookback(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
-
 	// First triage entry overrides with role-level lookback
 	if entries[0].Config.TriageLookback != overrideLookback {
 		t.Errorf("expected TriageLookback %v, got %v", overrideLookback, entries[0].Config.TriageLookback)
 	}
-
 	// Second triage entry inherits global default lookback
 	if entries[1].Config.TriageLookback != defaultLookback {
 		t.Errorf("expected TriageLookback %v, got %v", defaultLookback, entries[1].Config.TriageLookback)
@@ -892,13 +873,11 @@ func TestBuildRoleEntries_SkipChecksTwoTierInheritance(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
-
 	// First entry inherits project-level skip-checks
 	e1 := entries[0]
 	if len(e1.Config.SkipChecks) != 1 || e1.Config.SkipChecks[0] != "can-be-merged" {
 		t.Errorf("expected inherited skip-checks [can-be-merged], got %v", e1.Config.SkipChecks)
 	}
-
 	// Second entry overrides with role-level skip-checks
 	e2 := entries[1]
 	if len(e2.Config.SkipChecks) != 2 || e2.Config.SkipChecks[0] != "can-be-merged" || e2.Config.SkipChecks[1] != "verified" {
@@ -940,22 +919,18 @@ func TestBuildRoleEntries_SkipChecksIssuesAndTriageInheritance(t *testing.T) {
 	if len(entries) != 4 {
 		t.Fatalf("expected 4 entries, got %d", len(entries))
 	}
-
 	// Issues[0]: inherits project-level skip-checks
 	if len(entries[0].Config.SkipChecks) != 1 || entries[0].Config.SkipChecks[0] != "can-be-merged" {
 		t.Errorf("Issues[0]: expected inherited skip-checks [can-be-merged], got %v", entries[0].Config.SkipChecks)
 	}
-
 	// Issues[1]: overrides with role-level skip-checks
 	if len(entries[1].Config.SkipChecks) != 2 || entries[1].Config.SkipChecks[0] != "can-be-merged" || entries[1].Config.SkipChecks[1] != "verified" {
 		t.Errorf("Issues[1]: expected overridden skip-checks [can-be-merged verified], got %v", entries[1].Config.SkipChecks)
 	}
-
 	// Triage[0]: inherits project-level skip-checks
 	if len(entries[2].Config.SkipChecks) != 1 || entries[2].Config.SkipChecks[0] != "can-be-merged" {
 		t.Errorf("Triage[0]: expected inherited skip-checks [can-be-merged], got %v", entries[2].Config.SkipChecks)
 	}
-
 	// Triage[1]: overrides with role-level skip-checks
 	if len(entries[3].Config.SkipChecks) != 1 || entries[3].Config.SkipChecks[0] != "e2e-check" {
 		t.Errorf("Triage[1]: expected overridden skip-checks [e2e-check], got %v", entries[3].Config.SkipChecks)

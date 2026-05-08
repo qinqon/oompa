@@ -3006,6 +3006,19 @@ func TestProcessCIFailures_SkipChecksAllFailuresSkipped(t *testing.T) {
 	}
 }
 
+func TestWorkerName(t *testing.T) {
+	for _, tt := range []struct{ role, want string }{
+		{"prs", "owner/repo:prs"},
+		{"", "owner/repo"},
+	} {
+		a := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+		a.cfg.Role = tt.role
+		if got := a.workerName(); got != tt.want {
+			t.Errorf("workerName() with role=%q = %q, want %q", tt.role, got, tt.want)
+		}
+	}
+}
+
 func TestProcessCIFailures_SkipChecksDoesNotAffectAllCompleted(t *testing.T) {
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
