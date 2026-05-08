@@ -106,24 +106,32 @@ func (g *GoGitHubClient) ListLabeledIssues(ctx context.Context, owner, repo, lab
 }
 
 func (g *GoGitHubClient) GetPRReviewComments(ctx context.Context, owner, repo string, prNumber int, sinceID int64) ([]ReviewComment, error) {
-	ghComments, _, err := g.client.PullRequests.ListComments(ctx, owner, repo, prNumber, nil)
-	if err != nil {
-		return nil, fmt.Errorf("listing PR comments: %w", err)
+	opts := &github.PullRequestListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
 	}
-
 	var comments []ReviewComment
-	for _, c := range ghComments {
-		if c.GetID() <= sinceID {
-			continue
+	for {
+		ghComments, resp, err := g.client.PullRequests.ListComments(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing PR comments: %w", err)
 		}
-		comments = append(comments, ReviewComment{
-			ID:          c.GetID(),
-			InReplyToID: c.GetInReplyTo(),
-			User:        c.GetUser().GetLogin(),
-			Body:        c.GetBody(),
-			Path:        c.GetPath(),
-			Line:        c.GetLine(),
-		})
+		for _, c := range ghComments {
+			if c.GetID() <= sinceID {
+				continue
+			}
+			comments = append(comments, ReviewComment{
+				ID:          c.GetID(),
+				InReplyToID: c.GetInReplyTo(),
+				User:        c.GetUser().GetLogin(),
+				Body:        c.GetBody(),
+				Path:        c.GetPath(),
+				Line:        c.GetLine(),
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 	return comments, nil
 }
