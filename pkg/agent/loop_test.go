@@ -33,6 +33,8 @@ type mockGitHubClient struct {
 	nextIssueNumber int           // next issue number to return (defaults to 1)
 	searchResults   []Issue       // results to return from SearchIssues
 	workflowRuns    []WorkflowRun // workflow runs to return from ListWorkflowRuns
+	prReviews      []PRReview // reviews to return from GetPRReviews
+	headCommitDate time.Time  // date to return from GetPRHeadCommitDate
 
 	listIssuesCalled bool // tracks whether ListLabeledIssues was called
 	listIssuesErr    error
@@ -141,12 +143,18 @@ func (m *mockGitHubClient) GetPRMergeable(_ context.Context, _, _ string, _ int)
 	return "clean", nil
 }
 
-func (m *mockGitHubClient) GetPRReviews(_ context.Context, _, _ string, _ int, _ int64) ([]PRReview, error) {
-	return nil, nil
+func (m *mockGitHubClient) GetPRReviews(_ context.Context, _, _ string, _ int, sinceID int64) ([]PRReview, error) {
+	var filtered []PRReview
+	for _, r := range m.prReviews {
+		if r.ID > sinceID {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered, nil
 }
 
 func (m *mockGitHubClient) GetPRHeadCommitDate(_ context.Context, _, _ string, _ int) (time.Time, error) {
-	return time.Time{}, nil
+	return m.headCommitDate, nil
 }
 
 func (m *mockGitHubClient) CreatePR(_ context.Context, _, _, _, _, _, _ string) (int, error) {
@@ -616,6 +624,131 @@ func TestProcessReviewComments_AllowsAllWhenWhitelistEmpty(t *testing.T) {
 	// One call: implementation (no triage step)
 	if claudeCalls != 1 {
 		t.Errorf("expected 1 claude call with empty whitelist, got %d", claudeCalls)
+	}
+}
+
+func TestProcessReviewComments_UnaddressedReviewIsProcessed(t *testing.T) {
+	// A review with ID > LastReviewID should be processed (it's new/unaddressed).
+	// The sinceID cursor in GetPRReviews ensures only unprocessed reviews are returned,
+	// preventing the race condition from issue #162 where multiple bot reviewers
+	// post simultaneously.
+	result := streamResultJSON(AgentResult{Result: "Addressed"})
+	gh := &mockGitHubClient{
+		prReviews: []PRReview{
+			{ID: 200, User: "copilot", Body: "Please fix the error handling"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+		LastReviewID: 100, // review 200 > 100, so it's new/unaddressed
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	if claudeCalls != 1 {
+		t.Errorf("expected 1 claude call for unaddressed review, got %d", claudeCalls)
+	}
+
+	// Review should have been processed — cursor should advance
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastReviewID != 200 {
+		t.Errorf("expected LastReviewID to advance to 200, got %d", work.LastReviewID)
+	}
+}
+
+func TestProcessReviewComments_AlreadyAddressedReviewIsFilteredBySinceID(t *testing.T) {
+	// A review with ID <= LastReviewID is filtered out by GetPRReviews (sinceID),
+	// so it's never returned and never processed. This is the API-level guarantee
+	// that already-addressed reviews are skipped.
+	gh := &mockGitHubClient{
+		prReviews: []PRReview{
+			{ID: 50, User: "gemini", Body: "Looks good with minor fixes"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+		LastReviewID: 100, // review 50 <= 100, filtered by sinceID
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	if claudeCalls != 0 {
+		t.Errorf("expected 0 claude calls for already-addressed review, got %d", claudeCalls)
+	}
+}
+
+func TestProcessReviewComments_MultipleReviewersSimultaneous(t *testing.T) {
+	// Simulate the race condition from issue #162: multiple bot reviewers post
+	// simultaneously. After oompa addresses some and pushes, the remaining
+	// unaddressed reviews should still be processed because their IDs are above
+	// the LastReviewID cursor (sinceID filter lets them through).
+	result := streamResultJSON(AgentResult{Result: "Addressed"})
+	gh := &mockGitHubClient{
+		prReviews: []PRReview{
+			// copilot reviewed before oompa pushed. This review was never addressed
+			// (ID 300 > LastReviewID 250), so sinceID lets it through.
+			{ID: 300, User: "copilot", Body: "4 inline comments about error handling"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+		// LastReviewID 250: oompa already processed coderabbit (ID 200) and gemini (ID 250)
+		// but copilot's review (ID 300) is still unaddressed
+		LastReviewID: 250,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	// copilot's review should be processed — sinceID ensures it's not filtered out
+	if claudeCalls != 1 {
+		t.Errorf("expected 1 claude call for unaddressed copilot review, got %d", claudeCalls)
+	}
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastReviewID != 300 {
+		t.Errorf("expected LastReviewID to advance to 300, got %d", work.LastReviewID)
 	}
 }
 
