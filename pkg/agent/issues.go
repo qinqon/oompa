@@ -14,22 +14,24 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 	}
 
 	a.emit(Event{
-		Type:   EventActionStarted,
-		Worker: a.workerName(),
-		State:  "working",
-		Action: "Scanning for new issues",
+		Type:     EventActionStarted,
+		Category: CategoryIssue,
+		Worker:   a.workerName(),
+		State:    "working",
+		Action:   "Scanning for new issues",
 	})
 	defer a.emit(Event{
-		Type:   EventActionCompleted,
-		Worker: a.workerName(),
-		State:  "idle",
-		Action: "Issue scanning complete",
+		Type:     EventActionCompleted,
+		Category: CategoryIssue,
+		Worker:   a.workerName(),
+		State:    "idle",
+		Action:   "Issue scanning complete",
 	})
 
 	issues, err := a.gh.ListLabeledIssues(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.Label)
 	if err != nil {
 		a.logger.Error("failed to list issues", "error", err)
-		a.emit(Event{Type: EventError, Worker: a.workerName(), State: "error", Error: "failed to list issues: " + err.Error()})
+		a.emit(Event{Type: EventError, Category: CategoryError, Worker: a.workerName(), State: "error", Error: "failed to list issues: " + err.Error()})
 		return
 	}
 

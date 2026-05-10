@@ -25,13 +25,21 @@ Otherwise, fall through to existing daemon startup.
 
 - `--since <duration>` (default: `4h`) -- lookback window for recent events
 - `--socket <path>` -- override socket path (default: auto-detect)
+- `--all-events` -- show all events including poll cycles and routine checks
+- `--events <categories>` -- comma-separated event categories to show (e.g. `ci,error,agent`)
+- `--project <name>` -- filter by project (partial match against `owner/repo`)
+- `--role <name>` -- filter by worker role (e.g. `prs`, `issues`, `triage`)
+- `--pr <numbers>` -- filter by PR number(s), comma-separated
+
+All filters are AND -- an event must match ALL specified filters.
 
 ### Behavior
 
 1. Connect to Unix socket
 2. Send `{"type": "snapshot", "since": "<duration>"}`
 3. Read `StatusSnapshot` response
-4. Print formatted colored table and exit
+4. Apply filters to workers and events
+5. Print formatted colored table with category tags and exit
 
 ### Output Format
 
@@ -44,7 +52,7 @@ worker/name [PR#,PR#]      ● Working      Description               Xm ago
 
 RECENT ACTIVITY (last Xh, N events)
 
-  HH:MM  worker/name    Event description
+  HH:MM  [category ] worker/name    Event description
   ...
 ```
 
@@ -163,6 +171,20 @@ type EventClient struct {
 
 - `TestStatusCommand_Connects` -- connects to socket and prints output
 - `TestStatusCommand_NoSocket` -- prints error when daemon not running
+- `TestDefaultFilterExcludesPollCheckCleanupSkip` -- default filter excludes noise categories
+- `TestAllEventsShowsEverything` -- `--all-events` shows all categories
+- `TestEventsCategoryFilter` -- `--events ci,error` shows only matching categories
+- `TestProjectFilter` -- `--project nmstate` filters events by project
+- `TestRoleFilter` -- `--role triage` filters events by role
+- `TestPRFilter` -- `--pr 42` matches events with that PR number
+- `TestCombinedFiltersUseAND` -- combined filters use AND logic
+- `TestWorkerFilterByProject` -- worker table filtered by project
+- `TestWorkerFilterByRole` -- worker table filtered by role
+- `TestWorkerFilterByPR` -- worker table filtered by PR number
+- `TestWorkerProject` -- parses project from worker name
+- `TestWorkerRole` -- parses role from worker name
+- `TestBuildFilterDescription` -- human-readable filter summary
+- `TestCategoryTagsRendered` -- category tags render in activity log
 
 ### `tui_test.go`
 
