@@ -13,16 +13,18 @@ const maxCIFixAttempts = 3
 // ProcessCIFailures checks CI status for open PRs and invokes Claude to fix failures.
 func (a *Agent) ProcessCIFailures(ctx context.Context) {
 	a.emit(Event{
-		Type:   EventActionStarted,
-		Worker: a.workerName(),
-		State:  "working",
-		Action: "Checking CI status",
+		Type:     EventActionStarted,
+		Category: CategoryCheck,
+		Worker:   a.workerName(),
+		State:    "working",
+		Action:   "Checking CI status",
 	})
 	defer a.emit(Event{
-		Type:   EventActionCompleted,
-		Worker: a.workerName(),
-		State:  "idle",
-		Action: "CI check complete",
+		Type:     EventActionCompleted,
+		Category: CategoryCheck,
+		Worker:   a.workerName(),
+		State:    "idle",
+		Action:   "CI check complete",
 	})
 	// Sequential phase: GitHub API calls, check run fetching, worktree setup
 	var tasks []ciTask
@@ -178,10 +180,27 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 
 	// Sequential phase: Claude invocations and post-processing
 	runSequential(ctx, tasks, func(ctx context.Context, task ciTask) {
+		a.emit(Event{
+			Type:      EventAgentInvocation,
+			Category:  CategoryCI,
+			Worker:    a.workerName(),
+			State:     "working",
+			Action:    fmt.Sprintf("Investigating CI failure: %s", task.failures[0].Name),
+			PRNumbers: []int{task.work.PRNumber},
+		})
 		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff, task.commits, a.cfg.SignedOffBy, a.cfg.SkipFix)
 		result, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		if err != nil {
 			a.logger.Error("agent failed to investigate CI", "pr", task.work.PRNumber, "error", err)
+			a.emit(Event{
+				Type:      EventError,
+				Category:  CategoryError,
+				Worker:    a.workerName(),
+				State:     "error",
+				Action:    "CI investigation failed",
+				PRNumbers: []int{task.work.PRNumber},
+				Error:     err.Error(),
+			})
 			task.work.CIFixAttempts++
 			task.work.LastCIStatus = "failure"
 			task.work.LastCheckedCISHA = task.headSHA
@@ -240,6 +259,14 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 // handleCIInfrastructure handles a CI failure classified as an infrastructure issue.
 func (a *Agent) handleCIInfrastructure(ctx context.Context, task ciTask, cleaned string) {
 	a.logger.Info("CI failure is an infrastructure issue", "pr", task.work.PRNumber)
+	a.emit(Event{
+		Type:      EventAgentCompleted,
+		Category:  CategoryCI,
+		Worker:    a.workerName(),
+		State:     "idle",
+		Action:    fmt.Sprintf("CI infrastructure: %s", task.failures[0].Name),
+		PRNumbers: []int{task.work.PRNumber},
+	})
 	idx := strings.Index(cleaned, "INFRASTRUCTURE")
 	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "INFRASTRUCTURE"), " :—–-"))
 	marker := ciMarker(task.headSHA, task.failures[0].Name)
@@ -265,6 +292,14 @@ func (a *Agent) handleCIInfrastructure(ctx context.Context, task ciTask, cleaned
 // handleCIUnrelated handles a CI failure classified as unrelated to PR changes.
 func (a *Agent) handleCIUnrelated(ctx context.Context, task ciTask, cleaned string) {
 	a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
+	a.emit(Event{
+		Type:      EventAgentCompleted,
+		Category:  CategoryCI,
+		Worker:    a.workerName(),
+		State:     "idle",
+		Action:    fmt.Sprintf("CI unrelated: %s", task.failures[0].Name),
+		PRNumbers: []int{task.work.PRNumber},
+	})
 	idx := strings.Index(cleaned, "UNRELATED")
 	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "UNRELATED"), " :—–-"))
 	marker := ciMarker(task.headSHA, task.failures[0].Name)
@@ -418,6 +453,14 @@ func (a *Agent) createFlakyIssue(ctx context.Context, task ciTask, explanation s
 
 // handleCIRelated handles a CI failure classified as related to PR changes.
 func (a *Agent) handleCIRelated(ctx context.Context, task ciTask, cleaned string) {
+	a.emit(Event{
+		Type:      EventAgentCompleted,
+		Category:  CategoryCI,
+		Worker:    a.workerName(),
+		State:     "working",
+		Action:    fmt.Sprintf("CI related: %s", task.failures[0].Name),
+		PRNumbers: []int{task.work.PRNumber},
+	})
 	if a.cfg.SkipFix {
 		// Skip-fix mode: just post the analysis, don't try to fix or push
 		a.logger.Info("CI failure is related (skip-fix mode, not pushing)", "pr", task.work.PRNumber)

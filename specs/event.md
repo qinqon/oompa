@@ -23,20 +23,77 @@ const (
 )
 ```
 
+## Event Categories
+
+Each event carries a `Category` field that classifies it for filtering:
+
+```go
+type EventCategory string
+
+const (
+    CategoryPollCycle EventCategory = "poll"     // poll cycle start/end
+    CategoryCheck     EventCategory = "check"    // routine checks (CI, conflicts, rebase, review)
+    CategoryCleanup   EventCategory = "cleanup"  // worktree cleanup
+    CategoryRebase    EventCategory = "rebase"   // rebase performed
+    CategoryCI        EventCategory = "ci"       // CI investigation/fix
+    CategoryReview    EventCategory = "review"   // review feedback addressed
+    CategoryConflict  EventCategory = "conflict" // conflict resolution
+    CategoryAgent     EventCategory = "agent"    // agent invocation/completion
+    CategoryIssue     EventCategory = "issue"    // new issue processing
+    CategoryTriage    EventCategory = "triage"   // triage job processing
+    CategoryComment   EventCategory = "comment"  // comment posted
+    CategoryError     EventCategory = "error"    // errors/warnings
+    CategorySkip      EventCategory = "skip"     // skipped checks/comments
+)
+```
+
+### Default filtering
+
+`oompa status` shows only actionable categories by default:
+
+**Default set:** `rebase, ci, review, conflict, agent, issue, triage, comment, error`
+
+**Excluded by default:** `poll, check, cleanup, skip`
+
+### Category assignment guidelines
+
+| Category | When to use |
+|----------|-------------|
+| `poll` | `EmitPollCycleStart()`, `EmitPollCycleEnd()` |
+| `check` | "Checking CI status", "Checking for merge conflicts", "Checking for review comments", etc. |
+| `cleanup` | "Cleaning up merged/closed PRs", "Cleanup complete" |
+| `rebase` | Rebase attempted, rebase succeeded, rebase failed |
+| `ci` | CI failure detected, CI investigation result |
+| `review` | Review comments detected, review feedback addressed |
+| `conflict` | Conflict detected, conflict resolution attempted/succeeded/failed |
+| `agent` | Agent invoked, agent completed (with cost/duration) |
+| `issue` | New issue discovered, branch created, PR created |
+| `triage` | Triage job started, flaky test found, issue opened |
+| `comment` | Comment posted to PR, flaky issue opened/referenced |
+| `error` | Any error or warning |
+| `skip` | Skipped CI checks, skipped comments |
+
+### Helper functions
+
+- `DefaultEventCategories() map[EventCategory]bool` -- returns the default filter set
+- `AllEventCategories() map[EventCategory]bool` -- returns all valid categories
+- `ParseEventCategories(s string) (map[EventCategory]bool, error)` -- parses comma-separated category names
+
 ## Event Struct
 
 ```go
 type Event struct {
-    Type      EventType `json:"type"`
-    Timestamp time.Time `json:"timestamp"`
-    Worker    string    `json:"worker"`              // e.g. "ovn-kubernetes/ovn-kubernetes:prs" (owner/repo:role)
-    State     string    `json:"state,omitempty"`      // idle, working, reviewing, rebasing, error, sleeping
-    Action    string    `json:"action,omitempty"`     // human-readable description
-    Detail    string    `json:"detail,omitempty"`     // extra context
-    PRNumbers []int     `json:"prNumbers,omitempty"`  // associated PR numbers
-    CostUSD   float64   `json:"costUSD,omitempty"`    // agent invocation cost
-    Duration  float64   `json:"durationSec,omitempty"` // duration in seconds
-    Error     string    `json:"error,omitempty"`      // error message
+    Type      EventType     `json:"type"`
+    Category  EventCategory `json:"category,omitempty"`    // event category for filtering
+    Timestamp time.Time     `json:"timestamp"`
+    Worker    string        `json:"worker"`                // e.g. "ovn-kubernetes/ovn-kubernetes:prs" (owner/repo:role)
+    State     string        `json:"state,omitempty"`       // idle, working, reviewing, rebasing, error, sleeping
+    Action    string        `json:"action,omitempty"`      // human-readable description
+    Detail    string        `json:"detail,omitempty"`      // extra context
+    PRNumbers []int         `json:"prNumbers,omitempty"`   // associated PR numbers
+    CostUSD   float64       `json:"costUSD,omitempty"`     // agent invocation cost
+    Duration  float64       `json:"durationSec,omitempty"` // duration in seconds
+    Error     string        `json:"error,omitempty"`       // error message
 }
 ```
 
@@ -115,7 +172,7 @@ Default buffer size: 1000 events.
 
 ## Protocol
 
-JSON-lines over Unix socket at `$XDG_RUNTIME_DIR/oompa/oompa.sock` (fallback: `/tmp/oompa/oompa.sock`).
+JSON-lines over Unix socket at `$XDG_RUNTIME_DIR/oompa/oompa.sock` (fallback: `/tmp/oompa-<uid>/oompa.sock`).
 
 ### Client Request
 
@@ -155,6 +212,11 @@ Uses `$XDG_RUNTIME_DIR/oompa/oompa.sock`, falls back to a per-user path under `o
 - `TestRingBuffer_Add` -- events are stored and retrievable
 - `TestRingBuffer_Overflow` -- old events are evicted when buffer is full
 - `TestRingBuffer_EventsSince` -- time-windowed retrieval works correctly
+- `TestDefaultEventCategories` -- default set includes actionable categories and excludes noise
+- `TestAllEventCategories` -- all categories are present
+- `TestParseEventCategories` -- comma-separated parsing works, rejects invalid categories
+- `TestEventCategoryJSONRoundTrip` -- category serializes/deserializes correctly
+- `TestEventCategoryOmitEmpty` -- empty category is omitted from JSON
 - `TestSocketEventServer_Snapshot` -- server returns correct snapshot
 - `TestSocketEventServer_Stream` -- server streams events to connected clients
 - `TestSocketEventServer_MultipleClients` -- multiple clients receive events
