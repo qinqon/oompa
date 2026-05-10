@@ -9,16 +9,18 @@ import (
 // ProcessReviewComments checks for new review comments and review bodies, then runs Claude to address them.
 func (a *Agent) ProcessReviewComments(ctx context.Context) {
 	a.emit(Event{
-		Type:   EventActionStarted,
-		Worker: a.workerName(),
-		State:  "reviewing",
-		Action: "Checking for review comments",
+		Type:     EventActionStarted,
+		Category: CategoryCheck,
+		Worker:   a.workerName(),
+		State:    "reviewing",
+		Action:   "Checking for review comments",
 	})
 	defer a.emit(Event{
-		Type:   EventActionCompleted,
-		Worker: a.workerName(),
-		State:  "idle",
-		Action: "Review check complete",
+		Type:     EventActionCompleted,
+		Category: CategoryCheck,
+		Worker:   a.workerName(),
+		State:    "idle",
+		Action:   "Review check complete",
 	})
 	// Sequential phase: filter comments, prepare worktrees, add reactions, build tasks
 	var tasks []reviewTask
@@ -143,6 +145,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 	runSequential(ctx, tasks, func(ctx context.Context, task reviewTask) {
 		a.emit(Event{
 			Type:      EventAgentInvocation,
+			Category:  CategoryAgent,
 			Worker:    a.workerName(),
 			State:     "reviewing",
 			Action:    "Addressing review feedback",
@@ -163,6 +166,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			a.logger.Error("agent failed to address review", "pr", task.work.PRNumber, "error", err)
 			a.emit(Event{
 				Type:      EventError,
+				Category:  CategoryError,
 				Worker:    a.workerName(),
 				State:     "error",
 				Action:    "Agent failed to address review",
@@ -174,6 +178,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		}
 		a.emit(Event{
 			Type:      EventAgentCompleted,
+			Category:  CategoryAgent,
 			Worker:    a.workerName(),
 			State:     "idle",
 			Action:    "Review feedback addressed",

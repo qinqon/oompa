@@ -78,6 +78,146 @@ func TestRingBuffer_EventsSince(t *testing.T) {
 	}
 }
 
+func TestDefaultEventCategories(t *testing.T) {
+	defaults := DefaultEventCategories()
+
+	// Should include actionable categories
+	actionable := []EventCategory{CategoryRebase, CategoryCI, CategoryReview, CategoryConflict, CategoryAgent, CategoryIssue, CategoryTriage, CategoryComment, CategoryError}
+	for _, cat := range actionable {
+		if !defaults[cat] {
+			t.Errorf("expected default categories to include %q", cat)
+		}
+	}
+
+	// Should exclude noise categories
+	noise := []EventCategory{CategoryPollCycle, CategoryCheck, CategoryCleanup, CategorySkip}
+	for _, cat := range noise {
+		if defaults[cat] {
+			t.Errorf("expected default categories to exclude %q", cat)
+		}
+	}
+}
+
+func TestAllEventCategories(t *testing.T) {
+	all := AllEventCategories()
+
+	expected := []EventCategory{
+		CategoryPollCycle, CategoryCheck, CategoryCleanup, CategoryRebase,
+		CategoryCI, CategoryReview, CategoryConflict, CategoryAgent,
+		CategoryIssue, CategoryTriage, CategoryComment, CategoryError, CategorySkip,
+	}
+	if len(all) != len(expected) {
+		t.Errorf("expected %d categories, got %d", len(expected), len(all))
+	}
+	for _, cat := range expected {
+		if !all[cat] {
+			t.Errorf("expected all categories to include %q", cat)
+		}
+	}
+}
+
+func TestParseEventCategories(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    map[EventCategory]bool
+		wantErr bool
+	}{
+		{
+			name:  "single category",
+			input: "ci",
+			want:  map[EventCategory]bool{CategoryCI: true},
+		},
+		{
+			name:  "multiple categories",
+			input: "ci,error,agent",
+			want:  map[EventCategory]bool{CategoryCI: true, CategoryError: true, CategoryAgent: true},
+		},
+		{
+			name:  "with spaces",
+			input: " ci , error ",
+			want:  map[EventCategory]bool{CategoryCI: true, CategoryError: true},
+		},
+		{
+			name:    "invalid category",
+			input:   "ci,invalid",
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: true,
+		},
+		{
+			name:    "only commas",
+			input:   ",,",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseEventCategories(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseEventCategories() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("ParseEventCategories() = %v, want %v", got, tt.want)
+				return
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("ParseEventCategories() missing category %q", k)
+				}
+			}
+		})
+	}
+}
+
+func TestEventCategoryJSONRoundTrip(t *testing.T) {
+	event := Event{
+		Type:     EventActionStarted,
+		Category: CategoryCI,
+		Worker:   "test/repo:prs",
+		Action:   "Checking CI",
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	// Verify category is in the JSON
+	if !strings.Contains(string(data), `"category":"ci"`) {
+		t.Errorf("expected category in JSON, got: %s", string(data))
+	}
+
+	var decoded Event
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if decoded.Category != CategoryCI {
+		t.Errorf("expected category ci, got %q", decoded.Category)
+	}
+}
+
+func TestEventCategoryOmitEmpty(t *testing.T) {
+	event := Event{
+		Type:   EventActionStarted,
+		Worker: "test/repo",
+		Action: "Test action",
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"category"`) {
+		t.Errorf("expected category field to be omitted when empty, got: %s", string(data))
+	}
+}
+
 func TestDefaultSocketPath(t *testing.T) {
 	// Test with XDG_RUNTIME_DIR set
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")

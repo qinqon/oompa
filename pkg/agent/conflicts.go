@@ -9,16 +9,18 @@ import (
 // For simple rebases when a PR is just behind the base branch, use ProcessRebase instead.
 func (a *Agent) ProcessConflicts(ctx context.Context) {
 	a.emit(Event{
-		Type:   EventActionStarted,
-		Worker: a.workerName(),
-		State:  "working",
-		Action: "Checking for merge conflicts",
+		Type:     EventActionStarted,
+		Category: CategoryCheck,
+		Worker:   a.workerName(),
+		State:    "working",
+		Action:   "Checking for merge conflicts",
 	})
 	defer a.emit(Event{
-		Type:   EventActionCompleted,
-		Worker: a.workerName(),
-		State:  "idle",
-		Action: "Conflict check complete",
+		Type:     EventActionCompleted,
+		Category: CategoryCheck,
+		Worker:   a.workerName(),
+		State:    "idle",
+		Action:   "Conflict check complete",
 	})
 	// Sequential phase: GitHub API calls, worktree setup, git fetch, automatic rebase attempts
 	var tasks []conflictTask
@@ -65,7 +67,15 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 				a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr)
 			} else {
 				a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
-				if !a.ShouldSkipComment("conflict") {
+			a.emit(Event{
+				Type:      EventActionCompleted,
+				Category:  CategoryRebase,
+				Worker:    a.workerName(),
+				State:     "working",
+				Action:    "Rebased and pushed",
+				PRNumbers: []int{work.PRNumber},
+			})
+			if !a.ShouldSkipComment("conflict") {
 					_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
 						fmt.Sprintf("Rebased commit %s on main and pushed.\n\n%s", shortSHA(headSHA), a.botComment()))
 				}
@@ -94,16 +104,18 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 // If a rebase fails due to conflicts, this delegates to the conflict resolution flow.
 func (a *Agent) ProcessRebase(ctx context.Context) {
 	a.emit(Event{
-		Type:   EventActionStarted,
-		Worker: a.workerName(),
-		State:  "rebasing",
-		Action: "Checking for outdated PRs",
+		Type:     EventActionStarted,
+		Category: CategoryCheck,
+		Worker:   a.workerName(),
+		State:    "rebasing",
+		Action:   "Checking for outdated PRs",
 	})
 	defer a.emit(Event{
-		Type:   EventActionCompleted,
-		Worker: a.workerName(),
-		State:  "idle",
-		Action: "Rebase check complete",
+		Type:     EventActionCompleted,
+		Category: CategoryCheck,
+		Worker:   a.workerName(),
+		State:    "idle",
+		Action:   "Rebase check complete",
 	})
 	// Sequential phase: check states, try automatic rebase, collect failed conflicts into tasks
 	var tasks []conflictTask
@@ -175,7 +187,15 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 			a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr)
 		} else {
 			a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
-			if !a.ShouldSkipComment("rebase") {
+		a.emit(Event{
+			Type:      EventActionCompleted,
+			Category:  CategoryRebase,
+			Worker:    a.workerName(),
+			State:     "rebasing",
+			Action:    "Rebased and pushed",
+			PRNumbers: []int{work.PRNumber},
+		})
+		if !a.ShouldSkipComment("rebase") {
 				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
 					fmt.Sprintf("Rebased commit %s on main and pushed.\n\n%s", shortSHA(headSHA), a.botComment()))
 			}
@@ -189,6 +209,15 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 // resolveConflictsSequential invokes the coding agent to resolve conflicts for a list of tasks sequentially.
 func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflictTask) {
 	runSequential(ctx, tasks, func(ctx context.Context, task conflictTask) {
+		a.emit(Event{
+			Type:      EventAgentInvocation,
+			Category:  CategoryConflict,
+			Worker:    a.workerName(),
+			State:     "working",
+			Action:    "Resolving merge conflicts",
+			PRNumbers: []int{task.work.PRNumber},
+		})
+
 		// Get commit count before invoking agent and validate capture
 		commitsBefore := a.getPRCommits(ctx, task.work.WorktreePath)
 		if commitsBefore == nil {
@@ -201,6 +230,15 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 		_, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		if err != nil {
 			a.logger.Error("agent failed to resolve conflicts", "pr", task.work.PRNumber, "error", err)
+			a.emit(Event{
+				Type:      EventError,
+				Category:  CategoryError,
+				Worker:    a.workerName(),
+				State:     "error",
+				Action:    "Conflict resolution failed",
+				PRNumbers: []int{task.work.PRNumber},
+				Error:     err.Error(),
+			})
 			// Post a hidden marker so deduplication skips this SHA on the next cycle
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 				fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(task.headSHA)))
@@ -234,10 +272,20 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 			// Post a hidden marker so deduplication skips this SHA on the next cycle
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 				fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(task.headSHA)))
-		} else if !a.ShouldSkipComment("conflict") {
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("Rebased commit %s on main and pushed (conflicts resolved).\n\n%s", shortSHA(task.headSHA), a.botComment())); err != nil {
-				a.logger.Error("failed to log success to github", "pr", task.work.PRNumber, "error", err)
+		} else {
+		a.emit(Event{
+			Type:      EventActionCompleted,
+			Category:  CategoryConflict,
+			Worker:    a.workerName(),
+			State:     "working",
+			Action:    "Conflicts resolved",
+			PRNumbers: []int{task.work.PRNumber},
+		})
+			if !a.ShouldSkipComment("conflict") {
+				if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+					fmt.Sprintf("Rebased commit %s on main and pushed (conflicts resolved).\n\n%s", shortSHA(task.headSHA), a.botComment())); err != nil {
+					a.logger.Error("failed to log success to github", "pr", task.work.PRNumber, "error", err)
+				}
 			}
 		}
 	})

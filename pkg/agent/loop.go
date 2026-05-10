@@ -195,35 +195,39 @@ func (a *Agent) workerName() string {
 // EmitPollCycleStart emits a poll cycle start event.
 func (a *Agent) EmitPollCycleStart() {
 	a.emit(Event{
-		Type:   EventPollCycleStart,
-		Worker: a.workerName(),
-		State:  "working",
-		Action: "Poll cycle started",
+		Type:     EventPollCycleStart,
+		Category: CategoryPollCycle,
+		Worker:   a.workerName(),
+		State:    "working",
+		Action:   "Poll cycle started",
 	})
 }
 
 // EmitPollCycleEnd emits a poll cycle end event.
 func (a *Agent) EmitPollCycleEnd() {
 	a.emit(Event{
-		Type:   EventPollCycleEnd,
-		Worker: a.workerName(),
-		State:  "idle",
-		Action: "Poll cycle completed",
+		Type:     EventPollCycleEnd,
+		Category: CategoryPollCycle,
+		Worker:   a.workerName(),
+		State:    "idle",
+		Action:   "Poll cycle completed",
 	})
 }
 
 // CleanupDone removes worktrees for merged or closed PRs.
 func (a *Agent) CleanupDone(ctx context.Context) {
 	a.emit(Event{
-		Type:   EventActionStarted,
-		Worker: a.workerName(),
-		Action: "Cleaning up merged/closed PRs",
+		Type:     EventActionStarted,
+		Category: CategoryCleanup,
+		Worker:   a.workerName(),
+		Action:   "Cleaning up merged/closed PRs",
 	})
 	defer a.emit(Event{
-		Type:   EventActionCompleted,
-		Worker: a.workerName(),
-		State:  "idle",
-		Action: "Cleanup complete",
+		Type:     EventActionCompleted,
+		Category: CategoryCleanup,
+		Worker:   a.workerName(),
+		State:    "idle",
+		Action:   "Cleanup complete",
 	})
 	for key, work := range a.state.ActiveIssues {
 		if work.PRNumber == 0 {

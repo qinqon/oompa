@@ -658,14 +658,25 @@ func (m TUIModel) View() string {
 	return b.String()
 }
 
+// defaultCategories caches the default set once for the TUI activity log filter.
+var tuiDefaultCategories = agent.DefaultEventCategories()
+
 func (m TUIModel) renderTUIActivityLog(height int) string {
-	title := fmt.Sprintf(" Activity Log (%d events)", len(m.events))
+	// Count displayable events (those passing the default category filter)
+	displayCount := 0
+	for _, e := range m.events {
+		if e.Category == "" || tuiDefaultCategories[e.Category] {
+			displayCount++
+		}
+	}
+
+	title := fmt.Sprintf(" Activity Log (%d events)", displayCount)
 
 	// Iterate in reverse (newest first) instead of copying and sorting.
 	// Events are appended chronologically, so reverse iteration gives newest first.
 	maxEntries := max(height-2, 0)
 	// Clamp offset so we always show at least some events when available
-	maxOffset := max(len(m.events)-maxEntries, 0)
+	maxOffset := max(displayCount-maxEntries, 0)
 	startFromEnd := min(m.logOffset, maxOffset)
 	var lines []string
 	lines = append(lines, tuiTitleStyle.Render(title))
@@ -673,20 +684,28 @@ func (m TUIModel) renderTUIActivityLog(height int) string {
 	count := 0
 	skipped := 0
 	for i := len(m.events) - 1; i >= 0 && count < maxEntries; i-- {
+		e := m.events[i]
+		// Filter out routine noise in the TUI activity log
+		if e.Category != "" && !tuiDefaultCategories[e.Category] {
+			continue
+		}
 		if skipped < startFromEnd {
 			skipped++
 			continue
 		}
-		e := m.events[i]
 		ts := e.Timestamp.Local().Format("15:04:05")
+		catTag := ""
+		if e.Category != "" {
+			catTag = fmt.Sprintf("[%-8s] ", e.Category)
+		}
 		action := e.Action
 		if e.Detail != "" {
 			action += " - " + e.Detail
 		}
-		maxActionLen := max(m.width-35, 20)
+		maxActionLen := max(m.width-45, 20)
 		action = truncateRunes(action, maxActionLen)
 		worker := truncateRunes(e.Worker, 18)
-		line := fmt.Sprintf(" %s  %-18s %s", tuiDimStyle.Render(ts), worker, action)
+		line := fmt.Sprintf(" %s  %s%-18s %s", tuiDimStyle.Render(ts), catTag, worker, action)
 		lines = append(lines, line)
 		count++
 	}

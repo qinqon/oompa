@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,18 +23,95 @@ const (
 	EventError             EventType = "error"
 )
 
+// EventCategory classifies events for filtering in the status/TUI views.
+type EventCategory string
+
+const (
+	CategoryPollCycle EventCategory = "poll"     // poll cycle start/end
+	CategoryCheck     EventCategory = "check"    // routine checks (CI, conflicts, rebase, review)
+	CategoryCleanup   EventCategory = "cleanup"  // worktree cleanup
+	CategoryRebase    EventCategory = "rebase"   // rebase performed
+	CategoryCI        EventCategory = "ci"       // CI investigation/fix
+	CategoryReview    EventCategory = "review"   // review feedback addressed
+	CategoryConflict  EventCategory = "conflict" // conflict resolution
+	CategoryAgent     EventCategory = "agent"    // agent invocation/completion
+	CategoryIssue     EventCategory = "issue"    // new issue processing
+	CategoryTriage    EventCategory = "triage"   // triage job processing
+	CategoryComment   EventCategory = "comment"  // comment posted
+	CategoryError     EventCategory = "error"    // errors/warnings
+	CategorySkip      EventCategory = "skip"     // skipped checks/comments
+)
+
+// DefaultEventCategories returns the set of categories shown by default in oompa status.
+// Excludes routine noise: poll, check, cleanup, skip.
+func DefaultEventCategories() map[EventCategory]bool {
+	return map[EventCategory]bool{
+		CategoryRebase:   true,
+		CategoryCI:       true,
+		CategoryReview:   true,
+		CategoryConflict: true,
+		CategoryAgent:    true,
+		CategoryIssue:    true,
+		CategoryTriage:   true,
+		CategoryComment:  true,
+		CategoryError:    true,
+	}
+}
+
+// AllEventCategories returns the set of all valid event categories.
+func AllEventCategories() map[EventCategory]bool {
+	return map[EventCategory]bool{
+		CategoryPollCycle: true,
+		CategoryCheck:     true,
+		CategoryCleanup:   true,
+		CategoryRebase:    true,
+		CategoryCI:        true,
+		CategoryReview:    true,
+		CategoryConflict:  true,
+		CategoryAgent:     true,
+		CategoryIssue:     true,
+		CategoryTriage:    true,
+		CategoryComment:   true,
+		CategoryError:     true,
+		CategorySkip:      true,
+	}
+}
+
+// ParseEventCategories parses a comma-separated string of category names into a set.
+// Returns an error if any category name is invalid.
+func ParseEventCategories(s string) (map[EventCategory]bool, error) {
+	all := AllEventCategories()
+	result := make(map[EventCategory]bool)
+	for part := range strings.SplitSeq(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		cat := EventCategory(part)
+		if !all[cat] {
+			return nil, fmt.Errorf("invalid event category %q", part)
+		}
+		result[cat] = true
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no valid event categories provided")
+	}
+	return result, nil
+}
+
 // Event represents a structured event emitted by the agent.
 type Event struct {
-	Type      EventType `json:"type"`
-	Timestamp time.Time `json:"timestamp"`
-	Worker    string    `json:"worker"`                // e.g. "ovn-k/prs"
-	State     string    `json:"state,omitempty"`       // idle, working, reviewing, rebasing, error, sleeping
-	Action    string    `json:"action,omitempty"`      // human-readable description
-	Detail    string    `json:"detail,omitempty"`      // extra context
-	PRNumbers []int     `json:"prNumbers,omitempty"`   // associated PR numbers
-	CostUSD   float64   `json:"costUSD,omitempty"`     // agent invocation cost
-	Duration  float64   `json:"durationSec,omitempty"` // duration in seconds
-	Error     string    `json:"error,omitempty"`       // error message
+	Type      EventType     `json:"type"`
+	Category  EventCategory `json:"category,omitempty"` // event category for filtering
+	Timestamp time.Time     `json:"timestamp"`
+	Worker    string        `json:"worker"`                // e.g. "ovn-k/prs"
+	State     string        `json:"state,omitempty"`       // idle, working, reviewing, rebasing, error, sleeping
+	Action    string        `json:"action,omitempty"`      // human-readable description
+	Detail    string        `json:"detail,omitempty"`      // extra context
+	PRNumbers []int         `json:"prNumbers,omitempty"`   // associated PR numbers
+	CostUSD   float64       `json:"costUSD,omitempty"`     // agent invocation cost
+	Duration  float64       `json:"durationSec,omitempty"` // duration in seconds
+	Error     string        `json:"error,omitempty"`       // error message
 }
 
 // EventEmitter is the interface for emitting events.
