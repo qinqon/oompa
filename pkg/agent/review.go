@@ -86,23 +86,22 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		// Filter reviews
+		// Filter reviews: skip bot-posted and non-whitelisted reviewers.
+		// No headCommitDate filter needed here — GetPRReviews already filters
+		// by sinceID (work.LastReviewID), so only unprocessed reviews are returned.
+		// This prevents the race condition where multiple bot reviewers post
+		// simultaneously: oompa addresses one, pushes (creating a new HEAD),
+		// and the remaining reviews are correctly processed on the next cycle
+		// because they haven't been cursor-advanced past yet.
 		var humanReviews []PRReview
-		if len(reviews) > 0 {
-			headCommitDate, _ := a.gh.GetPRHeadCommitDate(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
-
-			for _, r := range reviews {
-				if strings.Contains(r.Body, botMarker) {
-					continue
-				}
-				if !a.isAllowedReviewer(r.User) {
-					continue
-				}
-				if !headCommitDate.IsZero() && r.SubmittedAt.Before(headCommitDate) {
-					continue
-				}
-				humanReviews = append(humanReviews, r)
+		for _, r := range reviews {
+			if strings.Contains(r.Body, botMarker) {
+				continue
 			}
+			if !a.isAllowedReviewer(r.User) {
+				continue
+			}
+			humanReviews = append(humanReviews, r)
 		}
 
 		if len(humanComments) == 0 && len(humanReviews) == 0 {
