@@ -15,14 +15,14 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 
 	a.emit(Event{
 		Type:     EventActionStarted,
-		Category: CategoryIssue,
+		Category: CategoryCheck,
 		Worker:   a.workerName(),
 		State:    "working",
 		Action:   "Scanning for new issues",
 	})
 	defer a.emit(Event{
 		Type:     EventActionCompleted,
-		Category: CategoryIssue,
+		Category: CategoryCheck,
 		Worker:   a.workerName(),
 		State:    "idle",
 		Action:   "Issue scanning complete",

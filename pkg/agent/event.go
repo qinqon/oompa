@@ -28,7 +28,7 @@ type EventCategory string
 
 const (
 	CategoryPollCycle EventCategory = "poll"     // poll cycle start/end
-	CategoryCheck     EventCategory = "check"    // routine checks (CI, conflicts, rebase, review)
+	CategoryCheck     EventCategory = "check"    // routine checks (CI, conflicts, rebase, review, issue scanning)
 	CategoryCleanup   EventCategory = "cleanup"  // worktree cleanup
 	CategoryRebase    EventCategory = "rebase"   // rebase performed
 	CategoryCI        EventCategory = "ci"       // CI investigation/fix
