@@ -36,7 +36,7 @@ jobs:
           # Create new release pointing to this commit
           gh release create latest \
             --title "Latest Build ($(echo ${{ github.sha }} | cut -c1-7))" \
-            --notes "Automated release from commit ${{ github.sha }}" \
+            --generate-notes \
             --target ${{ github.sha }} \
             oompa-linux-amd64 \
             oompa-linux-arm64 \
