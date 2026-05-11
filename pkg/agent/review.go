@@ -30,6 +30,16 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			continue
 		}
 
+		// Skip review processing if this PR has exceeded the per-session cost threshold.
+		if a.cfg.MaxPRSessionCost > 0 && work.SessionCostUSD >= a.cfg.MaxPRSessionCost {
+			a.logger.Warn("skipping reviews (per-PR session cost limit reached)",
+				"pr", work.PRNumber,
+				"sessionCostUSD", work.SessionCostUSD,
+				"limit", a.cfg.MaxPRSessionCost,
+			)
+			continue
+		}
+
 		comments, err := a.gh.GetPRReviewComments(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, work.LastCommentID)
 		if err != nil {
 			a.logger.Error("failed to get PR comments", "pr", work.PRNumber, "error", err)
@@ -118,6 +128,32 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			continue
 		}
 
+		// Skip review processing if this PR has hit the no-op retry limit.
+		// This prevents infinite loops where the agent keeps being invoked on
+		// the same reviews but can't push (e.g., persistent git corruption).
+		// The counter resets when: (1) a push succeeds, or (2) the no-op limit
+		// is reached and the problematic batch is skipped (below). This ensures
+		// stale reviews are eventually skipped while new reviews can be processed.
+		if a.cfg.MaxReviewNoOps > 0 && work.ReviewNoOpCount >= a.cfg.MaxReviewNoOps {
+			// Advance cursors past these reviews to stop re-fetching them.
+			if maxCommentID > work.LastCommentID {
+				work.LastCommentID = maxCommentID
+			}
+			if maxReviewID > work.LastReviewID {
+				work.LastReviewID = maxReviewID
+			}
+			a.logger.Warn("skipping stale reviews (no-op retry limit reached)",
+				"pr", work.PRNumber,
+				"noOpCount", work.ReviewNoOpCount,
+				"limit", a.cfg.MaxReviewNoOps,
+			)
+			// Reset counter after skipping the problematic batch so new reviews
+			// that arrive later can be processed. Without this reset, the PR
+			// would be permanently blocked from review processing.
+			work.ReviewNoOpCount = 0
+			continue
+		}
+
 		a.logger.Info("addressing review feedback", "pr", work.PRNumber, "comments", len(humanComments), "reviews", len(humanReviews))
 
 		if err := a.ensureWorktreeReady(ctx, work); err != nil {
@@ -161,7 +197,10 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		headSHABefore := strings.TrimSpace(string(headBefore))
 
 		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, a.cfg.Owner, a.cfg.Repo)
-		_, err = a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
+		agentResult, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
+		// Track cumulative cost even on failure — failed invocations still consume
+		// tokens and incur costs, so the MaxPRSessionCost guard must count them.
+		task.work.SessionCostUSD += agentResult.CostUSD
 		if err != nil {
 			a.logger.Error("agent failed to address review", "pr", task.work.PRNumber, "error", err)
 			a.emit(Event{
@@ -174,6 +213,16 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 				Duration:  time.Since(agentStart).Seconds(),
 				Error:     err.Error(),
 			})
+			// Advance cursors even on agent failure — the reviews were evaluated.
+			// Not advancing causes an infinite retry loop where the same reviews
+			// are re-fetched and re-processed every poll cycle ($0.50-1.00 each time).
+			if task.maxCommentID > task.work.LastCommentID {
+				task.work.LastCommentID = task.maxCommentID
+			}
+			if task.maxReviewID > task.work.LastReviewID {
+				task.work.LastReviewID = task.maxReviewID
+			}
+			task.work.ReviewNoOpCount++
 			return
 		}
 		a.emit(Event{
@@ -248,6 +297,19 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			if task.maxReviewID > task.work.LastReviewID {
 				task.work.LastReviewID = task.maxReviewID
 			}
+		}
+
+		// Track consecutive no-op cycles for retry loop detection.
+		// A "no-op" is when the agent ran but no changes were pushed.
+		if pushed {
+			task.work.ReviewNoOpCount = 0 // reset on successful push
+		} else {
+			task.work.ReviewNoOpCount++
+			a.logger.Info("review cycle produced no push",
+				"pr", task.work.PRNumber,
+				"noOpCount", task.work.ReviewNoOpCount,
+				"changeDetected", changeDetected,
+			)
 		}
 	})
 }

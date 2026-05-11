@@ -59,6 +59,24 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 	var skipChecks string
 	flag.StringVar(&skipChecks, "skip-checks", os.Getenv("OOMPA_SKIP_CHECKS"), "Comma-separated list of CI check names to ignore entirely")
 
+	var maxReviewNoOps int
+	maxReviewNoOpsDefault := 3
+	if v := os.Getenv("OOMPA_MAX_REVIEW_NOOPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			maxReviewNoOpsDefault = n
+		}
+	}
+	flag.IntVar(&maxReviewNoOps, "max-review-noops", maxReviewNoOpsDefault, "Consecutive no-op review cycles before pausing review processing (0 = unlimited)")
+
+	var maxPRSessionCost float64
+	maxPRSessionCostDefault := 0.0
+	if v := os.Getenv("OOMPA_MAX_PR_SESSION_COST"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			maxPRSessionCostDefault = f
+		}
+	}
+	flag.Float64Var(&maxPRSessionCost, "max-pr-session-cost", maxPRSessionCostDefault, "Max cumulative agent cost per PR per session before pausing (0 = unlimited)")
+
 	var triageJobs string
 	flag.StringVar(&triageJobs, "triage-jobs", os.Getenv("OOMPA_TRIAGE_JOBS"), "Comma-separated CI job URLs to monitor for periodic job triage")
 	triageLookback := time.Duration(0)
@@ -115,6 +133,10 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 			}
 		}
 	}
+
+	// Assign safety guard config early — needed in both single-repo and config-file modes.
+	cfg.MaxReviewNoOps = maxReviewNoOps
+	cfg.MaxPRSessionCost = maxPRSessionCost
 
 	// In config-file mode, --repo is not required
 	if configPath != "" {

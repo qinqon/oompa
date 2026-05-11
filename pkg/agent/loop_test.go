@@ -3181,3 +3181,286 @@ func TestProcessCIFailures_SkipChecksDoesNotAffectAllCompleted(t *testing.T) {
 		t.Errorf("expected LastCheckedCISHA to be set when skipped check is the only non-completed, got %q", work.LastCheckedCISHA)
 	}
 }
+
+func TestProcessReviewComments_AgentFailureAdvancesCursor(t *testing.T) {
+	// Issue #164: When the agent fails (e.g., git corruption), cursors must advance
+	// to prevent infinite retry loops that waste API credits.
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+		prReviews: []PRReview{
+			{ID: 200, User: "copilot", Body: "Review feedback"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:   42,
+		IssueTitle:    "Fix bug",
+		PRNumber:      100,
+		Status:        "pr-open",
+		WorktreePath:  "/tmp/worktree",
+		LastCommentID: 50,
+		LastReviewID:  100,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	// Cursors MUST advance even on agent failure to prevent infinite loops.
+	if work.LastCommentID != 60 {
+		t.Errorf("expected LastCommentID to advance to 60 on agent failure, got %d", work.LastCommentID)
+	}
+	if work.LastReviewID != 200 {
+		t.Errorf("expected LastReviewID to advance to 200 on agent failure, got %d", work.LastReviewID)
+	}
+	// ReviewNoOpCount should increment on failure.
+	if work.ReviewNoOpCount != 1 {
+		t.Errorf("expected ReviewNoOpCount to be 1 after agent failure, got %d", work.ReviewNoOpCount)
+	}
+}
+
+func TestProcessReviewComments_NoOpCountPausesReviews(t *testing.T) {
+	// Issue #164: After N consecutive no-op cycles, review processing should pause.
+	// Simulates the scenario where push keeps failing on the same reviews.
+	result := streamResultJSON(AgentResult{Result: "No changes needed"})
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.MaxReviewNoOps = 3
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:     42,
+		IssueTitle:      "Fix bug",
+		PRNumber:        100,
+		Status:          "pr-open",
+		WorktreePath:    "/tmp/worktree",
+		LastCommentID:   50,
+		ReviewNoOpCount: 3, // already at limit
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Should NOT invoke the agent because no-op limit is reached.
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	if claudeCalls != 0 {
+		t.Errorf("expected 0 claude calls when no-op limit reached, got %d", claudeCalls)
+	}
+
+	// Cursors should still advance past the skipped reviews.
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastCommentID != 60 {
+		t.Errorf("expected LastCommentID to advance to 60, got %d", work.LastCommentID)
+	}
+}
+
+func TestProcessReviewComments_NewReviewAfterNoOpPause(t *testing.T) {
+	// Issue #164: When the no-op limit is reached, cursors advance and the
+	// counter resets. New reviews that arrive later are processed normally.
+	// This tests the two-cycle flow:
+	// Cycle 1: no-op limit hit → cursors advance, counter resets, reviews skipped
+	// Cycle 2: new review arrives with ID > advanced cursor → processed normally
+	result := streamResultJSON(AgentResult{Result: "Addressed"})
+	gh := &mockGitHubClient{
+		// This review has ID 300, which will be above the cursor after it advances
+		prReviews: []PRReview{
+			{ID: 300, User: "reviewer", Body: "New feedback"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.MaxReviewNoOps = 3
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:     42,
+		IssueTitle:      "Fix bug",
+		PRNumber:        100,
+		Status:          "pr-open",
+		WorktreePath:    "/tmp/worktree",
+		LastReviewID:    250, // cursor at 250, review 300 is new
+		ReviewNoOpCount: 3,  // at limit
+	}
+
+	// Cycle 1: no-op limit reached → cursors advance to 300, counter resets to 0
+	agent.ProcessReviewComments(context.Background())
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastReviewID != 300 {
+		t.Fatalf("expected LastReviewID to advance to 300 on no-op skip, got %d", work.LastReviewID)
+	}
+	if work.ReviewNoOpCount != 0 {
+		t.Fatalf("expected ReviewNoOpCount to reset to 0 after no-op skip, got %d", work.ReviewNoOpCount)
+	}
+
+	// Simulate a new review arriving after the cursor advanced
+	gh.prReviews = []PRReview{
+		{ID: 400, User: "reviewer", Body: "Another round of feedback"},
+	}
+
+	// Cycle 2: counter was reset to 0, so the new review (ID 400) is processed.
+	agent.ProcessReviewComments(context.Background())
+
+	// The new review should be processed since the counter was reset.
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	if claudeCalls != 1 {
+		t.Errorf("expected 1 claude call for new review after counter reset, got %d", claudeCalls)
+	}
+
+	// Cursor should advance past the new review
+	if work.LastReviewID != 400 {
+		t.Errorf("expected LastReviewID to advance to 400, got %d", work.LastReviewID)
+	}
+}
+
+func TestProcessReviewComments_NoOpCountResetsOnPush(t *testing.T) {
+	// When the agent pushes successfully, the no-op counter should reset to 0.
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	// Use a runner that simulates uncommitted changes (triggers push path)
+	runner := &reviewFixupRunner{
+		mockCommandRunner: &mockCommandRunner{},
+	}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:     42,
+		IssueTitle:      "Fix bug",
+		PRNumber:        100,
+		Status:          "pr-open",
+		WorktreePath:    "/tmp/worktree",
+		LastCommentID:   50,
+		ReviewNoOpCount: 2, // was approaching limit
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	// The fixup runner simulates a successful push, so counter should reset.
+	if work.ReviewNoOpCount != 0 {
+		t.Errorf("expected ReviewNoOpCount to reset to 0 after successful push, got %d", work.ReviewNoOpCount)
+	}
+}
+
+func TestProcessReviewComments_NoOpCountIncrementsOnNoPush(t *testing.T) {
+	// When the agent runs but produces no changes (no push), the counter increments.
+	result := streamResultJSON(AgentResult{Result: "All reviews are stale"})
+	gh := &mockGitHubClient{
+		prReviews: []PRReview{
+			{ID: 200, User: "reviewer", Body: "Please fix the error handling"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:     42,
+		IssueTitle:      "Fix bug",
+		PRNumber:        100,
+		Status:          "pr-open",
+		WorktreePath:    "/tmp/worktree",
+		LastReviewID:    100,
+		ReviewNoOpCount: 1,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.ReviewNoOpCount != 2 {
+		t.Errorf("expected ReviewNoOpCount to increment to 2, got %d", work.ReviewNoOpCount)
+	}
+	// Cursor should advance since no changes were detected
+	if work.LastReviewID != 200 {
+		t.Errorf("expected LastReviewID to advance to 200, got %d", work.LastReviewID)
+	}
+}
+
+func TestProcessReviewComments_CostGuardSkipsReviews(t *testing.T) {
+	// Issue #164: When a PR exceeds the per-session cost threshold, skip reviews.
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.MaxPRSessionCost = 10.0
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:    42,
+		IssueTitle:     "Fix bug",
+		PRNumber:       100,
+		Status:         "pr-open",
+		WorktreePath:   "/tmp/worktree",
+		LastCommentID:  50,
+		SessionCostUSD: 11.5, // exceeds $10 threshold
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Should NOT invoke the agent because cost limit is reached.
+	if len(runner.calls) != 0 {
+		t.Errorf("expected 0 calls when cost limit reached, got %d", len(runner.calls))
+	}
+}
+
+func TestProcessReviewComments_CostTracking(t *testing.T) {
+	// Verify that agent cost is accumulated in SessionCostUSD.
+	result := streamResultJSON(AgentResult{Result: "Done", CostUSD: 0.75})
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:    42,
+		IssueTitle:     "Fix bug",
+		PRNumber:       100,
+		Status:         "pr-open",
+		WorktreePath:   "/tmp/worktree",
+		LastCommentID:  50,
+		SessionCostUSD: 2.0, // existing cost
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	expectedCost := 2.75 // 2.0 + 0.75
+	if work.SessionCostUSD != expectedCost {
+		t.Errorf("expected SessionCostUSD %.2f, got %.2f", expectedCost, work.SessionCostUSD)
+	}
+}

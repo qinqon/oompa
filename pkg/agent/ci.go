@@ -34,6 +34,16 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
+		// Skip CI processing if this PR has exceeded the per-session cost threshold.
+		if a.cfg.MaxPRSessionCost > 0 && work.SessionCostUSD >= a.cfg.MaxPRSessionCost {
+			a.logger.Warn("skipping CI processing (per-PR session cost limit reached)",
+				"pr", work.PRNumber,
+				"sessionCostUSD", work.SessionCostUSD,
+				"limit", a.cfg.MaxPRSessionCost,
+			)
+			continue
+		}
+
 		headSHA, err := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
 		if err != nil {
 			a.logger.Error("failed to get PR head SHA", "pr", work.PRNumber, "error", err)
@@ -180,6 +190,18 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 
 	// Sequential phase: Claude invocations and post-processing
 	runSequential(ctx, tasks, func(ctx context.Context, task ciTask) {
+		// Re-check cost guard before each invocation — multiple tasks can be
+		// enqueued for the same PR, and earlier invocations may have pushed
+		// SessionCostUSD over the limit.
+		if a.cfg.MaxPRSessionCost > 0 && task.work.SessionCostUSD >= a.cfg.MaxPRSessionCost {
+			a.logger.Warn("skipping CI investigation (per-PR session cost limit reached)",
+				"pr", task.work.PRNumber,
+				"sessionCostUSD", task.work.SessionCostUSD,
+				"limit", a.cfg.MaxPRSessionCost,
+			)
+			return
+		}
+
 		a.emit(Event{
 			Type:      EventAgentInvocation,
 			Category:  CategoryCI,
@@ -190,6 +212,9 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		})
 		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff, task.commits, a.cfg.SignedOffBy, a.cfg.SkipFix)
 		result, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
+		// Track cumulative cost even on failure — failed invocations still consume
+		// tokens and incur costs, so the MaxPRSessionCost guard must count them.
+		task.work.SessionCostUSD += result.CostUSD
 		if err != nil {
 			a.logger.Error("agent failed to investigate CI", "pr", task.work.PRNumber, "error", err)
 			a.emit(Event{

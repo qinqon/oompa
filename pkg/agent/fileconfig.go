@@ -325,8 +325,10 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			GitAuthorName:   globalCfg.GitAuthorName,
 			GitAuthorEmail:  globalCfg.GitAuthorEmail,
 			SignedOffBy:     globalCfg.SignedOffBy,
-			Reviewers:       projReviewers,
-			Version:         globalCfg.Version,
+			Reviewers:          projReviewers,
+			Version:            globalCfg.Version,
+			MaxReviewNoOps:     globalCfg.MaxReviewNoOps,
+			MaxPRSessionCost:   globalCfg.MaxPRSessionCost,
 			// GitHub App auth (shared)
 			GitHubAppID:             globalCfg.GitHubAppID,
 			GitHubAppPrivateKey:     globalCfg.GitHubAppPrivateKey,
