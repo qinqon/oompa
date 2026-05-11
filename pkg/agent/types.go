@@ -80,6 +80,7 @@ type CheckRun struct {
 	Status     string // queued, in_progress, completed
 	Conclusion string // success, failure, neutral, cancelled, skipped, timed_out, action_required
 	Output     string // summary/text from the check run, or target_url for commit statuses
+	HTMLURL    string // direct link to the check run page on GitHub
 }
 
 // JobRun represents a CI job run (periodic or triggered).

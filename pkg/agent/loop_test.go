@@ -17,7 +17,8 @@ type mockGitHubClient struct {
 	issueComments   []ReviewComment
 	prState         string
 	prs             []PR
-	addedComments   []string
+	addedComments      []string
+	addedCommentTargets []int // issue/PR number each comment was posted to
 	addedLabels     []string
 	removedLabels   []string
 	addedReactions  []string
@@ -70,8 +71,9 @@ func (m *mockGitHubClient) GetPRState(_ context.Context, _, _ string, _ int) (st
 	return m.prState, nil
 }
 
-func (m *mockGitHubClient) AddIssueComment(_ context.Context, _, _ string, _ int, body string) error {
+func (m *mockGitHubClient) AddIssueComment(_ context.Context, _, _ string, issueNum int, body string) error {
 	m.addedComments = append(m.addedComments, body)
+	m.addedCommentTargets = append(m.addedCommentTargets, issueNum)
 	return nil
 }
 
@@ -1607,14 +1609,20 @@ func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
 		t.Fatalf("expected 3 comments (unrelated + CI lane link + flaky reference), got %d", len(gh.addedComments))
 	}
 
-	// Verify the CI lane link comment (posted on the flaky issue)
+	// Verify the CI lane link comment (posted on the flaky issue #50)
 	if !strings.Contains(gh.addedComments[1], "CI failure on PR #100") {
 		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[1])
 	}
+	if gh.addedCommentTargets[1] != 50 {
+		t.Errorf("expected CI lane link comment posted to issue #50, got #%d", gh.addedCommentTargets[1])
+	}
 
-	// Verify the flaky reference comment on the PR
+	// Verify the flaky reference comment on the PR (#100)
 	if !strings.Contains(gh.addedComments[2], "Known flaky test tracked in #50") {
 		t.Errorf("expected flaky reference comment, got: %q", gh.addedComments[2])
+	}
+	if gh.addedCommentTargets[2] != 100 {
+		t.Errorf("expected flaky reference comment posted to PR #100, got #%d", gh.addedCommentTargets[2])
 	}
 }
 
@@ -1918,7 +1926,7 @@ func TestProcessCIFailures_CILaneLinkIncludesJobURL(t *testing.T) {
 	ciResult := streamResultJSON(AgentResult{Result: "UNRELATED The test timed out intermittently due to a flaky network connection in the CI environment"})
 	gh := &mockGitHubClient{
 		checkRuns: []CheckRun{
-			{ID: 67890, Name: "e2e (control-plane, HA, shared, ipv4)", Status: "completed", Conclusion: "failure", Output: "Error: test timed out waiting for condition"},
+			{ID: 67890, Name: "e2e (control-plane, HA, shared, ipv4)", Status: "completed", Conclusion: "failure", Output: "Error: test timed out waiting for condition", HTMLURL: "https://github.com/owner/repo/actions/runs/12345/job/67890"},
 		},
 		checkRunLogs: map[int64]string{
 			67890: "Running e2e tests...\nTimeout: waiting for pod to be ready\nTest failed after 300s\nStack trace:\n  at e2e.waitForPod(e2e.go:142)",

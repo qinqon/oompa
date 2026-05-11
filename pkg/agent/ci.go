@@ -373,7 +373,10 @@ func (a *Agent) handleFlakyIssue(ctx context.Context, task ciTask, explanation s
 	issueNum, found := a.matchExistingFlakyIssue(ctx, task, explanation)
 	if found {
 		// Add CI lane link as a comment on the existing flaky issue
-		a.addCILaneLinkComment(ctx, task, issueNum)
+		// (respects skip-comment: flaky to suppress all flaky-related comments)
+		if !a.ShouldSkipComment("flaky") {
+			a.addCILaneLinkComment(ctx, task, issueNum)
+		}
 
 		// Reference the existing issue in the PR comment
 		if !a.ShouldSkipComment("flaky") {
@@ -429,6 +432,8 @@ func (a *Agent) matchExistingFlakyIssue(ctx context.Context, task ciTask, explan
 	}
 	matchPrompt := buildFlakyMatchPrompt(task.failures[0].Name, matchOutput, existingIssues)
 	matchResult, matchErr := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, matchPrompt, a.logger, false)
+	// Track cumulative cost even on failure — failed invocations still consume tokens.
+	task.work.SessionCostUSD += matchResult.CostUSD
 	if matchErr != nil {
 		a.logger.Warn("failed to run agent for flaky issue matching", "error", matchErr)
 		return 0, false
@@ -451,12 +456,11 @@ func (a *Agent) matchExistingFlakyIssue(ctx context.Context, task ciTask, explan
 // addCILaneLinkComment posts a comment on an existing flaky issue with the CI lane
 // link and PR reference, building up evidence of repeated failures.
 func (a *Agent) addCILaneLinkComment(ctx context.Context, task ciTask, issueNum int) {
-	// Build CI lane link from the check run's output (for commit statuses)
-	// or construct one from the check run ID (for GitHub Actions).
+	// Build CI lane link from the check run's HTML URL (preferred),
+	// or extract from output text (for commit statuses like Prow).
 	var ciLink string
-	if task.failures[0].ID > 0 {
-		ciLink = fmt.Sprintf("https://github.com/%s/%s/runs/%d",
-			a.cfg.Owner, a.cfg.Repo, task.failures[0].ID)
+	if task.failures[0].HTMLURL != "" {
+		ciLink = task.failures[0].HTMLURL
 	} else if url := extractURL(task.failures[0].Output); url != "" {
 		ciLink = url
 	}
