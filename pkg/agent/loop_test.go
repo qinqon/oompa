@@ -439,6 +439,51 @@ func TestProcessNewIssues_EmptyLabelSkips(t *testing.T) {
 	}
 }
 
+func TestProcessNewIssues_ScanningEventsUseCategoryCheck(t *testing.T) {
+	gh := &mockGitHubClient{}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	emitter := &recordingEmitter{}
+	agent.SetEmitter(emitter)
+
+	agent.ProcessNewIssues(context.Background())
+
+	// Verify the scanning lifecycle events use CategoryCheck (not CategoryIssue)
+	// so they are filtered out of the default status view as routine noise.
+	var started, completed bool
+	for _, e := range emitter.events {
+		if e.Action == "Scanning for new issues" {
+			if e.Category != CategoryCheck {
+				t.Errorf("expected CategoryCheck for scanning start event, got %q", e.Category)
+			}
+			started = true
+		}
+		if e.Action == "Issue scanning complete" {
+			if e.Category != CategoryCheck {
+				t.Errorf("expected CategoryCheck for scanning complete event, got %q", e.Category)
+			}
+			completed = true
+		}
+	}
+	if !started {
+		t.Error("expected scanning start event to be emitted")
+	}
+	if !completed {
+		t.Error("expected scanning complete event to be emitted")
+	}
+}
+
+// recordingEmitter captures events for test assertions.
+type recordingEmitter struct {
+	events []Event
+}
+
+func (r *recordingEmitter) Emit(event Event) {
+	r.events = append(r.events, event)
+}
+
 func TestProcessReviewComments_NoNewComments(t *testing.T) {
 	gh := &mockGitHubClient{}
 	runner := &mockCommandRunner{}

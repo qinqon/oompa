@@ -30,5 +30,8 @@ go.work.sum
 .DS_Store
 Thumbs.db
 
+# Agent workflow artifacts
+.pr-body.md
+
 # AgentReady reports
 .agentready/
