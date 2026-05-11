@@ -156,6 +156,15 @@ func TestOpenCodeAgent_Run_Success(t *testing.T) {
 			t.Errorf("args missing %q: %v", want, call.Args)
 		}
 	}
+
+	// Verify prompt is passed via stdin, not as a CLI argument
+	if call.Stdin != "do something" {
+		t.Errorf("expected prompt %q on stdin, got %q", "do something", call.Stdin)
+	}
+	// Verify prompt is NOT in args
+	if strings.Contains(args, "do something") {
+		t.Errorf("prompt should not be in args when using stdin: %v", call.Args)
+	}
 }
 
 // TestOpenCodeAgent_Run_WithResume tests the --continue flag is passed when resume=true.
@@ -170,9 +179,14 @@ func TestOpenCodeAgent_Run_WithResume(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	args := strings.Join(runner.calls[0].Args, " ")
+	call := runner.calls[0]
+	args := strings.Join(call.Args, " ")
 	if !strings.Contains(args, "--continue") {
-		t.Errorf("expected --continue flag when resume=true, got: %v", runner.calls[0].Args)
+		t.Errorf("expected --continue flag when resume=true, got: %v", call.Args)
+	}
+	// Verify prompt is passed via stdin even when resuming
+	if call.Stdin != "continue work" {
+		t.Errorf("expected prompt %q on stdin, got %q", "continue work", call.Stdin)
 	}
 }
 

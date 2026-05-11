@@ -388,6 +388,10 @@ func (f *fakeClaudeRunner) Run(_ context.Context, workDir, name string, args ...
 	return stdout, stderr, runErr
 }
 
+func (f *fakeClaudeRunner) RunWithStdin(ctx context.Context, workDir, stdin, name string, args ...string) (stdout, stderr []byte, runErr error) {
+	return f.Run(ctx, workDir, name, args...)
+}
+
 func TestIntegration_FullIssueLifecycle(t *testing.T) {
 	ctx := context.Background()
 	cloneDir := initBareRepo(t)

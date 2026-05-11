@@ -8,18 +8,30 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"sync"
+)
+
+const (
+	// scannerInitBufSize is the initial buffer size for the bufio.Scanner
+	// used when streaming command output (64 KB).
+	scannerInitBufSize = 64 * 1024
+	// scannerMaxBufSize is the maximum buffer size the scanner will grow to
+	// when reading long lines from command output (10 MB).
+	scannerMaxBufSize = 10 * 1024 * 1024
 )
 
 // CommandRunner executes external commands.
 type CommandRunner interface {
 	Run(ctx context.Context, workDir string, name string, args ...string) (stdout []byte, stderr []byte, err error)
+	RunWithStdin(ctx context.Context, workDir string, stdin string, name string, args ...string) (stdout []byte, stderr []byte, err error)
 }
 
 // StreamingRunner extends CommandRunner with line-by-line stdout streaming.
 type StreamingRunner interface {
 	CommandRunner
 	RunStream(ctx context.Context, workDir string, onLine func(line []byte), name string, args ...string) (stdout []byte, stderr []byte, err error)
+	RunStreamWithStdin(ctx context.Context, workDir string, stdin string, onLine func(line []byte), name string, args ...string) (stdout []byte, stderr []byte, err error)
 }
 
 // ExecRunner is the concrete CommandRunner using os/exec.
@@ -65,9 +77,35 @@ func (r *ExecRunner) Run(ctx context.Context, workDir, name string, args ...stri
 	return stdout, stderr, err
 }
 
-func (r *ExecRunner) RunStream(ctx context.Context, workDir string, onLine func(line []byte), name string, args ...string) (stdout, stderr []byte, err error) {
+func (r *ExecRunner) RunWithStdin(ctx context.Context, workDir, stdin, name string, args ...string) (stdout, stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = workDir
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	r.mu.RLock()
+	if len(r.Env) > 0 {
+		cmd.Env = append(cmd.Environ(), r.Env...)
+	}
+	r.mu.RUnlock()
+
+	stdout, err = cmd.Output()
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		stderr = exitErr.Stderr
+	}
+	return stdout, stderr, err
+}
+
+func (r *ExecRunner) RunStream(ctx context.Context, workDir string, onLine func(line []byte), name string, args ...string) (stdout, stderr []byte, err error) {
+	return r.RunStreamWithStdin(ctx, workDir, "", onLine, name, args...)
+}
+
+func (r *ExecRunner) RunStreamWithStdin(ctx context.Context, workDir, stdin string, onLine func(line []byte), name string, args ...string) (stdout, stderr []byte, err error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = workDir
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	r.mu.RLock()
 	if len(r.Env) > 0 {
 		cmd.Env = append(cmd.Environ(), r.Env...)
@@ -88,7 +126,7 @@ func (r *ExecRunner) RunStream(ctx context.Context, workDir string, onLine func(
 
 	var stdoutBuf bytes.Buffer
 	scanner := bufio.NewScanner(pipe)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 0, scannerInitBufSize), scannerMaxBufSize)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		stdoutBuf.Write(line)
@@ -97,9 +135,16 @@ func (r *ExecRunner) RunStream(ctx context.Context, workDir string, onLine func(
 			onLine(append([]byte{}, line...))
 		}
 	}
+	scanErr := scanner.Err()
 
-	err = cmd.Wait()
-	return stdoutBuf.Bytes(), stderrBuf.Bytes(), err
+	// Always call Wait to release child process resources and avoid zombies.
+	waitErr := cmd.Wait()
+
+	// Prefer the scanner error if present -- it describes the read failure.
+	if scanErr != nil {
+		return stdoutBuf.Bytes(), stderrBuf.Bytes(), scanErr
+	}
+	return stdoutBuf.Bytes(), stderrBuf.Bytes(), waitErr
 }
 
 // streamEvent represents a single event in Claude's stream-json output.

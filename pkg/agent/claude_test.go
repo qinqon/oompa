@@ -12,6 +12,7 @@ type commandCall struct {
 	WorkDir string
 	Name    string
 	Args    []string
+	Stdin   string
 }
 
 type mockCommandRunner struct {
@@ -27,6 +28,23 @@ type mockCommandRunner struct {
 func (m *mockCommandRunner) Run(_ context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
 	m.mu.Lock()
 	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args})
+	stdout = m.stdout
+	if name == "claude" && len(m.claudeResults) > 0 {
+		if m.claudeIndex < len(m.claudeResults) {
+			stdout = m.claudeResults[m.claudeIndex]
+		} else {
+			stdout = m.claudeResults[len(m.claudeResults)-1]
+		}
+		m.claudeIndex++
+	}
+	stderr, err = m.stderr, m.err
+	m.mu.Unlock()
+	return stdout, stderr, err
+}
+
+func (m *mockCommandRunner) RunWithStdin(_ context.Context, workDir, stdin, name string, args ...string) (stdout, stderr []byte, err error) {
+	m.mu.Lock()
+	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args, Stdin: stdin})
 	stdout = m.stdout
 	if name == "claude" && len(m.claudeResults) > 0 {
 		if m.claudeIndex < len(m.claudeResults) {
@@ -111,6 +129,15 @@ func TestClaudeCodeAgent_RequiredFlags(t *testing.T) {
 		if !strings.Contains(args, want) {
 			t.Errorf("args missing %q: %v", want, call.Args)
 		}
+	}
+
+	// Verify prompt is passed via stdin, not as a CLI argument
+	if call.Stdin != "fix" {
+		t.Errorf("expected prompt %q on stdin, got %q", "fix", call.Stdin)
+	}
+	// Verify prompt is NOT in args
+	if strings.Contains(args, "fix") {
+		t.Errorf("prompt should not be in args when using stdin: %v", call.Args)
 	}
 }
 
