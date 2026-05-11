@@ -1302,9 +1302,13 @@ func TestProcessCIFailures_CreatesFlakyIssueWhenUnrelated(t *testing.T) {
 		t.Errorf("expected FAILING_TEST: line to be stripped from issue body, got %q", issue.Body)
 	}
 
-	// Check that a comment was added to the PR
-	if len(gh.addedComments) != 2 {
-		t.Fatalf("expected 2 comments (unrelated + issue link), got %d", len(gh.addedComments))
+	// Check that a single consolidated comment was added to the PR
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 consolidated comment, got %d", len(gh.addedComments))
+	}
+	// Consolidated comment should mention the flaky issue
+	if !strings.Contains(gh.addedComments[0], "#1") {
+		t.Errorf("expected consolidated comment to reference flaky issue #1, got: %q", gh.addedComments[0])
 	}
 }
 
@@ -1339,14 +1343,14 @@ func TestProcessCIFailures_InfrastructureSkipsFlakyIssue(t *testing.T) {
 		t.Errorf("expected 0 created issues for INFRASTRUCTURE classification, got %d", len(gh.createdIssues))
 	}
 
-	// Check that exactly 1 comment was posted (the infrastructure notice)
+	// Check that exactly 1 consolidated comment was posted
 	if len(gh.addedComments) != 1 {
-		t.Fatalf("expected 1 comment (infrastructure notice), got %d", len(gh.addedComments))
+		t.Fatalf("expected 1 consolidated comment, got %d", len(gh.addedComments))
 	}
 
 	// Verify the comment mentions infrastructure
-	if !strings.Contains(gh.addedComments[0], "infrastructure issue") {
-		t.Errorf("expected comment to mention infrastructure issue, got: %q", gh.addedComments[0])
+	if !strings.Contains(gh.addedComments[0], "Infrastructure Issues") {
+		t.Errorf("expected comment to mention Infrastructure Issues, got: %q", gh.addedComments[0])
 	}
 	if !strings.Contains(gh.addedComments[0], "Build-PR") {
 		t.Errorf("expected comment to mention the check name, got: %q", gh.addedComments[0])
@@ -1473,12 +1477,10 @@ func TestProcessCIFailures_SkipCommentCIUnrelated_StillCreatesFlakyIssue(t *test
 		t.Fatalf("expected 1 created flaky issue, got %d", len(gh.createdIssues))
 	}
 
-	// Should have only flaky issue reference comment (no marker, no unrelated comment)
-	if len(gh.addedComments) != 1 {
-		t.Fatalf("expected 1 comment (flaky issue ref only), got %d", len(gh.addedComments))
-	}
-	if !strings.Contains(gh.addedComments[0], "Opened issue") {
-		t.Errorf("expected flaky issue reference comment, got: %q", gh.addedComments[0])
+	// No comments should be posted — the unrelated section is skipped (ci-unrelated),
+	// so the consolidated comment has no visible content and is suppressed.
+	if len(gh.addedComments) != 0 {
+		t.Fatalf("expected 0 comments (ci-unrelated skipped, no visible sections), got %d: %v", len(gh.addedComments), gh.addedComments)
 	}
 }
 
@@ -1556,12 +1558,16 @@ func TestProcessCIFailures_SkipCommentFlaky(t *testing.T) {
 		t.Fatalf("expected 1 created flaky issue, got %d", len(gh.createdIssues))
 	}
 
-	// Should have only the unrelated comment (not the "Opened issue #N" cross-reference)
+	// Should have only the consolidated comment (flaky issue column suppressed by skip-comment: flaky)
 	if len(gh.addedComments) != 1 {
-		t.Fatalf("expected 1 comment (unrelated notice only, flaky ref suppressed), got %d", len(gh.addedComments))
+		t.Fatalf("expected 1 consolidated comment (flaky ref suppressed), got %d", len(gh.addedComments))
 	}
-	if !strings.Contains(gh.addedComments[0], "appears unrelated") {
-		t.Errorf("expected unrelated comment, got: %q", gh.addedComments[0])
+	if !strings.Contains(gh.addedComments[0], "Unrelated Failures") {
+		t.Errorf("expected unrelated section in consolidated comment, got: %q", gh.addedComments[0])
+	}
+	// With flaky comment skipped, the issue reference should NOT appear in the table
+	if strings.Contains(gh.addedComments[0], "Flaky Issue") {
+		t.Errorf("expected flaky issue column to be suppressed when skip-comment: flaky, got: %q", gh.addedComments[0])
 	}
 }
 
@@ -1602,27 +1608,26 @@ func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
 	}
 
 	// Check that comments were added:
-	// 1. unrelated notice on PR
-	// 2. CI lane link on the flaky issue (#50)
-	// 3. "Known flaky test" reference on PR
-	if len(gh.addedComments) != 3 {
-		t.Fatalf("expected 3 comments (unrelated + CI lane link + flaky reference), got %d", len(gh.addedComments))
+	// 1. CI lane link on the flaky issue (#50) — per-check side effect
+	// 2. consolidated comment on PR with flaky issue reference in table
+	if len(gh.addedComments) != 2 {
+		t.Fatalf("expected 2 comments (CI lane link + consolidated), got %d", len(gh.addedComments))
 	}
 
 	// Verify the CI lane link comment (posted on the flaky issue #50)
-	if !strings.Contains(gh.addedComments[1], "CI failure on PR #100") {
-		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[1])
+	if !strings.Contains(gh.addedComments[0], "CI failure on PR #100") {
+		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[0])
 	}
-	if gh.addedCommentTargets[1] != 50 {
-		t.Errorf("expected CI lane link comment posted to issue #50, got #%d", gh.addedCommentTargets[1])
+	if gh.addedCommentTargets[0] != 50 {
+		t.Errorf("expected CI lane link comment posted to issue #50, got #%d", gh.addedCommentTargets[0])
 	}
 
-	// Verify the flaky reference comment on the PR (#100)
-	if !strings.Contains(gh.addedComments[2], "Known flaky test tracked in #50") {
-		t.Errorf("expected flaky reference comment, got: %q", gh.addedComments[2])
+	// Verify the consolidated comment on the PR references the flaky issue
+	if !strings.Contains(gh.addedComments[1], "#50") {
+		t.Errorf("expected consolidated comment to reference flaky issue #50, got: %q", gh.addedComments[1])
 	}
-	if gh.addedCommentTargets[2] != 100 {
-		t.Errorf("expected flaky reference comment posted to PR #100, got #%d", gh.addedCommentTargets[2])
+	if gh.addedCommentTargets[1] != 100 {
+		t.Errorf("expected consolidated comment posted to PR #100, got #%d", gh.addedCommentTargets[1])
 	}
 }
 
@@ -1670,22 +1675,21 @@ func TestProcessCIFailures_TitlePreCheckSkipsLLMMatching(t *testing.T) {
 		t.Errorf("expected 1 claude call (CI investigation only, no LLM matching), got %d", claudeCalls)
 	}
 
-	// Should have 3 comments:
-	// 1. unrelated notice on PR
-	// 2. CI lane link on the flaky issue (#99)
-	// 3. "Known flaky test" reference on PR
-	if len(gh.addedComments) != 3 {
-		t.Fatalf("expected 3 comments (unrelated + CI lane link + flaky reference), got %d", len(gh.addedComments))
+	// Should have 2 comments:
+	// 1. CI lane link on the flaky issue (#99) — per-check side effect
+	// 2. consolidated comment on PR with flaky issue reference in table
+	if len(gh.addedComments) != 2 {
+		t.Fatalf("expected 2 comments (CI lane link + consolidated), got %d", len(gh.addedComments))
 	}
 
 	// Verify the CI lane link comment (posted on the flaky issue)
-	if !strings.Contains(gh.addedComments[1], "CI failure on PR #100") {
-		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[1])
+	if !strings.Contains(gh.addedComments[0], "CI failure on PR #100") {
+		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[0])
 	}
 
-	// Verify the flaky reference points to issue #99
-	if !strings.Contains(gh.addedComments[2], "Known flaky test tracked in #99") {
-		t.Errorf("expected flaky reference to issue #99, got: %q", gh.addedComments[2])
+	// Verify the consolidated comment references flaky issue #99
+	if !strings.Contains(gh.addedComments[1], "#99") {
+		t.Errorf("expected consolidated comment to reference flaky issue #99, got: %q", gh.addedComments[1])
 	}
 }
 
@@ -1729,9 +1733,12 @@ func TestProcessCIFailures_CreatesNewFlakyIssueWhenNoDuplicate(t *testing.T) {
 		t.Errorf("expected labels ['flaky-test'], got %v", issue.Labels)
 	}
 
-	// Check that comments were added (unrelated notice + new issue reference)
-	if len(gh.addedComments) != 2 {
-		t.Fatalf("expected 2 comments (unrelated + issue link), got %d", len(gh.addedComments))
+	// Check that a single consolidated comment was added referencing the new flaky issue
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 consolidated comment, got %d", len(gh.addedComments))
+	}
+	if !strings.Contains(gh.addedComments[0], "#1") {
+		t.Errorf("expected consolidated comment to reference flaky issue #1, got: %q", gh.addedComments[0])
 	}
 }
 
@@ -1811,30 +1818,24 @@ func TestProcessCIFailures_SearchAndLinkWithoutCreateFlakyIssues(t *testing.T) {
 		t.Errorf("expected 0 created issues (create-flaky-issues=false), got %d", len(gh.createdIssues))
 	}
 
-	// Should have 3 comments:
-	// 1. unrelated notice on PR
-	// 2. CI lane link comment on the existing flaky issue (#1234)
-	// 3. "Known flaky test" reference on PR
-	if len(gh.addedComments) != 3 {
-		t.Fatalf("expected 3 comments (unrelated + CI lane link + flaky reference), got %d", len(gh.addedComments))
-	}
-
-	// Verify unrelated comment
-	if !strings.Contains(gh.addedComments[0], "appears unrelated") {
-		t.Errorf("expected unrelated comment, got: %q", gh.addedComments[0])
+	// Should have 2 comments:
+	// 1. CI lane link comment on the existing flaky issue (#1234) — per-check side effect
+	// 2. consolidated comment on PR with flaky issue reference in table
+	if len(gh.addedComments) != 2 {
+		t.Fatalf("expected 2 comments (CI lane link + consolidated), got %d", len(gh.addedComments))
 	}
 
 	// Verify CI lane link on the flaky issue
-	if !strings.Contains(gh.addedComments[1], "CI failure on PR #100") {
-		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[1])
+	if !strings.Contains(gh.addedComments[0], "CI failure on PR #100") {
+		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[0])
 	}
-	if !strings.Contains(gh.addedComments[1], "integration-tests") {
-		t.Errorf("expected CI lane link to mention CI lane name, got: %q", gh.addedComments[1])
+	if !strings.Contains(gh.addedComments[0], "integration-tests") {
+		t.Errorf("expected CI lane link to mention CI lane name, got: %q", gh.addedComments[0])
 	}
 
-	// Verify the PR reference comment
-	if !strings.Contains(gh.addedComments[2], "Known flaky test tracked in #1234") {
-		t.Errorf("expected flaky reference to issue #1234, got: %q", gh.addedComments[2])
+	// Verify the consolidated comment references flaky issue #1234
+	if !strings.Contains(gh.addedComments[1], "#1234") {
+		t.Errorf("expected consolidated comment to reference flaky issue #1234, got: %q", gh.addedComments[1])
 	}
 }
 
@@ -1873,12 +1874,12 @@ func TestProcessCIFailures_NoMatchNoCreateWhenDisabled(t *testing.T) {
 		t.Errorf("expected 0 created issues (create-flaky-issues=false, no match), got %d", len(gh.createdIssues))
 	}
 
-	// Only the unrelated comment should be posted
+	// Only the consolidated unrelated comment should be posted
 	if len(gh.addedComments) != 1 {
-		t.Fatalf("expected 1 comment (unrelated notice only), got %d", len(gh.addedComments))
+		t.Fatalf("expected 1 consolidated comment, got %d", len(gh.addedComments))
 	}
-	if !strings.Contains(gh.addedComments[0], "appears unrelated") {
-		t.Errorf("expected unrelated comment, got: %q", gh.addedComments[0])
+	if !strings.Contains(gh.addedComments[0], "Unrelated Failures") {
+		t.Errorf("expected consolidated comment with unrelated section, got: %q", gh.addedComments[0])
 	}
 }
 
@@ -1952,12 +1953,14 @@ func TestProcessCIFailures_CILaneLinkIncludesJobURL(t *testing.T) {
 
 	agent.ProcessCIFailures(context.Background())
 
-	// Verify CI lane link comment was posted on the flaky issue
-	if len(gh.addedComments) < 2 {
-		t.Fatalf("expected at least 2 comments, got %d", len(gh.addedComments))
+	// Should have 2 comments:
+	// 1. CI lane link on the flaky issue (#5678) — per-check side effect
+	// 2. consolidated comment on PR with flaky issue reference in table
+	if len(gh.addedComments) != 2 {
+		t.Fatalf("expected 2 comments (CI lane link + consolidated), got %d", len(gh.addedComments))
 	}
 
-	ciLaneComment := gh.addedComments[1]
+	ciLaneComment := gh.addedComments[0]
 	if !strings.Contains(ciLaneComment, "CI failure on PR #100") {
 		t.Errorf("expected CI lane link to reference PR #100, got: %q", ciLaneComment)
 	}
@@ -1999,12 +2002,14 @@ func TestProcessCIFailures_CommitStatusCILaneLink(t *testing.T) {
 
 	agent.ProcessCIFailures(context.Background())
 
-	// Verify CI lane link uses the Prow URL extracted from the output
-	if len(gh.addedComments) < 2 {
-		t.Fatalf("expected at least 2 comments, got %d", len(gh.addedComments))
+	// Should have 2 comments:
+	// 1. CI lane link on the flaky issue (#999) — per-check side effect
+	// 2. consolidated comment on PR
+	if len(gh.addedComments) != 2 {
+		t.Fatalf("expected 2 comments (CI lane link + consolidated), got %d", len(gh.addedComments))
 	}
 
-	ciLaneComment := gh.addedComments[1]
+	ciLaneComment := gh.addedComments[0]
 	if !strings.Contains(ciLaneComment, "https://prow.ci.kubevirt.io/view/gs/logs/1234") {
 		t.Errorf("expected CI lane link to include Prow URL, got: %q", ciLaneComment)
 	}
@@ -2229,12 +2234,12 @@ func TestProcessCIFailures_DeduplicatesUnrelatedComments(t *testing.T) {
 		WorktreePath: "/tmp/worktree",
 	}
 
-	// First poll cycle: should investigate and post comment
+	// First poll cycle: should investigate and post consolidated comment
 	agent.ProcessCIFailures(context.Background())
 	if len(gh.addedComments) != 1 {
 		t.Fatalf("expected 1 comment on first poll, got %d", len(gh.addedComments))
 	}
-	if !strings.Contains(gh.addedComments[0], "CI check `test` failed on commit abc123 but appears unrelated") {
+	if !strings.Contains(gh.addedComments[0], "Unrelated Failures") || !strings.Contains(gh.addedComments[0], "`test`") {
 		t.Errorf("unexpected comment body: %s", gh.addedComments[0])
 	}
 
@@ -3505,6 +3510,310 @@ func TestProcessCIFailures_SkipChecksDoesNotAffectAllCompleted(t *testing.T) {
 	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
 	if work.LastCheckedCISHA != "abc123" {
 		t.Errorf("expected LastCheckedCISHA to be set when skipped check is the only non-completed, got %q", work.LastCheckedCISHA)
+	}
+}
+
+func TestProcessCIFailures_ConsolidatesMultipleFailuresIntoSingleComment(t *testing.T) {
+	// Issue #173: Multiple CI failures on the same SHA should produce a single consolidated comment.
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "test-deploy", Status: "completed", Conclusion: "failure", Output: "GitHub git server returned HTTP 500"},
+			{ID: 2, Name: "check-license-header", Status: "completed", Conclusion: "failure", Output: "GitHub git server returned HTTP 500"},
+			{ID: 3, Name: "e2e-dual-conversion", Status: "completed", Conclusion: "failure", Output: "GitHub git server returned HTTP 500"},
+		},
+		checkRunLogs: map[int64]string{
+			1: "Cloning repository...\nfatal: unable to access: HTTP 500 Internal Server Error",
+			2: "Cloning repository...\nfatal: unable to access: HTTP 500 Internal Server Error",
+			3: "Cloning repository...\nfatal: unable to access: HTTP 500 Internal Server Error",
+		},
+	}
+	// All three failures are INFRASTRUCTURE
+	infraResult := streamResultJSON(AgentResult{Result: "INFRASTRUCTURE GitHub git server returned HTTP 500"})
+	runner := &mockCommandRunner{stdout: infraResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// All three failures investigated independently
+	claudeCalls := countClaudeCalls(runner.calls)
+	if claudeCalls != 3 {
+		t.Fatalf("expected 3 claude calls (one per failure), got %d", claudeCalls)
+	}
+
+	// Only ONE consolidated comment should be posted
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 consolidated comment, got %d", len(gh.addedComments))
+	}
+
+	comment := gh.addedComments[0]
+	// Should mention all three checks
+	if !strings.Contains(comment, "test-deploy") {
+		t.Errorf("expected comment to mention test-deploy")
+	}
+	if !strings.Contains(comment, "check-license-header") {
+		t.Errorf("expected comment to mention check-license-header")
+	}
+	if !strings.Contains(comment, "e2e-dual-conversion") {
+		t.Errorf("expected comment to mention e2e-dual-conversion")
+	}
+	// Should have infrastructure section with count
+	if !strings.Contains(comment, "Infrastructure Issues (3)") {
+		t.Errorf("expected Infrastructure Issues (3), got: %q", comment)
+	}
+	// Should have per-check dedup markers
+	if !strings.Contains(comment, ciMarker("abc123", "test-deploy")) {
+		t.Errorf("expected per-check dedup marker for test-deploy")
+	}
+	if !strings.Contains(comment, ciMarker("abc123", "check-license-header")) {
+		t.Errorf("expected per-check dedup marker for check-license-header")
+	}
+}
+
+func TestProcessCIFailures_ConsolidatesMixedCategories(t *testing.T) {
+	// Issue #173: Mixed categories (infrastructure + unrelated + related) in one consolidated comment.
+	infraResult := streamResultJSON(AgentResult{Result: "INFRASTRUCTURE GitHub git server returned HTTP 500"})
+	unrelatedResult := streamResultJSON(AgentResult{Result: "UNRELATED BGP peering timeout in e2e test"})
+	relatedResult := streamResultJSON(AgentResult{Result: "RELATED Test assertion failed in kubevirt handler"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "test-deploy", Status: "completed", Conclusion: "failure", Output: "GitHub git server returned HTTP 500 with a bunch of other text to make it 50 chars"},
+			{ID: 2, Name: "e2e-bgp", Status: "completed", Conclusion: "failure", Output: "BGP peering timeout in e2e test with more detail padding to exceed fifty characters"},
+			{ID: 3, Name: "e2e-control-plane", Status: "completed", Conclusion: "failure", Output: "Test assertion failed in kubevirt handler extra padding for the fifty char check"},
+		},
+		prHeadSHAs: []string{"sha-before", "sha-after"},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{infraResult, unrelatedResult, relatedResult}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Should have exactly ONE consolidated comment on the PR
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 consolidated comment, got %d", len(gh.addedComments))
+	}
+
+	comment := gh.addedComments[0]
+	// All three sections should be present
+	if !strings.Contains(comment, "Infrastructure Issues (1)") {
+		t.Errorf("expected Infrastructure Issues section, got: %q", comment)
+	}
+	if !strings.Contains(comment, "Unrelated Failures (1)") {
+		t.Errorf("expected Unrelated Failures section, got: %q", comment)
+	}
+	if !strings.Contains(comment, "Related Failures (1)") {
+		t.Errorf("expected Related Failures section, got: %q", comment)
+	}
+	// Related section should mention the fix was pushed
+	if !strings.Contains(comment, "Pushed a fix") {
+		t.Errorf("expected 'Pushed a fix' note, got: %q", comment)
+	}
+}
+
+func TestProcessCIFailures_SingleFailureStillConsolidated(t *testing.T) {
+	// Issue #173: A single failure should still use the consolidated format.
+	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED Flaky network test with detailed explanation exceeding fifty characters for the output check"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "e2e-network", Status: "completed", Conclusion: "failure", Output: "timeout connecting to service with some extra text to exceed the threshold"},
+		},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(gh.addedComments))
+	}
+	comment := gh.addedComments[0]
+	// Should use the consolidated format (with header and table)
+	if !strings.Contains(comment, "CI failures on commit") {
+		t.Errorf("expected consolidated format header, got: %q", comment)
+	}
+	if !strings.Contains(comment, "Unrelated Failures (1)") {
+		t.Errorf("expected Unrelated Failures section, got: %q", comment)
+	}
+	if !strings.Contains(comment, "`e2e-network`") {
+		t.Errorf("expected check name in table, got: %q", comment)
+	}
+}
+
+func TestProcessCIFailures_ConsolidatedSkipsInfrastructureSection(t *testing.T) {
+	// Issue #173: skip-comment ci-infrastructure should suppress the infrastructure section
+	// but still include other sections.
+	infraResult := streamResultJSON(AgentResult{Result: "INFRASTRUCTURE GitHub git server returned HTTP 500"})
+	unrelatedResult := streamResultJSON(AgentResult{Result: "UNRELATED Flaky test timeout exceeding the minimum chars check for the fifty character threshold"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "test-deploy", Status: "completed", Conclusion: "failure", Output: "GitHub git server returned HTTP 500 with a bunch of extra text to be above threshold"},
+			{ID: 2, Name: "e2e-bgp", Status: "completed", Conclusion: "failure", Output: "BGP peering timeout in test with a bunch of extra padding for length threshold"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{infraResult, unrelatedResult}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.SkipComments = []string{"ci-infrastructure"}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Should have exactly 1 consolidated comment
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 consolidated comment, got %d", len(gh.addedComments))
+	}
+
+	comment := gh.addedComments[0]
+	// Infrastructure section should be absent
+	if strings.Contains(comment, "Infrastructure Issues") {
+		t.Errorf("expected no Infrastructure Issues section (skipped), got: %q", comment)
+	}
+	// Unrelated section should be present
+	if !strings.Contains(comment, "Unrelated Failures (1)") {
+		t.Errorf("expected Unrelated Failures section, got: %q", comment)
+	}
+	// Infrastructure check's dedup marker should still be present
+	if !strings.Contains(comment, ciMarker("abc123", "test-deploy")) {
+		t.Errorf("expected dedup marker for skipped infrastructure check")
+	}
+}
+
+func TestProcessCIFailures_FlakyIssueLinkInConsolidatedComment(t *testing.T) {
+	// Issue #173: Flaky issue links should appear in the unrelated section table.
+	ciResult1 := streamResultJSON(AgentResult{Result: "UNRELATED Flaky test timeout exceeding the minimum chars check for the fifty character threshold"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout with additional text for the fifty character threshold"},
+		},
+		checkRunLogs: map[int64]string{
+			1: "Starting integration tests...\nConnecting to database...\nError: connection timeout after 30s\nStack trace:\n  at TestDB.connect(db.go:42)\n  at TestSuite.setUp(suite.go:15)",
+		},
+		searchResults: []Issue{
+			{Number: 42, Title: "Flaky CI: integration-tests", Labels: []string{"flaky-test"}},
+		},
+	}
+	runner := &mockCommandRunner{stdout: ciResult1}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = false
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 99)] = &IssueWork{
+		IssueNumber:  99,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-99",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Should have 2 comments: CI lane link on flaky issue + consolidated on PR
+	if len(gh.addedComments) != 2 {
+		t.Fatalf("expected 2 comments, got %d", len(gh.addedComments))
+	}
+
+	// Consolidated comment should include a Flaky Issue column with #42
+	consolidated := gh.addedComments[1]
+	if !strings.Contains(consolidated, "Flaky Issue") {
+		t.Errorf("expected Flaky Issue column header, got: %q", consolidated)
+	}
+	if !strings.Contains(consolidated, "#42") {
+		t.Errorf("expected flaky issue #42 reference, got: %q", consolidated)
+	}
+}
+
+func TestProcessCIFailures_RelatedPushedFixNoteInConsolidated(t *testing.T) {
+	// Issue #173: When a fix is pushed for a related failure, the consolidated
+	// comment should note "Pushed a fix for the related failure."
+	claudeResult := streamResultJSON(AgentResult{Result: "RELATED Fixed the kubevirt handler test assertion"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "e2e-control-plane", Status: "completed", Conclusion: "failure", Output: "Test assertion failed in kubevirt handler extra text to exceed fifty characters"},
+		},
+		prHeadSHAs: []string{"sha-before", "sha-after"}, // different SHAs = fix pushed
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 consolidated comment, got %d", len(gh.addedComments))
+	}
+
+	comment := gh.addedComments[0]
+	if !strings.Contains(comment, "Related Failures (1)") {
+		t.Errorf("expected Related Failures section, got: %q", comment)
+	}
+	if !strings.Contains(comment, "Pushed a fix for the related failure.") {
+		t.Errorf("expected pushed fix note, got: %q", comment)
+	}
+}
+
+func TestFirstSentence(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"GitHub git server returned HTTP 500. Detailed analysis follows.", "GitHub git server returned HTTP 500."},
+		{"Simple explanation", "Simple explanation"},
+		{"", ""},
+		{"First line\nSecond line", "First line"},
+		{strings.Repeat("x", 200), strings.Repeat("x", 120) + "..."},
+	}
+	for _, tt := range tests {
+		got := firstSentence(tt.input)
+		if got != tt.want {
+			t.Errorf("firstSentence(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 

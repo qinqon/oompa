@@ -10,6 +10,16 @@ import (
 
 const maxCIFixAttempts = 3
 
+// ciResult holds the result of investigating a single CI check failure.
+// Results for the same PR+SHA are consolidated into a single comment.
+type ciResult struct {
+	check       string // check name
+	category    string // "related", "unrelated", "infrastructure"
+	explanation string // agent's explanation
+	flakyIssue  int    // linked flaky issue number (0 if none)
+	pushed      bool   // whether a fix was pushed
+}
+
 // ProcessCIFailures checks CI status for open PRs and invokes Claude to fix failures.
 func (a *Agent) ProcessCIFailures(ctx context.Context) {
 	a.emit(Event{
@@ -188,7 +198,18 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		}
 	}
 
-	// Sequential phase: Claude invocations and post-processing
+	// Collect results grouped by PR+SHA for consolidated commenting.
+	// Key format: "prNumber:headSHA"
+	type resultGroup struct {
+		work    *IssueWork
+		headSHA string
+		results []ciResult
+	}
+	groups := make(map[string]*resultGroup)
+	// Track insertion order to preserve the task processing sequence.
+	var groupOrder []string
+
+	// Sequential phase: Claude invocations and result collection
 	runSequential(ctx, tasks, func(ctx context.Context, task ciTask) {
 		// Re-check cost guard before each invocation — multiple tasks can be
 		// enqueued for the same PR, and earlier invocations may have pushed
@@ -266,23 +287,35 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			return
 		}
 
-		if foundKeyword == "INFRASTRUCTURE" {
-			a.handleCIInfrastructure(ctx, task, cleaned)
-			return
+		var res ciResult
+		switch foundKeyword {
+		case "INFRASTRUCTURE":
+			res = a.classifyCIInfrastructure(ctx, task, cleaned)
+		case "UNRELATED":
+			res = a.classifyCIUnrelated(ctx, task, cleaned)
+		case "RELATED":
+			res = a.classifyCIRelated(ctx, task, cleaned)
 		}
 
-		if foundKeyword == "UNRELATED" {
-			a.handleCIUnrelated(ctx, task, cleaned)
-			return
+		// Collect result into the group for this PR+SHA
+		key := fmt.Sprintf("%d:%s", task.work.PRNumber, task.headSHA)
+		if groups[key] == nil {
+			groups[key] = &resultGroup{work: task.work, headSHA: task.headSHA}
+			groupOrder = append(groupOrder, key)
 		}
-
-		// Claude said RELATED
-		a.handleCIRelated(ctx, task, cleaned)
+		groups[key].results = append(groups[key].results, res)
 	})
+
+	// Post consolidated comments for each PR+SHA group
+	for _, key := range groupOrder {
+		g := groups[key]
+		a.postConsolidatedCIComment(ctx, g.work, g.headSHA, g.results)
+	}
 }
 
-// handleCIInfrastructure handles a CI failure classified as an infrastructure issue.
-func (a *Agent) handleCIInfrastructure(ctx context.Context, task ciTask, cleaned string) {
+// classifyCIInfrastructure handles a CI failure classified as an infrastructure issue.
+// Returns a ciResult for consolidation; does NOT post a comment.
+func (a *Agent) classifyCIInfrastructure(_ context.Context, task ciTask, cleaned string) ciResult {
 	a.logger.Info("CI failure is an infrastructure issue", "pr", task.work.PRNumber)
 	a.emit(Event{
 		Type:      EventAgentCompleted,
@@ -294,28 +327,26 @@ func (a *Agent) handleCIInfrastructure(ctx context.Context, task ciTask, cleaned
 	})
 	idx := strings.Index(cleaned, "INFRASTRUCTURE")
 	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "INFRASTRUCTURE"), " :—–-"))
-	marker := ciMarker(task.headSHA, task.failures[0].Name)
+
 	if a.ShouldSkipComment("ci-infrastructure") {
 		a.logger.Info("skipping CI infrastructure comment (--skip-comment)", "pr", task.work.PRNumber)
 		a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
-	} else {
-		comment := fmt.Sprintf("CI check `%s` failed on commit %s due to an infrastructure issue (not a flaky test).", task.failures[0].Name, shortSHA(task.headSHA))
-		if explanation != "" {
-			comment += "\n\n" + explanation
-		}
-		comment += "\n\n" + marker
-		if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
-			a.logger.Error("failed to post CI infrastructure comment", "pr", task.work.PRNumber, "error", err)
-			task.work.LastCIStatus = "investigation-inconclusive"
-			return
-		}
 	}
+
 	task.work.LastCIStatus = "infrastructure-failure"
 	task.work.LastCheckedCISHA = task.headSHA
+
+	return ciResult{
+		check:       task.failures[0].Name,
+		category:    "infrastructure",
+		explanation: explanation,
+	}
 }
 
-// handleCIUnrelated handles a CI failure classified as unrelated to PR changes.
-func (a *Agent) handleCIUnrelated(ctx context.Context, task ciTask, cleaned string) {
+// classifyCIUnrelated handles a CI failure classified as unrelated to PR changes.
+// Returns a ciResult for consolidation; does NOT post a comment.
+// Flaky issue handling (search/create) is performed as a per-check side effect.
+func (a *Agent) classifyCIUnrelated(ctx context.Context, task ciTask, cleaned string) ciResult {
 	a.logger.Info("CI failure is unrelated to PR changes", "pr", task.work.PRNumber)
 	a.emit(Event{
 		Type:      EventAgentCompleted,
@@ -327,38 +358,39 @@ func (a *Agent) handleCIUnrelated(ctx context.Context, task ciTask, cleaned stri
 	})
 	idx := strings.Index(cleaned, "UNRELATED")
 	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "UNRELATED"), " :—–-"))
-	marker := ciMarker(task.headSHA, task.failures[0].Name)
+
 	if a.ShouldSkipComment("ci-unrelated") {
 		a.logger.Info("skipping CI unrelated comment (--skip-comment)", "pr", task.work.PRNumber)
 		a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
-	} else {
-		comment := fmt.Sprintf("CI check `%s` failed on commit %s but appears unrelated to this PR's changes.", task.failures[0].Name, shortSHA(task.headSHA))
-		if explanation != "" {
-			comment += "\n\n" + explanation
-		}
-		comment += "\n\n" + marker
-		if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, comment); err != nil {
-			a.logger.Error("failed to post CI unrelated comment", "pr", task.work.PRNumber, "error", err)
-			task.work.LastCIStatus = "investigation-inconclusive"
-			return
-		}
 	}
+
 	task.work.LastCIStatus = "unrelated-failure"
 	task.work.LastCheckedCISHA = task.headSHA
+
+	res := ciResult{
+		check:       task.failures[0].Name,
+		category:    "unrelated",
+		explanation: explanation,
+	}
 
 	// Search for existing flaky issues and optionally create new ones.
 	// When flaky-label is configured, always search for existing issues.
 	// Only create new issues when create-flaky-issues is also enabled.
+	// Flaky issue handling is a per-check side effect, not consolidated.
 	if a.cfg.FlakyLabel != "" {
-		a.handleFlakyIssue(ctx, task, explanation)
+		res.flakyIssue = a.handleFlakyIssue(ctx, task, explanation)
 	}
+
+	return res
 }
 
 // handleFlakyIssue searches for existing flaky issues and optionally creates new ones.
 // Always runs when FlakyLabel is configured (even without CreateFlakyIssues).
-// When a match is found: references it in the PR comment, adds CI lane link to the existing issue.
+// When a match is found: adds CI lane link to the existing issue.
 // When no match is found: creates a new issue only if CreateFlakyIssues is enabled.
-func (a *Agent) handleFlakyIssue(ctx context.Context, task ciTask, explanation string) {
+// Returns the linked/created flaky issue number (0 if none).
+// The PR reference comment is now part of the consolidated CI comment.
+func (a *Agent) handleFlakyIssue(ctx context.Context, task ciTask, explanation string) int {
 	// Skip if both the check run output and the agent's explanation are too short.
 	trimmedOutput := strings.TrimSpace(task.failures[0].Output)
 	if len(trimmedOutput) < 50 && len(explanation) < 50 {
@@ -367,7 +399,7 @@ func (a *Agent) handleFlakyIssue(ctx context.Context, task ciTask, explanation s
 			"check", task.failures[0].Name,
 			"output_length", len(trimmedOutput),
 			"explanation_length", len(explanation))
-		return
+		return 0
 	}
 
 	issueNum, found := a.matchExistingFlakyIssue(ctx, task, explanation)
@@ -377,21 +409,14 @@ func (a *Agent) handleFlakyIssue(ctx context.Context, task ciTask, explanation s
 		if !a.ShouldSkipComment("flaky") {
 			a.addCILaneLinkComment(ctx, task, issueNum)
 		}
-
-		// Reference the existing issue in the PR comment
-		if !a.ShouldSkipComment("flaky") {
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("Known flaky test tracked in #%d.\n\n%s", issueNum, a.botComment())); err != nil {
-				a.logger.Error("failed to post existing flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
-			}
-		}
-		return
+		return issueNum
 	}
 
 	// No existing match — create a new issue only if enabled
 	if a.cfg.CreateFlakyIssues {
-		a.createNewFlakyIssue(ctx, task, explanation)
+		return a.createNewFlakyIssue(ctx, task, explanation)
 	}
+	return 0
 }
 
 // matchExistingFlakyIssue searches for an existing open issue with the flaky label
@@ -479,7 +504,9 @@ func (a *Agent) addCILaneLinkComment(ctx context.Context, task ciTask, issueNum 
 }
 
 // createNewFlakyIssue creates a new flaky CI issue for an unrelated failure.
-func (a *Agent) createNewFlakyIssue(ctx context.Context, task ciTask, explanation string) {
+// Returns the created issue number (0 on failure).
+// The PR reference comment is now part of the consolidated CI comment.
+func (a *Agent) createNewFlakyIssue(ctx context.Context, task ciTask, explanation string) int {
 	failingTest := parseFailingTest(explanation)
 	var issueTitle string
 	if failingTest != "" {
@@ -521,15 +548,10 @@ func (a *Agent) createNewFlakyIssue(ctx context.Context, task ciTask, explanatio
 	issueNum, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{a.cfg.FlakyLabel})
 	if err != nil {
 		a.logger.Error("failed to create flaky CI issue", "error", err)
-	} else {
-		a.logger.Info("created flaky CI issue", "issue", issueNum)
-		if !a.ShouldSkipComment("flaky") {
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("Opened issue #%d to track this flaky test.\n\n%s", issueNum, a.botComment())); err != nil {
-				a.logger.Error("failed to post flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
-			}
-		}
+		return 0
 	}
+	a.logger.Info("created flaky CI issue", "issue", issueNum)
+	return issueNum
 }
 
 // extractURL extracts the first URL from a string.
@@ -542,8 +564,9 @@ func extractURL(s string) string {
 	return ""
 }
 
-// handleCIRelated handles a CI failure classified as related to PR changes.
-func (a *Agent) handleCIRelated(ctx context.Context, task ciTask, cleaned string) {
+// classifyCIRelated handles a CI failure classified as related to PR changes.
+// Returns a ciResult for consolidation; does NOT post a comment.
+func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned string) ciResult {
 	a.emit(Event{
 		Type:      EventAgentCompleted,
 		Category:  CategoryCI,
@@ -552,25 +575,24 @@ func (a *Agent) handleCIRelated(ctx context.Context, task ciTask, cleaned string
 		Action:    fmt.Sprintf("CI related: %s", task.failures[0].Name),
 		PRNumbers: []int{task.work.PRNumber},
 	})
+
+	idx := strings.Index(cleaned, "RELATED")
+	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "RELATED"), " :—–-"))
+
 	if a.cfg.SkipFix {
-		// Skip-fix mode: just post the analysis, don't try to fix or push
+		// Skip-fix mode: just record the analysis, don't try to fix or push
 		a.logger.Info("CI failure is related (skip-fix mode, not pushing)", "pr", task.work.PRNumber)
-		idx := strings.Index(cleaned, "RELATED")
-		analysis := strings.TrimPrefix(cleaned[idx:], "RELATED")
-		analysis = strings.TrimSpace(analysis)
-		marker := ciMarker(task.headSHA, task.failures[0].Name)
 		if a.ShouldSkipComment("ci-related") {
 			a.logger.Info("skipping CI related comment (--skip-comment)", "pr", task.work.PRNumber)
 			a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
-		} else {
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("CI check `%s` is failing on commit %s and appears related to this PR's changes.\n\n%s\n\n%s", task.failures[0].Name, shortSHA(task.headSHA), analysis, marker)); err != nil {
-				a.logger.Error("failed to post CI analysis comment", "pr", task.work.PRNumber, "error", err)
-			}
 		}
 		task.work.LastCIStatus = "related-skip-fix"
 		task.work.LastCheckedCISHA = task.headSHA
-		return
+		return ciResult{
+			check:       task.failures[0].Name,
+			category:    "related",
+			explanation: explanation,
+		}
 	}
 
 	// Check if there are fixup commits, amended commits, or uncommitted changes
@@ -622,31 +644,162 @@ func (a *Agent) handleCIRelated(ctx context.Context, task ciTask, cleaned string
 		}
 	}
 
-	marker := ciMarker(task.headSHA, task.failures[0].Name)
 	if pushed {
 		a.logger.Info("CI failure is related, pushed a fix", "pr", task.work.PRNumber)
-		if a.ShouldSkipComment("ci-related") {
-			a.logger.Info("skipping CI fix-pushed comment (--skip-comment)", "pr", task.work.PRNumber)
-			a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
-		} else {
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("CI check `%s` was failing on commit %s. Pushed a fix.\n\n%s", task.failures[0].Name, shortSHA(task.headSHA), marker)); err != nil {
-				a.logger.Error("failed to post CI fix comment", "pr", task.work.PRNumber, "error", err)
-			}
-		}
 	} else {
 		a.logger.Warn("Claude said RELATED but no changes to push", "pr", task.work.PRNumber)
-		if a.ShouldSkipComment("ci-related") {
-			a.logger.Info("skipping CI fix-failed comment (--skip-comment)", "pr", task.work.PRNumber)
-			a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
-		} else {
-			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("CI check `%s` is failing on commit %s. Investigated but could not push a fix.\n\n%s", task.failures[0].Name, shortSHA(task.headSHA), marker)); err != nil {
-				a.logger.Error("failed to post CI investigation comment", "pr", task.work.PRNumber, "error", err)
-			}
-		}
 	}
+
+	if a.ShouldSkipComment("ci-related") {
+		a.logger.Info("skipping CI related comment (--skip-comment)", "pr", task.work.PRNumber)
+		a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
+	}
+
 	task.work.CIFixAttempts++
 	task.work.LastCIStatus = "failure"
 	task.work.LastCheckedCISHA = currentHeadSHA
+
+	return ciResult{
+		check:       task.failures[0].Name,
+		category:    "related",
+		explanation: explanation,
+		pushed:      pushed,
+	}
+}
+
+// postConsolidatedCIComment builds and posts a single comment for all CI results
+// on a given PR+SHA. Each check gets its own dedup marker within the comment.
+func (a *Agent) postConsolidatedCIComment(ctx context.Context, work *IssueWork, headSHA string, results []ciResult) {
+	if len(results) == 0 {
+		return
+	}
+
+	// Group results by category
+	var infrastructure, unrelated, related []ciResult
+	for _, r := range results {
+		switch r.category {
+		case "infrastructure":
+			infrastructure = append(infrastructure, r)
+		case "unrelated":
+			unrelated = append(unrelated, r)
+		case "related":
+			related = append(related, r)
+		}
+	}
+
+	var comment strings.Builder
+	fmt.Fprintf(&comment, "CI failures on commit %s:\n", shortSHA(headSHA))
+
+	// Infrastructure section
+	if len(infrastructure) > 0 && !a.ShouldSkipComment("ci-infrastructure") {
+		fmt.Fprintf(&comment, "\n### Infrastructure Issues (%d)\n\n", len(infrastructure))
+		comment.WriteString("| Check | Summary |\n|-------|--------|\n")
+		for _, r := range infrastructure {
+			summary := escapeTableCell(firstSentence(r.explanation))
+			fmt.Fprintf(&comment, "| `%s` | %s |\n", escapeTableCell(r.check), summary)
+		}
+	}
+
+	// Unrelated section
+	if len(unrelated) > 0 && !a.ShouldSkipComment("ci-unrelated") {
+		hasFlakyIssues := false
+		for _, r := range unrelated {
+			if r.flakyIssue != 0 {
+				hasFlakyIssues = true
+				break
+			}
+		}
+		fmt.Fprintf(&comment, "\n### Unrelated Failures (%d)\n\n", len(unrelated))
+		if hasFlakyIssues && !a.ShouldSkipComment("flaky") {
+			comment.WriteString("| Check | Summary | Flaky Issue |\n|-------|---------|-------------|\n")
+			for _, r := range unrelated {
+				summary := escapeTableCell(firstSentence(r.explanation))
+				flakyRef := ""
+				if r.flakyIssue != 0 {
+					flakyRef = fmt.Sprintf("#%d", r.flakyIssue)
+				}
+				fmt.Fprintf(&comment, "| `%s` | %s | %s |\n", escapeTableCell(r.check), summary, flakyRef)
+			}
+		} else {
+			comment.WriteString("| Check | Summary |\n|-------|--------|\n")
+			for _, r := range unrelated {
+				summary := escapeTableCell(firstSentence(r.explanation))
+				fmt.Fprintf(&comment, "| `%s` | %s |\n", escapeTableCell(r.check), summary)
+			}
+		}
+	}
+
+	// Related section
+	if len(related) > 0 && !a.ShouldSkipComment("ci-related") {
+		fmt.Fprintf(&comment, "\n### Related Failures (%d)\n\n", len(related))
+		comment.WriteString("| Check | Summary |\n|-------|--------|\n")
+		for _, r := range related {
+			summary := escapeTableCell(firstSentence(r.explanation))
+			fmt.Fprintf(&comment, "| `%s` | %s |\n", escapeTableCell(r.check), summary)
+		}
+
+		// Note any fixes that were pushed
+		pushedChecks := 0
+		for _, r := range related {
+			if r.pushed {
+				pushedChecks++
+			}
+		}
+		if pushedChecks > 0 {
+			comment.WriteString("\nPushed a fix for the related failure")
+			if pushedChecks > 1 {
+				comment.WriteString("s")
+			}
+			comment.WriteString(".\n")
+		}
+	}
+
+	// Check if we have any visible content (non-skipped sections)
+	hasVisibleContent := (len(infrastructure) > 0 && !a.ShouldSkipComment("ci-infrastructure")) ||
+		(len(unrelated) > 0 && !a.ShouldSkipComment("ci-unrelated")) ||
+		(len(related) > 0 && !a.ShouldSkipComment("ci-related"))
+
+	if !hasVisibleContent {
+		return
+	}
+
+	// Append per-check dedup markers so alreadyCheckedCI still works
+	comment.WriteString("\n")
+	for _, r := range results {
+		comment.WriteString(ciMarker(headSHA, r.check) + "\n")
+	}
+
+	if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, comment.String()); err != nil {
+		a.logger.Error("failed to post consolidated CI comment", "pr", work.PRNumber, "error", err)
+	}
+}
+
+// escapeTableCell escapes characters that break markdown table rendering.
+func escapeTableCell(s string) string {
+	s = strings.ReplaceAll(s, "|", `\|`)
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", "")
+	return s
+}
+
+// firstSentence returns text up to the first period-followed-by-space, newline, or 120 chars.
+func firstSentence(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Take up to first newline
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = s[:idx]
+	}
+	// Take up to first period followed by space or end.
+	// If the string already ends with a period, keep it as-is.
+	if idx := strings.Index(s, ". "); idx >= 0 {
+		s = s[:idx+1]
+	}
+	// Truncate if too long
+	if len(s) > 120 {
+		s = s[:120] + "..."
+	}
+	return s
 }
