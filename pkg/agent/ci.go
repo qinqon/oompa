@@ -346,19 +346,23 @@ func (a *Agent) handleCIUnrelated(ctx context.Context, task ciTask, cleaned stri
 	task.work.LastCIStatus = "unrelated-failure"
 	task.work.LastCheckedCISHA = task.headSHA
 
-	// Create a flaky CI issue if configured
-	if a.cfg.CreateFlakyIssues {
-		a.createFlakyIssue(ctx, task, explanation)
+	// Search for existing flaky issues and optionally create new ones.
+	// When flaky-label is configured, always search for existing issues.
+	// Only create new issues when create-flaky-issues is also enabled.
+	if a.cfg.FlakyLabel != "" {
+		a.handleFlakyIssue(ctx, task, explanation)
 	}
 }
 
-// createFlakyIssue creates or matches a flaky CI issue for an unrelated failure.
-func (a *Agent) createFlakyIssue(ctx context.Context, task ciTask, explanation string) {
-	// Skip flaky issue creation if both the check run output and the
-	// agent's explanation are too short.
+// handleFlakyIssue searches for existing flaky issues and optionally creates new ones.
+// Always runs when FlakyLabel is configured (even without CreateFlakyIssues).
+// When a match is found: references it in the PR comment, adds CI lane link to the existing issue.
+// When no match is found: creates a new issue only if CreateFlakyIssues is enabled.
+func (a *Agent) handleFlakyIssue(ctx context.Context, task ciTask, explanation string) {
+	// Skip if both the check run output and the agent's explanation are too short.
 	trimmedOutput := strings.TrimSpace(task.failures[0].Output)
 	if len(trimmedOutput) < 50 && len(explanation) < 50 {
-		a.logger.Warn("skipping flaky issue creation: insufficient context",
+		a.logger.Warn("skipping flaky issue handling: insufficient context",
 			"pr", task.work.PRNumber,
 			"check", task.failures[0].Name,
 			"output_length", len(trimmedOutput),
@@ -366,6 +370,33 @@ func (a *Agent) createFlakyIssue(ctx context.Context, task ciTask, explanation s
 		return
 	}
 
+	issueNum, found := a.matchExistingFlakyIssue(ctx, task, explanation)
+	if found {
+		// Add CI lane link as a comment on the existing flaky issue
+		// (respects skip-comment: flaky to suppress all flaky-related comments)
+		if !a.ShouldSkipComment("flaky") {
+			a.addCILaneLinkComment(ctx, task, issueNum)
+		}
+
+		// Reference the existing issue in the PR comment
+		if !a.ShouldSkipComment("flaky") {
+			if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
+				fmt.Sprintf("Known flaky test tracked in #%d.\n\n%s", issueNum, a.botComment())); err != nil {
+				a.logger.Error("failed to post existing flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
+			}
+		}
+		return
+	}
+
+	// No existing match — create a new issue only if enabled
+	if a.cfg.CreateFlakyIssues {
+		a.createNewFlakyIssue(ctx, task, explanation)
+	}
+}
+
+// matchExistingFlakyIssue searches for an existing open issue with the flaky label
+// that matches the failing test. Returns the issue number and true if found.
+func (a *Agent) matchExistingFlakyIssue(ctx context.Context, task ciTask, explanation string) (int, bool) {
 	failingTest := parseFailingTest(explanation)
 	var issueTitle string
 	if failingTest != "" {
@@ -374,64 +405,89 @@ func (a *Agent) createFlakyIssue(ctx context.Context, task ciTask, explanation s
 		issueTitle = fmt.Sprintf("Flaky CI: %s", task.failures[0].Name)
 	}
 
-	// Search for existing open issues with the flaky label
-	searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:%s",
+	searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:%q",
 		a.cfg.Owner, a.cfg.Repo, a.cfg.FlakyLabel)
 	existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
-
-	var issueNum int
 	if err != nil {
 		a.logger.Warn("failed to search for existing flaky issues", "error", err)
-	} else if len(existingIssues) > 0 {
-		// Fast path: exact title match skips LLM matching entirely.
-		for _, existing := range existingIssues {
-			if existing.Title == issueTitle {
-				issueNum = existing.Number
-				a.logger.Info("exact title match for existing flaky CI issue", "issue", issueNum, "check", task.failures[0].Name)
-				break
-			}
-		}
+		return 0, false
+	}
 
-		// If no exact title match, ask the agent for root-cause matching.
-		if issueNum == 0 {
-			matchOutput := task.failures[0].Output
-			if len(strings.TrimSpace(matchOutput)) < 50 {
-				matchOutput = explanation
-			}
-			matchPrompt := buildFlakyMatchPrompt(task.failures[0].Name, matchOutput, existingIssues)
-			matchResult, matchErr := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, matchPrompt, a.logger, false)
-			if matchErr != nil {
-				a.logger.Warn("failed to run agent for flaky issue matching", "error", matchErr)
-			} else {
-				matchResponse := strings.TrimSpace(matchResult.Result)
-				if matchedNum, ok := parseFlakyMatch(matchResponse); ok {
-					for _, existing := range existingIssues {
-						if existing.Number == matchedNum {
-							issueNum = matchedNum
-							break
-						}
-					}
-					if issueNum > 0 {
-						a.logger.Info("agent matched existing flaky CI issue", "issue", issueNum, "check", task.failures[0].Name)
-					} else {
-						a.logger.Warn("agent returned MATCH for unknown issue", "matched_issue", matchedNum, "check", task.failures[0].Name)
-					}
-				}
-			}
-		}
+	if len(existingIssues) == 0 {
+		return 0, false
+	}
 
-		if issueNum > 0 {
-			if !a.ShouldSkipComment("flaky") {
-				if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-					fmt.Sprintf("This appears to be a duplicate of existing flaky test issue #%d.\n\n%s", issueNum, a.botComment())); err != nil {
-					a.logger.Error("failed to post existing flaky issue reference comment", "pr", task.work.PRNumber, "error", err)
-				}
-			}
-			return
+	// Fast path: exact title match skips LLM matching entirely.
+	for _, existing := range existingIssues {
+		if existing.Title == issueTitle {
+			a.logger.Info("exact title match for existing flaky CI issue", "issue", existing.Number, "check", task.failures[0].Name)
+			return existing.Number, true
 		}
 	}
 
-	// No existing issue matched, create a new one
+	// If no exact title match, ask the agent for root-cause matching.
+	matchOutput := task.failures[0].Output
+	if len(strings.TrimSpace(matchOutput)) < 50 {
+		matchOutput = explanation
+	}
+	matchPrompt := buildFlakyMatchPrompt(task.failures[0].Name, matchOutput, existingIssues)
+	matchResult, matchErr := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, matchPrompt, a.logger, false)
+	// Track cumulative cost even on failure — failed invocations still consume tokens.
+	task.work.SessionCostUSD += matchResult.CostUSD
+	if matchErr != nil {
+		a.logger.Warn("failed to run agent for flaky issue matching", "error", matchErr)
+		return 0, false
+	}
+
+	matchResponse := strings.TrimSpace(matchResult.Result)
+	if matchedNum, ok := parseFlakyMatch(matchResponse); ok {
+		for _, existing := range existingIssues {
+			if existing.Number == matchedNum {
+				a.logger.Info("agent matched existing flaky CI issue", "issue", matchedNum, "check", task.failures[0].Name)
+				return matchedNum, true
+			}
+		}
+		a.logger.Warn("agent returned MATCH for unknown issue", "matched_issue", matchedNum, "check", task.failures[0].Name)
+	}
+
+	return 0, false
+}
+
+// addCILaneLinkComment posts a comment on an existing flaky issue with the CI lane
+// link and PR reference, building up evidence of repeated failures.
+func (a *Agent) addCILaneLinkComment(ctx context.Context, task ciTask, issueNum int) {
+	// Build CI lane link from the check run's HTML URL (preferred),
+	// or extract from output text (for commit statuses like Prow).
+	var ciLink string
+	if task.failures[0].HTMLURL != "" {
+		ciLink = task.failures[0].HTMLURL
+	} else if url := extractURL(task.failures[0].Output); url != "" {
+		ciLink = url
+	}
+
+	comment := fmt.Sprintf("CI failure on PR #%d (commit %s) matches this flaky test.\n\n"+
+		"**CI lane:** `%s`",
+		task.work.PRNumber, shortSHA(task.headSHA), task.failures[0].Name)
+	if ciLink != "" {
+		comment += fmt.Sprintf("\n**Link:** %s", ciLink)
+	}
+	comment += "\n\n" + a.botComment()
+
+	if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issueNum, comment); err != nil {
+		a.logger.Error("failed to post CI lane link comment on flaky issue", "issue", issueNum, "error", err)
+	}
+}
+
+// createNewFlakyIssue creates a new flaky CI issue for an unrelated failure.
+func (a *Agent) createNewFlakyIssue(ctx context.Context, task ciTask, explanation string) {
+	failingTest := parseFailingTest(explanation)
+	var issueTitle string
+	if failingTest != "" {
+		issueTitle = fmt.Sprintf("Flaky CI: %s / %s", task.failures[0].Name, failingTest)
+	} else {
+		issueTitle = fmt.Sprintf("Flaky CI: %s", task.failures[0].Name)
+	}
+
 	testNameForBody := task.failures[0].Name
 	if failingTest != "" {
 		testNameForBody = failingTest
@@ -462,7 +518,7 @@ func (a *Agent) createFlakyIssue(ctx context.Context, task ciTask, explanation s
 		task.failures[0].Name, task.work.PRNumber, shortSHA(task.headSHA),
 		testNameForBody, time.Now().Format("2006-01-02"), cleanedExplanation,
 		a.botComment())
-	issueNum, err = a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{a.cfg.FlakyLabel})
+	issueNum, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, issueTitle, issueBody, []string{a.cfg.FlakyLabel})
 	if err != nil {
 		a.logger.Error("failed to create flaky CI issue", "error", err)
 	} else {
@@ -474,6 +530,16 @@ func (a *Agent) createFlakyIssue(ctx context.Context, task ciTask, explanation s
 			}
 		}
 	}
+}
+
+// extractURL extracts the first URL from a string.
+func extractURL(s string) string {
+	for word := range strings.FieldsSeq(s) {
+		if strings.HasPrefix(word, "https://") || strings.HasPrefix(word, "http://") {
+			return strings.TrimRight(word, ".,;)]}")
+		}
+	}
+	return ""
 }
 
 // handleCIRelated handles a CI failure classified as related to PR changes.

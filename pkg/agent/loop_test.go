@@ -17,7 +17,8 @@ type mockGitHubClient struct {
 	issueComments   []ReviewComment
 	prState         string
 	prs             []PR
-	addedComments   []string
+	addedComments      []string
+	addedCommentTargets []int // issue/PR number each comment was posted to
 	addedLabels     []string
 	removedLabels   []string
 	addedReactions  []string
@@ -70,8 +71,9 @@ func (m *mockGitHubClient) GetPRState(_ context.Context, _, _ string, _ int) (st
 	return m.prState, nil
 }
 
-func (m *mockGitHubClient) AddIssueComment(_ context.Context, _, _ string, _ int, body string) error {
+func (m *mockGitHubClient) AddIssueComment(_ context.Context, _, _ string, issueNum int, body string) error {
 	m.addedComments = append(m.addedComments, body)
+	m.addedCommentTargets = append(m.addedCommentTargets, issueNum)
 	return nil
 }
 
@@ -1599,14 +1601,28 @@ func TestProcessCIFailures_SkipsDuplicateFlakyIssue(t *testing.T) {
 		t.Errorf("expected 0 created issues (should reference existing), got %d", len(gh.createdIssues))
 	}
 
-	// Check that comments were added (unrelated notice + duplicate reference)
-	if len(gh.addedComments) != 2 {
-		t.Fatalf("expected 2 comments (unrelated + duplicate reference), got %d", len(gh.addedComments))
+	// Check that comments were added:
+	// 1. unrelated notice on PR
+	// 2. CI lane link on the flaky issue (#50)
+	// 3. "Known flaky test" reference on PR
+	if len(gh.addedComments) != 3 {
+		t.Fatalf("expected 3 comments (unrelated + CI lane link + flaky reference), got %d", len(gh.addedComments))
 	}
 
-	// Verify the duplicate reference comment
-	if !strings.Contains(gh.addedComments[1], "duplicate of existing flaky test issue #50") {
-		t.Errorf("expected duplicate reference comment, got: %q", gh.addedComments[1])
+	// Verify the CI lane link comment (posted on the flaky issue #50)
+	if !strings.Contains(gh.addedComments[1], "CI failure on PR #100") {
+		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[1])
+	}
+	if gh.addedCommentTargets[1] != 50 {
+		t.Errorf("expected CI lane link comment posted to issue #50, got #%d", gh.addedCommentTargets[1])
+	}
+
+	// Verify the flaky reference comment on the PR (#100)
+	if !strings.Contains(gh.addedComments[2], "Known flaky test tracked in #50") {
+		t.Errorf("expected flaky reference comment, got: %q", gh.addedComments[2])
+	}
+	if gh.addedCommentTargets[2] != 100 {
+		t.Errorf("expected flaky reference comment posted to PR #100, got #%d", gh.addedCommentTargets[2])
 	}
 }
 
@@ -1654,14 +1670,22 @@ func TestProcessCIFailures_TitlePreCheckSkipsLLMMatching(t *testing.T) {
 		t.Errorf("expected 1 claude call (CI investigation only, no LLM matching), got %d", claudeCalls)
 	}
 
-	// Should have 2 comments: unrelated notice + duplicate reference
-	if len(gh.addedComments) != 2 {
-		t.Fatalf("expected 2 comments (unrelated + duplicate reference), got %d", len(gh.addedComments))
+	// Should have 3 comments:
+	// 1. unrelated notice on PR
+	// 2. CI lane link on the flaky issue (#99)
+	// 3. "Known flaky test" reference on PR
+	if len(gh.addedComments) != 3 {
+		t.Fatalf("expected 3 comments (unrelated + CI lane link + flaky reference), got %d", len(gh.addedComments))
 	}
 
-	// Verify the duplicate reference points to issue #99
-	if !strings.Contains(gh.addedComments[1], "duplicate of existing flaky test issue #99") {
-		t.Errorf("expected duplicate reference to issue #99, got: %q", gh.addedComments[1])
+	// Verify the CI lane link comment (posted on the flaky issue)
+	if !strings.Contains(gh.addedComments[1], "CI failure on PR #100") {
+		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[1])
+	}
+
+	// Verify the flaky reference points to issue #99
+	if !strings.Contains(gh.addedComments[2], "Known flaky test tracked in #99") {
+		t.Errorf("expected flaky reference to issue #99, got: %q", gh.addedComments[2])
 	}
 }
 
@@ -1747,6 +1771,265 @@ func TestProcessCIFailures_CreatesIssueWhenClaudeSaysNone(t *testing.T) {
 	}
 	if gh.createdIssues[0].Title != "Flaky CI: integration-tests" {
 		t.Errorf("expected title 'Flaky CI: integration-tests', got %q", gh.createdIssues[0].Title)
+	}
+}
+
+func TestProcessCIFailures_SearchAndLinkWithoutCreateFlakyIssues(t *testing.T) {
+	// Issue #171: create-flaky-issues=false + flaky-label set + matching issue exists
+	// → PR comment references the issue, CI lane link added to the issue, no new issue created.
+	ciResult := streamResultJSON(AgentResult{Result: "UNRELATED The test database connection times out intermittently"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
+		},
+		checkRunLogs: map[int64]string{
+			1: "Starting integration tests...\nConnecting to database...\nError: connection timeout after 30s\nStack trace:\n  at TestDB.connect(db.go:42)\n  at TestSuite.setUp(suite.go:15)",
+		},
+		searchResults: []Issue{
+			{Number: 1234, Title: "Flaky CI: integration-tests", Labels: []string{"kind/ci-flake"}},
+		},
+	}
+	runner := &mockCommandRunner{stdout: ciResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = false       // Disabled — don't create new issues
+	agent.cfg.FlakyLabel = "kind/ci-flake"    // But label is set — enables search-and-link
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// No new issue should be created
+	if len(gh.createdIssues) != 0 {
+		t.Errorf("expected 0 created issues (create-flaky-issues=false), got %d", len(gh.createdIssues))
+	}
+
+	// Should have 3 comments:
+	// 1. unrelated notice on PR
+	// 2. CI lane link comment on the existing flaky issue (#1234)
+	// 3. "Known flaky test" reference on PR
+	if len(gh.addedComments) != 3 {
+		t.Fatalf("expected 3 comments (unrelated + CI lane link + flaky reference), got %d", len(gh.addedComments))
+	}
+
+	// Verify unrelated comment
+	if !strings.Contains(gh.addedComments[0], "appears unrelated") {
+		t.Errorf("expected unrelated comment, got: %q", gh.addedComments[0])
+	}
+
+	// Verify CI lane link on the flaky issue
+	if !strings.Contains(gh.addedComments[1], "CI failure on PR #100") {
+		t.Errorf("expected CI lane link comment, got: %q", gh.addedComments[1])
+	}
+	if !strings.Contains(gh.addedComments[1], "integration-tests") {
+		t.Errorf("expected CI lane link to mention CI lane name, got: %q", gh.addedComments[1])
+	}
+
+	// Verify the PR reference comment
+	if !strings.Contains(gh.addedComments[2], "Known flaky test tracked in #1234") {
+		t.Errorf("expected flaky reference to issue #1234, got: %q", gh.addedComments[2])
+	}
+}
+
+func TestProcessCIFailures_NoMatchNoCreateWhenDisabled(t *testing.T) {
+	// Issue #171: create-flaky-issues=false + flaky-label set + no matching issue
+	// → regular unrelated comment, no issue created.
+	ciResult := streamResultJSON(AgentResult{Result: "UNRELATED The test database connection times out intermittently"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
+		},
+		checkRunLogs: map[int64]string{
+			1: "Starting integration tests...\nConnecting to database...\nError: connection timeout after 30s\nStack trace:\n  at TestDB.connect(db.go:42)\n  at TestSuite.setUp(suite.go:15)",
+		},
+		searchResults: []Issue{}, // No matching issues
+	}
+	runner := &mockCommandRunner{stdout: ciResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = false
+	agent.cfg.FlakyLabel = "kind/ci-flake"
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// No issue should be created
+	if len(gh.createdIssues) != 0 {
+		t.Errorf("expected 0 created issues (create-flaky-issues=false, no match), got %d", len(gh.createdIssues))
+	}
+
+	// Only the unrelated comment should be posted
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 comment (unrelated notice only), got %d", len(gh.addedComments))
+	}
+	if !strings.Contains(gh.addedComments[0], "appears unrelated") {
+		t.Errorf("expected unrelated comment, got: %q", gh.addedComments[0])
+	}
+}
+
+func TestProcessCIFailures_NoSearchWhenFlakyLabelEmpty(t *testing.T) {
+	// Issue #171: flaky-label not set → no search, no linking.
+	ciResult := streamResultJSON(AgentResult{Result: "UNRELATED The test database connection times out intermittently"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "integration-tests", Status: "completed", Conclusion: "failure", Output: "Error: connection timeout"},
+		},
+		checkRunLogs: map[int64]string{
+			1: "Starting integration tests...\nConnecting to database...\nError: connection timeout after 30s\nStack trace:\n  at TestDB.connect(db.go:42)\n  at TestSuite.setUp(suite.go:15)",
+		},
+	}
+	runner := &mockCommandRunner{stdout: ciResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.FlakyLabel = ""             // No flaky label
+	agent.cfg.CreateFlakyIssues = false
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// No issue should be created
+	if len(gh.createdIssues) != 0 {
+		t.Errorf("expected 0 created issues, got %d", len(gh.createdIssues))
+	}
+
+	// Only the unrelated comment
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 comment (unrelated notice only), got %d", len(gh.addedComments))
+	}
+}
+
+func TestProcessCIFailures_CILaneLinkIncludesJobURL(t *testing.T) {
+	// Issue #171: CI lane link comment includes the correct job URL and PR reference.
+	ciResult := streamResultJSON(AgentResult{Result: "UNRELATED The test timed out intermittently due to a flaky network connection in the CI environment"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 67890, Name: "e2e (control-plane, HA, shared, ipv4)", Status: "completed", Conclusion: "failure", Output: "Error: test timed out waiting for condition", HTMLURL: "https://github.com/owner/repo/actions/runs/12345/job/67890"},
+		},
+		checkRunLogs: map[int64]string{
+			67890: "Running e2e tests...\nTimeout: waiting for pod to be ready\nTest failed after 300s\nStack trace:\n  at e2e.waitForPod(e2e.go:142)",
+		},
+		searchResults: []Issue{
+			{Number: 5678, Title: "Flaky CI: e2e (control-plane, HA, shared, ipv4)", Labels: []string{"kind/ci-flake"}},
+		},
+	}
+	runner := &mockCommandRunner{stdout: ciResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = false
+	agent.cfg.FlakyLabel = "kind/ci-flake"
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Verify CI lane link comment was posted on the flaky issue
+	if len(gh.addedComments) < 2 {
+		t.Fatalf("expected at least 2 comments, got %d", len(gh.addedComments))
+	}
+
+	ciLaneComment := gh.addedComments[1]
+	if !strings.Contains(ciLaneComment, "CI failure on PR #100") {
+		t.Errorf("expected CI lane link to reference PR #100, got: %q", ciLaneComment)
+	}
+	if !strings.Contains(ciLaneComment, "e2e (control-plane, HA, shared, ipv4)") {
+		t.Errorf("expected CI lane link to mention check name, got: %q", ciLaneComment)
+	}
+	// GitHub Actions check runs have ID > 0, so a link should be constructed
+	if !strings.Contains(ciLaneComment, "**Link:**") {
+		t.Errorf("expected CI lane link to include a job link, got: %q", ciLaneComment)
+	}
+}
+
+func TestProcessCIFailures_CommitStatusCILaneLink(t *testing.T) {
+	// Issue #171: commit status entries (Prow) use target_url as the CI link.
+	ciResult := streamResultJSON(AgentResult{Result: "UNRELATED The test timed out intermittently on the Prow CI infrastructure"})
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{},
+		commitStatuses: []CheckRun{
+			// Commit status: ID=0, Output contains target_url
+			{ID: 0, Name: "pull-unit-test", Status: "completed", Conclusion: "failure", Output: "Build failed\nhttps://prow.ci.kubevirt.io/view/gs/logs/1234"},
+		},
+		searchResults: []Issue{
+			{Number: 999, Title: "Flaky CI: pull-unit-test", Labels: []string{"flaky-test"}},
+		},
+	}
+	runner := &mockCommandRunner{stdout: ciResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.CreateFlakyIssues = false
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessCIFailures(context.Background())
+
+	// Verify CI lane link uses the Prow URL extracted from the output
+	if len(gh.addedComments) < 2 {
+		t.Fatalf("expected at least 2 comments, got %d", len(gh.addedComments))
+	}
+
+	ciLaneComment := gh.addedComments[1]
+	if !strings.Contains(ciLaneComment, "https://prow.ci.kubevirt.io/view/gs/logs/1234") {
+		t.Errorf("expected CI lane link to include Prow URL, got: %q", ciLaneComment)
+	}
+}
+
+func TestExtractURL(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"https://prow.ci.kubevirt.io/view/gs/logs/1234", "https://prow.ci.kubevirt.io/view/gs/logs/1234"},
+		{"Build failed\nhttps://prow.ci.kubevirt.io/view/gs/logs/1234", "https://prow.ci.kubevirt.io/view/gs/logs/1234"},
+		{"Build failed", ""},
+		{"", ""},
+		{"Error: timeout http://example.com/logs more text", "http://example.com/logs"},
+		// Trailing punctuation is trimmed
+		{"Check logs at https://example.com/log.", "https://example.com/log"},
+		{"See https://example.com/log, then retry", "https://example.com/log"},
+		{"See https://example.com/log) for details", "https://example.com/log"},
+	}
+	for _, tt := range tests {
+		got := extractURL(tt.input)
+		if got != tt.want {
+			t.Errorf("extractURL(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 

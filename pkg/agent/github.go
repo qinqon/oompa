@@ -282,6 +282,7 @@ func (g *GoGitHubClient) GetCheckRuns(ctx context.Context, owner, repo, ref stri
 			Status:     r.GetStatus(),
 			Conclusion: r.GetConclusion(),
 			Output:     output,
+			HTMLURL:    r.GetHTMLURL(),
 		})
 	}
 	return runs, nil
