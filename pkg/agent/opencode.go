@@ -179,6 +179,7 @@ func parseOpencodeResult(stdout []byte) (AgentResult, error) {
 
 // Run invokes OpenCode CLI with JSON output and parses the result.
 // If resume is true, --continue is passed to resume the most recent session in workDir.
+// The prompt is passed via stdin to avoid hitting the OS ARG_MAX limit for large prompts.
 func (o *OpenCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir, prompt string,
 	logger *slog.Logger, resume bool) (AgentResult, error) {
 	args := []string{"run", "--format", "json", "--dangerously-skip-permissions"}
@@ -188,17 +189,16 @@ func (o *OpenCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir, 
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}
-	args = append(args, prompt)
 
 	var stdout, stderr []byte
 	var err error
 
 	if sr, ok := runner.(StreamingRunner); ok && logger != nil {
-		stdout, stderr, err = sr.RunStream(ctx, workDir, func(line []byte) {
+		stdout, stderr, err = sr.RunStreamWithStdin(ctx, workDir, prompt, func(line []byte) {
 			logOpencodeEvent(logger, line)
 		}, "opencode", args...)
 	} else {
-		stdout, stderr, err = runner.Run(ctx, workDir, "opencode", args...)
+		stdout, stderr, err = runner.RunWithStdin(ctx, workDir, prompt, "opencode", args...)
 	}
 
 	if err != nil {

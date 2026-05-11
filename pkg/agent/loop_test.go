@@ -3087,9 +3087,7 @@ func TestProcessCIFailures_MergesCheckRunsAndCommitStatuses(t *testing.T) {
 	var claudePrompts []string
 	for _, c := range runner.calls {
 		if c.Name == "claude" {
-			if len(c.Args) > 0 {
-				claudePrompts = append(claudePrompts, c.Args[len(c.Args)-1])
-			}
+			claudePrompts = append(claudePrompts, c.Stdin)
 		}
 	}
 	if len(claudePrompts) != 2 {
@@ -3145,7 +3143,7 @@ func TestProcessCIFailures_SkipChecksExcludesFromFailures(t *testing.T) {
 		if c.Name == "claude" {
 			claudeCalls++
 			// Verify the prompt does NOT mention the skipped check
-			if strings.Contains(c.Args[len(c.Args)-1], "can-be-merged") {
+			if strings.Contains(c.Stdin, "can-be-merged") {
 				t.Error("skipped check 'can-be-merged' should not appear in claude prompt")
 			}
 		}
