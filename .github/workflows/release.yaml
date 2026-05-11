@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:
@@ -24,20 +26,17 @@ jobs:
           GOOS=darwin GOARCH=amd64 go build -o oompa-darwin-amd64 ./cmd/oompa
           GOOS=darwin GOARCH=arm64 go build -o oompa-darwin-arm64 ./cmd/oompa
 
-      - name: Update latest release
+      - name: Create timestamped release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Delete existing latest release if it exists
-          gh release delete latest --yes 2>/dev/null || true
-          git tag -d latest 2>/dev/null || true
-          git push origin :refs/tags/latest 2>/dev/null || true
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          TAG="build-$(date -u +%Y%m%d-%H%M%S)-${SHORT_SHA}"
 
-          # Create new release pointing to this commit
-          gh release create latest \
-            --title "Latest Build ($(echo ${{ github.sha }} | cut -c1-7))" \
+          gh release create "$TAG" \
+            --title "Build ${SHORT_SHA}" \
             --generate-notes \
-            --target ${{ github.sha }} \
+            --target "${{ github.sha }}" \
             oompa-linux-amd64 \
             oompa-linux-arm64 \
             oompa-darwin-amd64 \
