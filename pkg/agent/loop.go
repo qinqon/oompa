@@ -171,12 +171,22 @@ func (a *Agent) SlackEnabled() bool {
 	return a.slack != nil && a.slack.IsEnabled()
 }
 
-// ReportToSlack sends findings to Slack if the reporter is configured.
-func (a *Agent) ReportToSlack(ctx context.Context, findings []SlackFinding) {
+// CollectSlackFindings appends findings to the shared Slack reporter for later flushing.
+// Thread-safe: multiple agents can call this concurrently in multi-project mode.
+func (a *Agent) CollectSlackFindings(findings []SlackFinding) {
 	if a.slack == nil {
 		return
 	}
-	a.slack.Report(ctx, findings)
+	a.slack.Collect(findings)
+}
+
+// FlushSlackReport deduplicates and posts all collected findings as a single Slack message.
+// Call this once per poll cycle after all agents have collected their findings.
+func (a *Agent) FlushSlackReport(ctx context.Context) {
+	if a.slack == nil {
+		return
+	}
+	a.slack.Flush(ctx)
 }
 
 // RunReportOnlyChecks runs lightweight check methods for reactions NOT in the active
@@ -579,6 +589,8 @@ func (a *Agent) CheckCIStatus(ctx context.Context) []SlackFinding {
 				}
 				msg := fmt.Sprintf("🔴 <%s|%s> failed", link, r.Name)
 				findings = append(findings, SlackFinding{
+					Owner:    a.cfg.Owner,
+					Repo:     a.cfg.Repo,
 					PRNumber: work.PRNumber,
 					PRTitle:  work.IssueTitle,
 					PRURL:    prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber),
@@ -627,6 +639,8 @@ func (a *Agent) checkRebaseNeededWithStates(ctx context.Context, states map[int]
 		if needsRebase {
 			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
 			findings = append(findings, SlackFinding{
+				Owner:    a.cfg.Owner,
+				Repo:     a.cfg.Repo,
 				PRNumber: work.PRNumber,
 				PRTitle:  work.IssueTitle,
 				PRURL:    pURL,
@@ -665,6 +679,8 @@ func (a *Agent) checkConflictsWithStates(_ context.Context, states map[int]strin
 		if mergeState == "dirty" {
 			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
 			findings = append(findings, SlackFinding{
+				Owner:    a.cfg.Owner,
+				Repo:     a.cfg.Repo,
 				PRNumber: work.PRNumber,
 				PRTitle:  work.IssueTitle,
 				PRURL:    pURL,
@@ -719,6 +735,8 @@ func (a *Agent) CheckNewReviews(ctx context.Context) []SlackFinding {
 			}
 			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
 			findings = append(findings, SlackFinding{
+				Owner:    a.cfg.Owner,
+				Repo:     a.cfg.Repo,
 				PRNumber: work.PRNumber,
 				PRTitle:  work.IssueTitle,
 				PRURL:    pURL,

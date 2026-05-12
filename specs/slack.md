@@ -2,7 +2,9 @@
 
 ## Overview
 
-Automatic Slack reporting at the end of each poll cycle. When `OOMPA_SLACK_WEBHOOK` is set, oompa posts a consolidated Slack message with concrete findings and clickable GitHub links. Silent cycles produce no Slack message.
+Automatic Slack reporting at the end of each poll cycle. When `OOMPA_SLACK_WEBHOOK` is set, oompa posts a **single consolidated Slack message** across all projects with concrete findings and clickable GitHub links. Silent cycles produce no Slack message.
+
+In multi-project mode, findings from all project goroutines are collected into a shared reporter and flushed periodically as one message. Projects with no findings are omitted.
 
 ## Trigger
 
@@ -12,16 +14,18 @@ Automatic Slack reporting at the end of each poll cycle. When `OOMPA_SLACK_WEBHO
 
 | File | Purpose |
 |------|---------|
-| `pkg/agent/slack.go` | SlackFinding, SlackReporter, postToSlack, message formatter, dedup tracker |
-| `pkg/agent/slack_test.go` | Tests for formatting, dedup, empty findings, link construction |
-| `pkg/agent/loop.go` | Agent loop integration: Check* methods, ShouldCheckReaction, RunReportOnlyChecks, cycle-end reporting |
+| `pkg/agent/slack.go` | SlackFinding, SlackReporter (thread-safe: `mu` protects pending buffer, `flushMu` serializes Flush), postToSlack, message formatter, dedup tracker |
+| `pkg/agent/slack_test.go` | Tests for formatting, dedup, empty findings, link construction, collect/flush, concurrency, block splitting |
+| `pkg/agent/loop.go` | Agent loop integration: Check* methods, ShouldCheckReaction, RunReportOnlyChecks, CollectSlackFindings, FlushSlackReport |
 | `pkg/agent/config.go` | `SlackWebhookURL` field on Config |
-| `cmd/oompa/main.go` | Read `OOMPA_SLACK_WEBHOOK` env var |
+| `cmd/oompa/main.go` | Read `OOMPA_SLACK_WEBHOOK` env var, create shared reporter in multi-project mode, flush goroutine |
 
 ## Data Types
 
 ```go
 type SlackFinding struct {
+    Owner     string   // repository owner (e.g. "ovn-kubernetes")
+    Repo      string   // repository name (e.g. "ovn-kubernetes")
     PRNumber  int
     PRTitle   string
     PRURL     string
@@ -32,21 +36,36 @@ type SlackFinding struct {
 
 type SlackReporter struct {
     webhookURL string
-    owner      string
-    repo       string
     reported   map[string]bool // tracks DedupKeys already reported
     logger     *slog.Logger
     httpClient *http.Client    // injectable for testing
+    flushMu    sync.Mutex      // serializes Flush calls (protects reported map)
+    mu         sync.Mutex      // protects pending
+    pending    []SlackFinding  // findings collected since last Flush
 }
 ```
 
 ## SlackReporter Methods
 
-- `NewSlackReporter(webhookURL, owner, repo string, logger *slog.Logger) *SlackReporter`
-- `(r *SlackReporter) Report(ctx context.Context, findings []SlackFinding)` — dedup, format, POST
+- `NewSlackReporter(webhookURL string, logger *slog.Logger) *SlackReporter`
 - `(r *SlackReporter) IsEnabled() bool` — returns true if webhookURL is non-empty
-- `formatSlackMessage(owner, repo string, findings []SlackFinding) []byte` — builds Slack Block Kit JSON
+- `(r *SlackReporter) Collect(findings []SlackFinding)` — thread-safe append to pending buffer
+- `(r *SlackReporter) Flush(ctx context.Context)` — dedup, format, POST, clear pending
+- `(r *SlackReporter) Report(ctx context.Context, findings []SlackFinding)` — convenience: Collect + Flush in one call (single-repo mode)
+- `formatSlackMessage(findings []SlackFinding) []byte` — builds Slack Block Kit JSON grouped by project then PR
 - `postToSlack(ctx context.Context, client *http.Client, webhookURL string, body []byte) error` — HTTP POST
+
+## Collection Architecture
+
+### Single-repo mode
+Each `runLoop` call collects findings and flushes immediately at the end of the cycle (one agent, one reporter).
+
+### Multi-project mode
+1. A shared `SlackReporter` is created once and passed to all agent goroutines
+2. Each goroutine calls `CollectSlackFindings()` at the end of its poll cycle
+3. A separate flush goroutine runs on a timer matching the poll interval, calling `Flush()` periodically
+4. This produces one consolidated Slack message per flush window across all projects
+5. A final `Flush()` runs on shutdown to capture remaining findings
 
 ## What Gets Reported
 
@@ -69,6 +88,7 @@ type SlackReporter struct {
 - Poll cycle start/end
 - Routine checks that found nothing
 - Any idle/no-op cycle
+- Projects with no findings (omitted from message entirely)
 
 ## Reactions Behavior with Slack
 
@@ -88,19 +108,39 @@ type SlackReporter struct {
 
 ## Slack Message Format
 
-Slack Block Kit with mrkdwn. One message per cycle, grouped by PR:
+Slack Block Kit with header + per-project sections. One consolidated message per cycle, grouped by project then by PR:
 
 ```text
-🏭 oompa — owner/repo
+🏭 oompa report — 3 project(s) with activity
 
-📋 <pr-link|PR #N> — title
-  🔴 <job-link|check-name> — failed
-  ⚠️ 15 commits behind main
+*<repo-link|owner1/repo1>* (2 PRs)
+📋 <pr-link|PR #100> — Fix kubevirt test flake
+  🔴 <job-link|e2e-test> failed
+  ⚠️ behind main
+📋 <pr-link|PR #101> — kubevirt vm hostname
+  💬 3 new review comment(s)
 
-📋 <pr-link|PR #N> — title
-  💬 3 new reviews
-  ⚠️ Merge conflicts
+---
+
+*<repo-link|owner2/repo2>* (1 PR)
+📋 <pr-link|PR #200> — KubeVirt nmstate
+  🔴 <job-link|e2e-kubevirt> failed
 ```
+
+### Block structure
+
+1. `header` block — "🏭 oompa report — N project(s) with activity"
+2. Per project:
+   - `section` block (mrkdwn) — project name with link and PR count
+   - `section` block (mrkdwn) — PR details with findings (split if >3000 chars)
+   - `divider` block (between projects, not after last)
+
+### Links
+
+Every item links to the relevant GitHub resource:
+- Project name → `github.com/owner/repo`
+- PR number → `github.com/owner/repo/pull/N`
+- CI check name → `CheckRun.HTMLURL`
 
 ## Dedup
 
@@ -113,14 +153,25 @@ Don't re-report the same finding every poll cycle. Each finding has a DedupKey. 
 
 ## Tests
 
-- `TestFormatSlackMessage_GroupsByPR` — findings grouped by PR number
+- `TestFormatSlackMessage_GroupsByPR` — findings grouped by PR number within a project
 - `TestFormatSlackMessage_EmptyFindings` — returns nil
+- `TestFormatSlackMessage_MultipleProjects` — findings from multiple projects in one message
+- `TestFormatSlackMessage_SingleProjectNoFindings` — only projects with findings appear
+- `TestFormatSlackMessage_LinksCorrect` — project, PR, and CI links correct
+- `TestFormatSlackMessage_HasDividersBetweenProjects` — dividers between projects, not after last
+- `TestFormatSlackMessage_BlockTextLimit` — blocks split when text exceeds 3000 chars
+- `TestFormatSlackMessage_BlockTextLimit_SingleLongLine` — single line exceeding 3000 chars splits correctly
+- `TestFormatSlackMessage_TruncatesAt50Blocks` — messages with >50 blocks are truncated
 - `TestSlackReporter_Dedup` — same DedupKey suppressed on second call
 - `TestSlackReporter_DedupReset` — different DedupKey re-sends
 - `TestSlackReporter_Disabled` — no webhook → IsEnabled() false
+- `TestSlackReporter_EmptyDedupKey` — empty DedupKey always sent
+- `TestSlackReporter_CollectAndFlush` — collect from multiple projects, flush as one POST
+- `TestSlackReporter_CollectConcurrent` — concurrent Collect calls are thread-safe
+- `TestSlackReporter_FlushDedup` — dedup works across collect/flush cycles
 - `TestPostToSlack_Success` — HTTP POST with correct body
 - `TestPostToSlack_HTTPError` — non-200 status returns error
-- `TestCheckCIStatus_ReportsFailures` — report-only check produces findings
-- `TestCheckRebaseNeeded_ReportsBehind` — report-only check produces findings
-- `TestCheckConflicts_ReportsDirty` — report-only check produces findings
-- `TestCheckNewReviews_ReportsComments` — report-only check produces findings
+- `TestCheckCIStatus_ReportsFailures` — report-only check produces findings with Owner/Repo
+- `TestCheckRebaseNeeded_ReportsBehind` — report-only check produces findings with Owner/Repo
+- `TestCheckConflicts_ReportsDirty` — report-only check produces findings with Owner/Repo
+- `TestCheckNewReviews_ReportsComments` — report-only check produces findings with Owner/Repo

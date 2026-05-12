@@ -461,7 +461,8 @@ func selectCodeAgent(cfg agent.Config, logger *slog.Logger) agent.CodeAgent {
 }
 
 // buildAgentForConfig creates a fully wired Agent for a given config.
-func buildAgentForConfig(cfg agent.Config, ghClient *agent.GoGitHubClient, tokenFunc func(context.Context) (string, error), useAppAuth bool, logger *slog.Logger) *agent.Agent {
+// If sharedSlack is non-nil, it is used as the Slack reporter instead of creating a per-agent one.
+func buildAgentForConfig(cfg agent.Config, ghClient *agent.GoGitHubClient, tokenFunc func(context.Context) (string, error), useAppAuth bool, logger *slog.Logger, sharedSlack ...*agent.SlackReporter) *agent.Agent {
 	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", cfg.Owner, cfg.Repo)
 	forkURL := repoURL
 	if cfg.ForkOwner != "" {
@@ -495,8 +496,11 @@ func buildAgentForConfig(cfg agent.Config, ghClient *agent.GoGitHubClient, token
 		a.SetTokenFunc(tokenFunc)
 	}
 
-	if cfg.SlackWebhookURL != "" {
-		slack := agent.NewSlackReporter(cfg.SlackWebhookURL, cfg.Owner, cfg.Repo, logger)
+	if len(sharedSlack) > 0 && sharedSlack[0] != nil {
+		a.SetSlackReporter(sharedSlack[0])
+		logger.Info("Slack reporting enabled (shared reporter)")
+	} else if cfg.SlackWebhookURL != "" {
+		slack := agent.NewSlackReporter(cfg.SlackWebhookURL, logger)
 		a.SetSlackReporter(slack)
 		logger.Info("Slack reporting enabled")
 	}
@@ -605,6 +609,7 @@ func runSingleRepo(cfg agent.Config, ghClient *agent.GoGitHubClient, tokenFunc f
 	}
 
 	runLoop(ctx, a, logger)
+	a.FlushSlackReport(ctx)
 
 	if cfg.OneShot {
 		return
@@ -620,6 +625,7 @@ func runSingleRepo(cfg agent.Config, ghClient *agent.GoGitHubClient, tokenFunc f
 			return
 		case <-ticker.C:
 			runLoop(ctx, a, logger)
+			a.FlushSlackReport(ctx)
 			if exitOwner != "" && commitSHA != "" && shouldExitForNewVersion(ctx, ghClient, exitOwner, exitRepo, commitSHA, logger) {
 				return
 			}
@@ -671,6 +677,15 @@ func runMultiProject(globalCfg agent.Config, configPath string, ghClient *agent.
 		"config", configPath,
 	)
 
+	// Create a shared Slack reporter for consolidated cross-project reporting.
+	// All agent goroutines collect findings into this reporter, and a separate
+	// goroutine flushes them periodically as a single consolidated message.
+	var sharedSlack *agent.SlackReporter
+	if globalCfg.SlackWebhookURL != "" {
+		sharedSlack = agent.NewSlackReporter(globalCfg.SlackWebhookURL, logger)
+		logger.Info("Slack consolidated reporting enabled")
+	}
+
 	// Two-signal graceful shutdown:
 	// First signal: cancel context → goroutines finish current cycle → clean exit
 	// Second signal: force exit immediately
@@ -689,6 +704,29 @@ func runMultiProject(globalCfg agent.Config, configPath string, ghClient *agent.
 		os.Exit(1) //nolint:gocritic // exitAfterDefer: intentional force exit
 	}()
 
+	// Start a Slack flush goroutine that periodically posts consolidated findings.
+	// Uses a time-based window matching the poll interval to batch findings from
+	// all project goroutines into a single Slack message per cycle.
+	// The flushDone channel signals that the goroutine has exited, preventing
+	// concurrent Flush calls between the ticker goroutine and the final flush.
+	var flushDone chan struct{}
+	if sharedSlack != nil {
+		flushDone = make(chan struct{})
+		go func() {
+			defer close(flushDone)
+			ticker := time.NewTicker(globalCfg.PollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sharedSlack.Flush(ctx)
+				}
+			}
+		}()
+	}
+
 	var wg sync.WaitGroup
 
 	for _, entry := range entries {
@@ -706,7 +744,7 @@ func runMultiProject(globalCfg agent.Config, configPath string, ghClient *agent.
 				}
 			}()
 
-			a := buildAgentForConfig(entry.Config, ghClient, tokenFunc, useAppAuth, roleLogger)
+			a := buildAgentForConfig(entry.Config, ghClient, tokenFunc, useAppAuth, roleLogger, sharedSlack)
 			if emitter != nil {
 				a.SetEmitter(emitter)
 			}
@@ -726,6 +764,15 @@ func runMultiProject(globalCfg agent.Config, configPath string, ghClient *agent.
 	}
 
 	wg.Wait()
+	// Wait for the flush goroutine to exit before doing the final flush,
+	// preventing concurrent Flush calls.
+	if flushDone != nil {
+		<-flushDone
+	}
+	// Final flush to capture any findings from the last cycle
+	if sharedSlack != nil {
+		sharedSlack.Flush(context.Background())
+	}
 	logger.Info("all role goroutines stopped, exiting")
 }
 
@@ -826,10 +873,12 @@ func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 	a.ProcessTriageJobs(ctx)
 
 	// Slack reporting: run report-only checks for reactions NOT in the active list,
-	// then post consolidated findings to Slack.
+	// then collect findings. In single-repo mode, flush immediately to post findings.
+	// In multi-project mode with a shared reporter, each goroutine collects and the
+	// flush is called once per cycle from the orchestrator.
 	if a.SlackEnabled() {
 		findings := a.RunReportOnlyChecks(ctx)
-		a.ReportToSlack(ctx, findings)
+		a.CollectSlackFindings(findings)
 	}
 
 	a.EmitPollCycleEnd()
