@@ -150,41 +150,62 @@ Instructions:
      * These are NOT flaky tests — they are temporary outages that resolve themselves
    - When in doubt, say UNRELATED — it is better to skip a fixable failure than to waste time on an unfixable one
 
-3. If UNRELATED (flaky test, not infrastructure):
+3. OUTPUT FORMAT: After the classification keyword, provide structured fields.
+   Your output MUST start with the classification keyword on its own line, then include:
+
+   CLASSIFICATION: RELATED | UNRELATED | INFRASTRUCTURE
+
+   ERROR_SUMMARY: <one-line summary of the error>
+
+   ROOT_CAUSE: <2-3 sentence explanation of why this failed>
+
+   EVIDENCE:
+   <relevant log lines or test output showing the failure — keep under 10 lines>
+
+   RECOMMENDATION: <what should be done — fix code, retest, ignore, etc.>
+
+   FAILING_TEST: <specific test name if applicable, omit if none>
+
+   Notes on fields:
+   - ERROR_SUMMARY must be a single line (no newlines)
+   - ROOT_CAUSE should explain the causal chain, not just restate the error
+   - EVIDENCE should contain actual log output or error messages, not paraphrasing
+   - RECOMMENDATION should be actionable (e.g. "retest with /retest", "fix test fixture", "wait for infra recovery")
+   - FAILING_TEST is the specific test function/case name (e.g. "TestDualStack/should_create_two_pods")
+
+4. If UNRELATED (flaky test, not infrastructure):
    - Do NOT attempt to fix it, do NOT modify any files
-   - Your output MUST start with the word UNRELATED, then on the NEXT LINE include FAILING_TEST: followed by the
-     name of the specific test that failed (e.g. "FAILING_TEST: TestDualStack/should_create_two_pods").
-     If multiple tests failed, pick the primary one. If no specific test name is identifiable, omit the line.
-   - After the FAILING_TEST line, include a brief explanation of the failure.
+   - Your output MUST start with the word UNRELATED, then include the structured fields above
    - IMPORTANT: Do NOT mention the PR changes, the PR number, or what the PR modifies in your explanation.
      Focus ONLY on describing the failure itself: what test failed, what the error was, and why it looks flaky.
      The explanation will be used to create a standalone flaky test issue, so it must make sense without any PR context.
 
-4. If INFRASTRUCTURE (transient environment issue):
+5. If INFRASTRUCTURE (transient environment issue):
    - Do NOT attempt to fix it, do NOT modify any files
-   - Your output MUST start with the word INFRASTRUCTURE followed by a brief explanation
+   - Your output MUST start with the word INFRASTRUCTURE, then include the structured fields above
    - IMPORTANT: Do NOT mention the PR changes, the PR number, or what the PR modifies in your explanation.
      Focus ONLY on describing the infrastructure failure: what service/system was unavailable, what the error was.
 
-5. If RELATED:
+6. If RELATED:
    `)
 
 	if skipFix {
 		prompt.WriteString(`   - Do NOT attempt to fix the code or modify any files
-   - Your output MUST start with the word RELATED followed by a detailed explanation
-     of what is failing and why it is caused by this PR's changes
+   - Your output MUST start with the word RELATED, then include the structured fields above
    - Include: the specific error, the specific code path, and what needs to change
 
-REMINDER: Your FINAL text output MUST start with either UNRELATED, INFRASTRUCTURE, or RELATED.
+REMINDER: Your FINAL text output MUST start with either UNRELATED, INFRASTRUCTURE, or RELATED,
+followed by the structured fields (ERROR_SUMMARY, ROOT_CAUSE, EVIDENCE, RECOMMENDATION, FAILING_TEST).
 This is how the automation determines what to do next. Any other format will
 cause your work to be discarded.`)
 	} else {
 		prompt.WriteString(`   - Fix the code so that CI passes
    - Run "make lint" and "make test" to verify your fix
    - CRITICAL: After you are done fixing, your FINAL text output MUST start with the
-     word RELATED followed by a brief summary of what you fixed. This prefix is
-     mandatory — the automation parses it to determine next steps. If you forget to
-     start with RELATED, your entire fix will be discarded.
+     word RELATED, then include the structured fields (ERROR_SUMMARY, ROOT_CAUSE, EVIDENCE,
+     RECOMMENDATION, FAILING_TEST). This prefix is mandatory — the automation parses it
+     to determine next steps. If you forget to start with RELATED, your entire fix will
+     be discarded.
    `)
 
 		signoff := ""
@@ -211,7 +232,8 @@ cause your work to be discarded.`)
 		prompt.WriteString(`
 Do NOT push or rebase — the agent handles that automatically.
 
-REMINDER: Your FINAL text output MUST start with either UNRELATED, INFRASTRUCTURE, or RELATED.
+REMINDER: Your FINAL text output MUST start with either UNRELATED, INFRASTRUCTURE, or RELATED,
+followed by the structured fields (ERROR_SUMMARY, ROOT_CAUSE, EVIDENCE, RECOMMENDATION, FAILING_TEST).
 This is how the automation determines what to do next. Any other format will
 cause your work to be discarded.`)
 	}

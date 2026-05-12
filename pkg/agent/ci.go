@@ -13,11 +13,16 @@ const maxCIFixAttempts = 3
 // ciResult holds the result of investigating a single CI check failure.
 // Results for the same PR+SHA are consolidated into a single comment.
 type ciResult struct {
-	check       string // check name
-	category    string // "related", "unrelated", "infrastructure"
-	explanation string // agent's explanation
-	flakyIssue  int    // linked flaky issue number (0 if none)
-	pushed      bool   // whether a fix was pushed
+	check          string // check name
+	category       string // "related", "unrelated", "infrastructure"
+	explanation    string // agent's full explanation (raw text after classification keyword)
+	errorSummary   string // one-line error summary (from ERROR_SUMMARY field)
+	rootCause      string // root cause explanation (from ROOT_CAUSE field)
+	evidence       string // relevant log lines (from EVIDENCE field)
+	recommendation string // action recommendation (from RECOMMENDATION field)
+	failingTest    string // specific test name (from FAILING_TEST field)
+	flakyIssue     int    // linked flaky issue number (0 if none)
+	pushed         bool   // whether a fix was pushed
 }
 
 // ProcessCIFailures checks CI status for open PRs and invokes Claude to fix failures.
@@ -336,10 +341,17 @@ func (a *Agent) classifyCIInfrastructure(_ context.Context, task ciTask, cleaned
 	task.work.LastCIStatus = "infrastructure-failure"
 	task.work.LastCheckedCISHA = task.headSHA
 
+	errorSummary, rootCause, evidence, recommendation, failingTest := parseCIStructuredFields(explanation)
+
 	return ciResult{
-		check:       task.failures[0].Name,
-		category:    "infrastructure",
-		explanation: explanation,
+		check:          task.failures[0].Name,
+		category:       "infrastructure",
+		explanation:    explanation,
+		errorSummary:   errorSummary,
+		rootCause:      rootCause,
+		evidence:       evidence,
+		recommendation: recommendation,
+		failingTest:    failingTest,
 	}
 }
 
@@ -367,10 +379,17 @@ func (a *Agent) classifyCIUnrelated(ctx context.Context, task ciTask, cleaned st
 	task.work.LastCIStatus = "unrelated-failure"
 	task.work.LastCheckedCISHA = task.headSHA
 
+	errorSummary, rootCause, evidence, recommendation, failingTest := parseCIStructuredFields(explanation)
+
 	res := ciResult{
-		check:       task.failures[0].Name,
-		category:    "unrelated",
-		explanation: explanation,
+		check:          task.failures[0].Name,
+		category:       "unrelated",
+		explanation:    explanation,
+		errorSummary:   errorSummary,
+		rootCause:      rootCause,
+		evidence:       evidence,
+		recommendation: recommendation,
+		failingTest:    failingTest,
 	}
 
 	// Search for existing flaky issues and optionally create new ones.
@@ -564,6 +583,72 @@ func extractURL(s string) string {
 	return ""
 }
 
+// parseCIStructuredFields extracts structured fields from the agent's CI analysis output.
+// It looks for lines starting with known field prefixes (ERROR_SUMMARY:, ROOT_CAUSE:, etc.)
+// and extracts the value. For EVIDENCE:, it captures all lines until the next field.
+// Fields not found in the output are left as empty strings.
+func parseCIStructuredFields(text string) (errorSummary, rootCause, evidence, recommendation, failingTest string) {
+	lines := strings.Split(text, "\n")
+	type fieldState int
+	const (
+		stateNone fieldState = iota
+		stateEvidence
+	)
+	state := stateNone
+	var evidenceLines []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// When capturing evidence, only treat a line as a field boundary
+		// if the untrimmed line starts with the prefix at column 0.
+		// This prevents indented log lines like "  RECOMMENDATION: ..."
+		// from prematurely terminating evidence capture.
+		isFieldBoundary := func(prefix string) bool {
+			if state == stateEvidence {
+				return strings.HasPrefix(line, prefix)
+			}
+			return strings.HasPrefix(trimmed, prefix)
+		}
+
+		// Check if this line starts a known field — terminates EVIDENCE capture
+		switch {
+		case isFieldBoundary("ERROR_SUMMARY:"):
+			state = stateNone
+			errorSummary = strings.TrimSpace(strings.TrimPrefix(trimmed, "ERROR_SUMMARY:"))
+		case isFieldBoundary("ROOT_CAUSE:"):
+			state = stateNone
+			rootCause = strings.TrimSpace(strings.TrimPrefix(trimmed, "ROOT_CAUSE:"))
+		case isFieldBoundary("EVIDENCE:"):
+			state = stateEvidence
+			// Check if there's content on the same line
+			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "EVIDENCE:"))
+			if rest != "" {
+				evidenceLines = append(evidenceLines, rest)
+			}
+		case isFieldBoundary("RECOMMENDATION:"):
+			state = stateNone
+			recommendation = strings.TrimSpace(strings.TrimPrefix(trimmed, "RECOMMENDATION:"))
+		case isFieldBoundary("FAILING_TEST:"):
+			state = stateNone
+			failingTest = strings.TrimSpace(strings.TrimPrefix(trimmed, "FAILING_TEST:"))
+		case isFieldBoundary("CLASSIFICATION:"):
+			state = stateNone
+			// Skip — classification is handled by the keyword scanner
+		default:
+			if state == stateEvidence {
+				evidenceLines = append(evidenceLines, line)
+			}
+		}
+	}
+
+	if len(evidenceLines) > 0 {
+		evidence = strings.TrimSpace(strings.Join(evidenceLines, "\n"))
+	}
+
+	return errorSummary, rootCause, evidence, recommendation, failingTest
+}
+
 // classifyCIRelated handles a CI failure classified as related to PR changes.
 // Returns a ciResult for consolidation; does NOT post a comment.
 func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned string) ciResult {
@@ -579,6 +664,8 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 	idx := strings.Index(cleaned, "RELATED")
 	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "RELATED"), " :—–-"))
 
+	errorSummary, rootCause, evidence, recommendation, failingTest := parseCIStructuredFields(explanation)
+
 	if a.cfg.SkipFix {
 		// Skip-fix mode: just record the analysis, don't try to fix or push
 		a.logger.Info("CI failure is related (skip-fix mode, not pushing)", "pr", task.work.PRNumber)
@@ -589,9 +676,14 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 		task.work.LastCIStatus = "related-skip-fix"
 		task.work.LastCheckedCISHA = task.headSHA
 		return ciResult{
-			check:       task.failures[0].Name,
-			category:    "related",
-			explanation: explanation,
+			check:          task.failures[0].Name,
+			category:       "related",
+			explanation:    explanation,
+			errorSummary:   errorSummary,
+			rootCause:      rootCause,
+			evidence:       evidence,
+			recommendation: recommendation,
+			failingTest:    failingTest,
 		}
 	}
 
@@ -660,15 +752,21 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 	task.work.LastCheckedCISHA = currentHeadSHA
 
 	return ciResult{
-		check:       task.failures[0].Name,
-		category:    "related",
-		explanation: explanation,
-		pushed:      pushed,
+		check:          task.failures[0].Name,
+		category:       "related",
+		explanation:    explanation,
+		errorSummary:   errorSummary,
+		rootCause:      rootCause,
+		evidence:       evidence,
+		recommendation: recommendation,
+		failingTest:    failingTest,
+		pushed:         pushed,
 	}
 }
 
 // postConsolidatedCIComment builds and posts a single comment for all CI results
-// on a given PR+SHA. Each check gets its own dedup marker within the comment.
+// on a given PR+SHA. Uses structured format with collapsible details sections.
+// Infrastructure failures with the same error summary are grouped into a single section.
 func (a *Agent) postConsolidatedCIComment(ctx context.Context, work *IssueWork, headSHA string, results []ciResult) {
 	if len(results) == 0 {
 		return
@@ -687,55 +785,24 @@ func (a *Agent) postConsolidatedCIComment(ctx context.Context, work *IssueWork, 
 		}
 	}
 
+	// Check if we have any visible content (non-skipped sections)
+	hasVisibleContent := (len(infrastructure) > 0 && !a.ShouldSkipComment("ci-infrastructure")) ||
+		(len(unrelated) > 0 && !a.ShouldSkipComment("ci-unrelated")) ||
+		(len(related) > 0 && !a.ShouldSkipComment("ci-related"))
+
+	if !hasVisibleContent {
+		return
+	}
+
 	var comment strings.Builder
-	fmt.Fprintf(&comment, "CI failures on commit %s:\n", shortSHA(headSHA))
 
-	// Infrastructure section
-	if len(infrastructure) > 0 && !a.ShouldSkipComment("ci-infrastructure") {
-		fmt.Fprintf(&comment, "\n### Infrastructure Issues (%d)\n\n", len(infrastructure))
-		comment.WriteString("| Check | Summary |\n|-------|--------|\n")
-		for _, r := range infrastructure {
-			summary := escapeTableCell(firstSentence(r.explanation))
-			fmt.Fprintf(&comment, "| `%s` | %s |\n", escapeTableCell(r.check), summary)
-		}
-	}
+	// Summary header
+	comment.WriteString(formatCISummaryHeader(headSHA, infrastructure, unrelated, related))
 
-	// Unrelated section
-	if len(unrelated) > 0 && !a.ShouldSkipComment("ci-unrelated") {
-		hasFlakyIssues := false
-		for _, r := range unrelated {
-			if r.flakyIssue != 0 {
-				hasFlakyIssues = true
-				break
-			}
-		}
-		fmt.Fprintf(&comment, "\n### Unrelated Failures (%d)\n\n", len(unrelated))
-		if hasFlakyIssues && !a.ShouldSkipComment("flaky") {
-			comment.WriteString("| Check | Summary | Flaky Issue |\n|-------|---------|-------------|\n")
-			for _, r := range unrelated {
-				summary := escapeTableCell(firstSentence(r.explanation))
-				flakyRef := ""
-				if r.flakyIssue != 0 {
-					flakyRef = fmt.Sprintf("#%d", r.flakyIssue)
-				}
-				fmt.Fprintf(&comment, "| `%s` | %s | %s |\n", escapeTableCell(r.check), summary, flakyRef)
-			}
-		} else {
-			comment.WriteString("| Check | Summary |\n|-------|--------|\n")
-			for _, r := range unrelated {
-				summary := escapeTableCell(firstSentence(r.explanation))
-				fmt.Fprintf(&comment, "| `%s` | %s |\n", escapeTableCell(r.check), summary)
-			}
-		}
-	}
-
-	// Related section
+	// Related section — individual <details> per check
 	if len(related) > 0 && !a.ShouldSkipComment("ci-related") {
-		fmt.Fprintf(&comment, "\n### Related Failures (%d)\n\n", len(related))
-		comment.WriteString("| Check | Summary |\n|-------|--------|\n")
 		for _, r := range related {
-			summary := escapeTableCell(firstSentence(r.explanation))
-			fmt.Fprintf(&comment, "| `%s` | %s |\n", escapeTableCell(r.check), summary)
+			comment.WriteString(formatCIRelatedDetails(r))
 		}
 
 		// Note any fixes that were pushed
@@ -754,13 +821,16 @@ func (a *Agent) postConsolidatedCIComment(ctx context.Context, work *IssueWork, 
 		}
 	}
 
-	// Check if we have any visible content (non-skipped sections)
-	hasVisibleContent := (len(infrastructure) > 0 && !a.ShouldSkipComment("ci-infrastructure")) ||
-		(len(unrelated) > 0 && !a.ShouldSkipComment("ci-unrelated")) ||
-		(len(related) > 0 && !a.ShouldSkipComment("ci-related"))
+	// Unrelated section — individual <details> per check
+	if len(unrelated) > 0 && !a.ShouldSkipComment("ci-unrelated") {
+		for _, r := range unrelated {
+			comment.WriteString(formatCIUnrelatedDetails(r, a))
+		}
+	}
 
-	if !hasVisibleContent {
-		return
+	// Infrastructure section — grouped when they share the same error summary
+	if len(infrastructure) > 0 && !a.ShouldSkipComment("ci-infrastructure") {
+		comment.WriteString(formatCIInfrastructureSection(infrastructure))
 	}
 
 	// Append per-check dedup markers so alreadyCheckedCI still works
@@ -772,6 +842,212 @@ func (a *Agent) postConsolidatedCIComment(ctx context.Context, work *IssueWork, 
 	if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, comment.String()); err != nil {
 		a.logger.Error("failed to post consolidated CI comment", "pr", work.PRNumber, "error", err)
 	}
+}
+
+// formatCISummaryHeader builds the summary section at the top of the consolidated CI comment.
+func formatCISummaryHeader(headSHA string, infrastructure, unrelated, related []ciResult) string {
+	var header strings.Builder
+	fmt.Fprintf(&header, "## CI Failure Analysis — commit %s\n\n", shortSHA(headSHA))
+
+	// Build category breakdown
+	var categories []string
+	if len(infrastructure) > 0 {
+		categories = append(categories, fmt.Sprintf("%d infrastructure", len(infrastructure)))
+	}
+	if len(unrelated) > 0 {
+		categories = append(categories, fmt.Sprintf("%d unrelated", len(unrelated)))
+	}
+	if len(related) > 0 {
+		categories = append(categories, fmt.Sprintf("%d related", len(related)))
+	}
+
+	total := len(infrastructure) + len(unrelated) + len(related)
+	fmt.Fprintf(&header, "**Total failures**: %d", total)
+	if len(categories) > 0 {
+		header.WriteString(" (")
+		header.WriteString(strings.Join(categories, ", "))
+		header.WriteString(")")
+	}
+	header.WriteString("\n")
+
+	// Note action taken
+	pushedFixes := 0
+	for _, r := range related {
+		if r.pushed {
+			pushedFixes++
+		}
+	}
+	if pushedFixes > 0 {
+		header.WriteString("**Action taken**: Pushed fix for related failure")
+		if pushedFixes > 1 {
+			header.WriteString("s")
+		}
+		header.WriteString("\n")
+	}
+
+	header.WriteString("\n---\n")
+	return header.String()
+}
+
+// formatCIRelatedDetails builds a collapsible <details> block for a related CI failure.
+func formatCIRelatedDetails(r ciResult) string {
+	var d strings.Builder
+	summary := resultSummaryLine(r)
+	action := "fix needed"
+	if r.pushed {
+		action = "fix pushed"
+	}
+	fmt.Fprintf(&d, "\n<details>\n<summary>🔴 Related: <code>%s</code> — %s</summary>\n", escapeHTML(r.check), action)
+	writeStructuredBody(&d, summary, r)
+	if r.pushed {
+		d.WriteString("\n### Action\nPushed fix for this failure.\n")
+	}
+	d.WriteString("\n</details>\n")
+	return d.String()
+}
+
+// formatCIUnrelatedDetails builds a collapsible <details> block for an unrelated CI failure.
+func formatCIUnrelatedDetails(r ciResult, a *Agent) string {
+	var d strings.Builder
+	summary := resultSummaryLine(r)
+	label := "flaky test"
+	if r.flakyIssue != 0 {
+		label = fmt.Sprintf("flaky test (#%d)", r.flakyIssue)
+	}
+	fmt.Fprintf(&d, "\n<details>\n<summary>⚠️ Unrelated: <code>%s</code> — %s</summary>\n", escapeHTML(r.check), label)
+	writeStructuredBody(&d, summary, r)
+	if r.flakyIssue != 0 && !a.ShouldSkipComment("flaky") {
+		fmt.Fprintf(&d, "\n### Known Issue\nTracked in #%d\n", r.flakyIssue)
+	}
+	d.WriteString("\n</details>\n")
+	return d.String()
+}
+
+// formatCIInfrastructureSection builds the infrastructure section, grouping failures
+// that share the same error summary into a single <details> block with a table.
+func formatCIInfrastructureSection(infra []ciResult) string {
+	var section strings.Builder
+
+	// Group by error summary (or first sentence of explanation as fallback)
+	type infraGroup struct {
+		summary string
+		results []ciResult
+	}
+	var groups []infraGroup
+	groupIdx := make(map[string]int) // summary -> index in groups
+
+	for _, r := range infra {
+		key := r.errorSummary
+		if key == "" {
+			key = firstSentence(r.explanation)
+		}
+		if key == "" {
+			key = "unknown error"
+		}
+		if idx, ok := groupIdx[key]; ok {
+			groups[idx].results = append(groups[idx].results, r)
+		} else {
+			groupIdx[key] = len(groups)
+			groups = append(groups, infraGroup{summary: key, results: []ciResult{r}})
+		}
+	}
+
+	for _, g := range groups {
+		if len(g.results) > 1 {
+			// Grouped: multiple checks with the same error
+			fmt.Fprintf(&section, "\n<details>\n<summary>🔧 Infrastructure (%d): %s</summary>\n",
+				len(g.results), escapeHTML(g.summary))
+			section.WriteString("\n| Check | Error |\n|-------|-------|\n")
+			for _, r := range g.results {
+				errMsg := r.errorSummary
+				if errMsg == "" {
+					errMsg = firstSentence(r.explanation)
+				}
+				fmt.Fprintf(&section, "| `%s` | %s |\n", escapeTableCell(r.check), escapeTableCell(errMsg))
+			}
+			// Use root cause from the first result (they share the same cause)
+			if g.results[0].rootCause != "" {
+				fmt.Fprintf(&section, "\n### Root Cause\n%s\n", g.results[0].rootCause)
+			}
+			if g.results[0].recommendation != "" {
+				fmt.Fprintf(&section, "\n### Recommendation\n%s\n", g.results[0].recommendation)
+			}
+			section.WriteString("\n</details>\n")
+		} else {
+			// Single infrastructure failure — individual <details>
+			r := g.results[0]
+			summary := resultSummaryLine(r)
+			fmt.Fprintf(&section, "\n<details>\n<summary>🔧 Infrastructure: <code>%s</code> — %s</summary>\n",
+				escapeHTML(r.check), escapeHTML(summary))
+			writeStructuredBody(&section, summary, r)
+			section.WriteString("\n</details>\n")
+		}
+	}
+
+	return section.String()
+}
+
+// resultSummaryLine returns a one-line summary for a ciResult.
+// Prefers errorSummary, falls back to firstSentence of explanation.
+func resultSummaryLine(r ciResult) string {
+	if r.errorSummary != "" {
+		return r.errorSummary
+	}
+	return firstSentence(r.explanation)
+}
+
+// writeStructuredBody writes the Error, Root Cause, and Recommendation sections
+// into a <details> body, using structured fields when available.
+func writeStructuredBody(w *strings.Builder, summary string, r ciResult) {
+	// Error section with evidence
+	if r.evidence != "" {
+		writeFenced(w, "### Error", r.evidence)
+	} else if summary != "" {
+		writeFenced(w, "### Error", summary)
+	}
+
+	// Root cause
+	if r.rootCause != "" {
+		fmt.Fprintf(w, "\n### Root Cause\n%s\n", r.rootCause)
+	}
+
+	// Recommendation
+	if r.recommendation != "" {
+		fmt.Fprintf(w, "\n### Recommendation\n%s\n", r.recommendation)
+	}
+}
+
+// writeFenced writes a markdown heading followed by a fenced code block.
+// The fence length adapts to the content: if the body contains backtick runs,
+// the fence is made longer than the longest run to prevent breakout.
+func writeFenced(w *strings.Builder, heading, body string) {
+	fence := "```"
+	// Find the longest consecutive run of backticks in the body
+	maxRun := 0
+	currentRun := 0
+	for _, ch := range body {
+		if ch == '`' {
+			currentRun++
+			if currentRun > maxRun {
+				maxRun = currentRun
+			}
+		} else {
+			currentRun = 0
+		}
+	}
+	// Use a fence longer than the longest backtick run (minimum 3)
+	if maxRun >= 3 {
+		fence = strings.Repeat("`", maxRun+1)
+	}
+	fmt.Fprintf(w, "\n%s\n%s\n%s\n%s\n", heading, fence, body, fence)
+}
+
+// escapeHTML escapes characters that break HTML rendering in markdown.
+func escapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
 
 // escapeTableCell escapes characters that break markdown table rendering.

@@ -189,6 +189,12 @@ func TestBuildCIFixPrompt(t *testing.T) {
 		"transient environment or infrastructure issue",
 		"HTTP 502/503",
 		"temporary outages that resolve themselves",
+		// Structured output format
+		"ERROR_SUMMARY:",
+		"ROOT_CAUSE:",
+		"EVIDENCE:",
+		"RECOMMENDATION:",
+		"FAILING_TEST:",
 	}
 
 	for _, want := range checks {
