@@ -147,4 +147,8 @@ func (d *DryRunGitHubClient) GetWorkflowJobLogs(ctx context.Context, owner, repo
 	return d.inner.GetWorkflowJobLogs(ctx, owner, repo, jobID)
 }
 
+func (d *DryRunGitHubClient) HasRepliesFromUser(ctx context.Context, owner, repo string, prNumber int, commentIDs []int64, username string) (map[int64]bool, error) {
+	return d.inner.HasRepliesFromUser(ctx, owner, repo, prNumber, commentIDs, username)
+}
+
 

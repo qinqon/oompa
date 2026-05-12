@@ -42,6 +42,7 @@ type GitHubClient interface {
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowID string, status string, limit int) ([]WorkflowRun, error)
 	ListWorkflowJobs(ctx context.Context, owner, repo string, runID int64) ([]WorkflowJob, error)
 	GetWorkflowJobLogs(ctx context.Context, owner, repo string, jobID int64) (string, error)
+	HasRepliesFromUser(ctx context.Context, owner, repo string, prNumber int, commentIDs []int64, username string) (map[int64]bool, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -633,6 +634,44 @@ func (g *GoGitHubClient) ListWorkflowJobs(ctx context.Context, owner, repo strin
 	}
 
 	return workflowJobs, nil
+}
+
+// HasRepliesFromUser checks which of the given PR review comment IDs have a
+// reply authored by the given username. It fetches all comments on the PR once
+// and returns a map indicating which comment IDs have replies, avoiding N+1
+// API call patterns when checking multiple comments.
+func (g *GoGitHubClient) HasRepliesFromUser(ctx context.Context, owner, repo string, prNumber int, commentIDs []int64, username string) (map[int64]bool, error) {
+	if len(commentIDs) == 0 {
+		return nil, nil
+	}
+
+	// Build a lookup set for O(1) matching
+	wanted := make(map[int64]bool, len(commentIDs))
+	for _, id := range commentIDs {
+		wanted[id] = true
+	}
+
+	result := make(map[int64]bool, len(commentIDs))
+	opts := &github.PullRequestListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+	for {
+		comments, resp, err := g.client.PullRequests.ListComments(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing PR comments for reply check: %w", err)
+		}
+		for _, c := range comments {
+			replyTo := c.GetInReplyTo()
+			if replyTo != 0 && wanted[replyTo] && c.GetUser().GetLogin() == username {
+				result[replyTo] = true
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return result, nil
 }
 
 // GetWorkflowJobLogs fetches the logs for a specific workflow job.
