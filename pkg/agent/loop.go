@@ -338,10 +338,11 @@ func (a *Agent) HasWatchedPRs() bool {
 }
 
 // ShouldRunReaction returns true if the given reaction type should be executed.
-// If cfg.Reactions is empty, all reactions are enabled.
+// If cfg.Reactions is nil (not configured), all reactions are enabled (backward compatible).
+// If cfg.Reactions is an empty non-nil slice (explicitly set to []), no reactions are enabled.
 // Valid reaction names: "reviews", "ci", "conflicts", "rebase".
 func (a *Agent) ShouldRunReaction(reaction string) bool {
-	if len(a.cfg.Reactions) == 0 {
+	if a.cfg.Reactions == nil {
 		return true
 	}
 	return slices.Contains(a.cfg.Reactions, reaction)
@@ -349,13 +350,13 @@ func (a *Agent) ShouldRunReaction(reaction string) bool {
 
 // ShouldCheckReaction returns true if a report-only check should run for the given reaction.
 // This is true when the Slack webhook is set AND the reaction is NOT in the active reactions list.
-// When Reactions is empty (all enabled), no report-only checks run because all reactions
-// are already being processed by their full Process* methods.
+// When Reactions is nil (not configured, all enabled), no report-only checks run because all
+// reactions are already being processed by their full Process* methods.
 func (a *Agent) ShouldCheckReaction(reaction string) bool {
 	if a.cfg.SlackWebhookURL == "" {
 		return false
 	}
-	if len(a.cfg.Reactions) == 0 {
+	if a.cfg.Reactions == nil {
 		// All reactions enabled → nothing is report-only
 		return false
 	}

@@ -2506,28 +2506,168 @@ func TestProcessCIFailures_DeduplicatesUnrelatedComments(t *testing.T) {
 	}
 }
 
-func TestShouldRunReaction_EmptyAllowsAll(t *testing.T) {
+func TestShouldRunReaction_NilAllowsAll(t *testing.T) {
 	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
-	// No reactions configured — all should be allowed
-	for _, reaction := range []string{"reviews", "ci", "conflicts"} {
+	// Reactions == nil (not configured) — all should be allowed
+	for _, reaction := range []string{"reviews", "ci", "conflicts", "rebase"} {
 		if !agent.ShouldRunReaction(reaction) {
-			t.Errorf("expected %q to be allowed with empty Reactions", reaction)
+			t.Errorf("expected %q to be allowed with nil Reactions", reaction)
+		}
+	}
+}
+
+func TestShouldRunReaction_EmptySliceDisablesAll(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.Reactions = []string{} // explicitly set to empty list
+	for _, reaction := range []string{"reviews", "ci", "conflicts", "rebase"} {
+		if agent.ShouldRunReaction(reaction) {
+			t.Errorf("expected %q to be disabled with empty (non-nil) Reactions", reaction)
 		}
 	}
 }
 
 func TestShouldRunReaction_Filtered(t *testing.T) {
 	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
-	agent.cfg.Reactions = []string{"ci", "conflicts"}
+	agent.cfg.Reactions = []string{"ci", "rebase"}
 
 	if !agent.ShouldRunReaction("ci") {
 		t.Error("expected 'ci' to be allowed")
 	}
-	if !agent.ShouldRunReaction("conflicts") {
-		t.Error("expected 'conflicts' to be allowed")
+	if !agent.ShouldRunReaction("rebase") {
+		t.Error("expected 'rebase' to be allowed")
 	}
 	if agent.ShouldRunReaction("reviews") {
 		t.Error("expected 'reviews' to be filtered out")
+	}
+	if agent.ShouldRunReaction("conflicts") {
+		t.Error("expected 'conflicts' to be filtered out")
+	}
+}
+
+func TestShouldCheckReaction_NoWebhook(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.SlackWebhookURL = ""
+	// No webhook — always returns false regardless of reactions config
+	agent.cfg.Reactions = nil
+	if agent.ShouldCheckReaction("ci") {
+		t.Error("expected false with no webhook and nil Reactions")
+	}
+	agent.cfg.Reactions = []string{}
+	if agent.ShouldCheckReaction("ci") {
+		t.Error("expected false with no webhook and empty Reactions")
+	}
+	agent.cfg.Reactions = []string{"rebase"}
+	if agent.ShouldCheckReaction("ci") {
+		t.Error("expected false with no webhook and specific Reactions")
+	}
+}
+
+func TestShouldCheckReaction_WebhookNilReactions(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.SlackWebhookURL = "https://hooks.slack.com/test"
+	agent.cfg.Reactions = nil // all reactions enabled
+	// All reactions active → nothing is report-only
+	for _, reaction := range []string{"reviews", "ci", "conflicts", "rebase"} {
+		if agent.ShouldCheckReaction(reaction) {
+			t.Errorf("expected %q to NOT be report-only when all reactions enabled", reaction)
+		}
+	}
+}
+
+func TestShouldCheckReaction_WebhookEmptyReactions(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.SlackWebhookURL = "https://hooks.slack.com/test"
+	agent.cfg.Reactions = []string{} // no reactions enabled → everything is report-only
+	for _, reaction := range []string{"reviews", "ci", "conflicts", "rebase"} {
+		if !agent.ShouldCheckReaction(reaction) {
+			t.Errorf("expected %q to be report-only when no reactions enabled", reaction)
+		}
+	}
+}
+
+func TestShouldCheckReaction_WebhookPartialReactions(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.SlackWebhookURL = "https://hooks.slack.com/test"
+	agent.cfg.Reactions = []string{"rebase"}
+	// "rebase" is active — NOT report-only
+	if agent.ShouldCheckReaction("rebase") {
+		t.Error("expected 'rebase' to NOT be report-only (it's active)")
+	}
+	// All others are report-only
+	for _, reaction := range []string{"ci", "reviews", "conflicts"} {
+		if !agent.ShouldCheckReaction(reaction) {
+			t.Errorf("expected %q to be report-only (not in active reactions)", reaction)
+		}
+	}
+}
+
+func TestReportOnlyMode_EmptyReactionsGatesAndChecks(t *testing.T) {
+	// Verifies that with Reactions == []string{} + webhook set:
+	// - ShouldRunReaction returns false for all reactions (gating mechanism)
+	// - ShouldCheckReaction returns true for all reactions (report-only)
+	// - RunReportOnlyChecks produces findings from the mock state
+	// - No agent/runner invocations occur
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "tests failed"},
+		},
+		mergeableState: "dirty",
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.Reactions = []string{}                            // report-only mode
+	agent.cfg.SlackWebhookURL = "https://hooks.slack.com/test" // enable Slack
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	// All reactions should be skipped
+	if agent.ShouldRunReaction("reviews") {
+		t.Error("ProcessReviewComments should be skipped in report-only mode")
+	}
+	if agent.ShouldRunReaction("ci") {
+		t.Error("ProcessCIFailures should be skipped in report-only mode")
+	}
+	if agent.ShouldRunReaction("rebase") {
+		t.Error("ProcessRebase should be skipped in report-only mode")
+	}
+	if agent.ShouldRunReaction("conflicts") {
+		t.Error("ProcessConflicts should be skipped in report-only mode")
+	}
+
+	// Report-only checks SHOULD run
+	if !agent.ShouldCheckReaction("ci") {
+		t.Error("CI report-only check should run in report-only mode")
+	}
+	if !agent.ShouldCheckReaction("reviews") {
+		t.Error("Reviews report-only check should run in report-only mode")
+	}
+	if !agent.ShouldCheckReaction("conflicts") {
+		t.Error("Conflicts report-only check should run in report-only mode")
+	}
+	if !agent.ShouldCheckReaction("rebase") {
+		t.Error("Rebase report-only check should run in report-only mode")
+	}
+
+	// RunReportOnlyChecks should produce findings
+	findings := agent.RunReportOnlyChecks(context.Background())
+	if len(findings) == 0 {
+		t.Error("expected at least one finding from report-only checks")
+	}
+
+	// No agent invocations should have happened
+	if len(runner.calls) != 0 {
+		t.Errorf("expected 0 runner calls in report-only mode, got %d", len(runner.calls))
 	}
 }
 

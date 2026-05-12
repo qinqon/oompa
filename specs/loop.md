@@ -20,7 +20,8 @@ type Agent struct {
 - `(a *Agent) ProcessReviewComments(ctx)` -- check for new review comments, run Claude to address them
 - `(a *Agent) isAllowedReviewer(user string) bool` -- checks if user is in reviewers whitelist (empty = allow all)
 - `(a *Agent) HasWatchedPRs() bool` -- returns true if `cfg.WatchPRs` is non-empty
-- `(a *Agent) ShouldRunReaction(reaction string) bool` -- returns true if `cfg.Reactions` is empty (all enabled) or contains the given reaction name
+- `(a *Agent) ShouldRunReaction(reaction string) bool` -- returns true if `cfg.Reactions` is nil (not configured, all enabled) or contains the given reaction name. An empty non-nil slice (`reactions: []`) disables all reactions.
+- `(a *Agent) ShouldCheckReaction(reaction string) bool` -- returns true if Slack webhook is set AND the reaction is NOT in the active reactions list. Returns false when Reactions is nil (all active, nothing report-only).
 - `(a *Agent) BootstrapWatchedPRs(ctx)` -- creates IssueWork entries for directly-specified PR numbers (calls `GetPR` to fetch details, skips merged/closed/already-tracked)
 
 Main loop lives in `cmd/oompa/main.go`, calls these methods sequentially. CleanupDone runs first so that closed/merged PRs are removed from state before ProcessNewIssues checks for new work.
@@ -61,8 +62,14 @@ All interfaces mocked:
 - `TestCleanupDone_MergedPR` -- removes worktree, deletes from state
 - `TestCleanupDone_ClosedPR` -- removes worktree, deletes from state
 - `TestCleanupDone_OpenPR` -- no action
-- `TestShouldRunReaction_EmptyAllowsAll` -- empty Reactions allows all reaction types
+- `TestShouldRunReaction_NilAllowsAll` -- nil Reactions (not configured) allows all reaction types
+- `TestShouldRunReaction_EmptySliceDisablesAll` -- empty non-nil Reactions (`reactions: []`) disables all reaction types
 - `TestShouldRunReaction_Filtered` -- only configured reactions are allowed
+- `TestShouldCheckReaction_NoWebhook` -- no webhook always returns false
+- `TestShouldCheckReaction_WebhookNilReactions` -- webhook + nil reactions returns false (all active)
+- `TestShouldCheckReaction_WebhookEmptyReactions` -- webhook + empty reactions returns true for all (everything report-only)
+- `TestShouldCheckReaction_WebhookPartialReactions` -- webhook + partial reactions returns correct values
+- `TestReportOnlyMode_EmptyReactionsGatesAndChecks` -- empty reactions: ShouldRunReaction returns false, ShouldCheckReaction returns true, RunReportOnlyChecks produces findings, no runner invocations
 - `TestBootstrapWatchedPRs_HappyPath` -- creates IssueWork entries for open watched PRs
 - `TestBootstrapWatchedPRs_SkipsClosedPR` -- does not track merged/closed PRs
 - `TestBootstrapWatchedPRs_SkipsAlreadyTracked` -- does not duplicate existing entries

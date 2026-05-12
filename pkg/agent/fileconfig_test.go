@@ -85,120 +85,28 @@ projects:
 	}
 }
 
-func TestLoadFileConfig_NoProjects(t *testing.T) {
-	yaml := `
-agent: opencode
-projects: []
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
-	if err == nil {
-		t.Fatal("expected error for empty projects")
+func TestLoadFileConfig_ValidationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{"no_projects", "agent: opencode\nprojects: []\n"},
+		{"invalid_repo", "projects:\n  - repo: invalid\n    prs:\n      - watch: [1]\n"},
+		{"no_roles", "projects:\n  - repo: owner/repo\n"},
+		{"prs_without_watch", "projects:\n  - repo: owner/repo\n    prs:\n      - reactions: [ci]\n"},
+		{"triage_without_jobs", "projects:\n  - repo: owner/repo\n    triage:\n      - schedule: \"09:00 Europe/Madrid\"\n"},
+		{"invalid_reaction", "projects:\n  - repo: owner/repo\n    prs:\n      - watch: [1]\n        reactions: [invalid]\n"},
+		{"invalid_agent", "agent: badagent\nprojects:\n  - repo: owner/repo\n    issues:\n      - label: test\n"},
 	}
-}
-
-func TestLoadFileConfig_InvalidRepo(t *testing.T) {
-	yaml := `
-projects:
-  - repo: invalid
-    prs:
-      - watch: [1]
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
-	if err == nil {
-		t.Fatal("expected error for invalid repo format")
-	}
-}
-
-func TestLoadFileConfig_NoRoles(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
-	if err == nil {
-		t.Fatal("expected error when no roles defined")
-	}
-}
-
-func TestLoadFileConfig_PRsWithoutWatch(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    prs:
-      - reactions: [ci]
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
-	if err == nil {
-		t.Fatal("expected error for prs without watch list")
-	}
-}
-
-func TestLoadFileConfig_TriageWithoutJobs(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    triage:
-      - schedule: "09:00 Europe/Madrid"
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
-	if err == nil {
-		t.Fatal("expected error for triage without jobs")
-	}
-}
-
-func TestLoadFileConfig_InvalidReaction(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    prs:
-      - watch: [1]
-        reactions: [invalid]
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
-	if err == nil {
-		t.Fatal("expected error for invalid reaction")
-	}
-}
-
-func TestLoadFileConfig_InvalidAgent(t *testing.T) {
-	yaml := `
-agent: badagent
-projects:
-  - repo: owner/repo
-    issues:
-      - label: test
-`
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
-	if err == nil {
-		t.Fatal("expected error for invalid agent")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			os.WriteFile(path, []byte(tt.yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
+			_, err := LoadFileConfig(path)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+		})
 	}
 }
 
@@ -976,6 +884,40 @@ projects:
 	}
 	if len(cfg.Projects[0].Triage[0].SkipChecks) != 1 || cfg.Projects[0].Triage[0].SkipChecks[0] != "lint-check" {
 		t.Errorf("expected Triage skip-checks [lint-check], got %v", cfg.Projects[0].Triage[0].SkipChecks)
+	}
+}
+
+func TestReactionsNilVsEmpty(t *testing.T) {
+	// Issue #184: YAML `reactions: []` → non-nil empty; omitted → nil.
+	loadPRReactions := func(t *testing.T, y string) []string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "c.yaml")
+		os.WriteFile(p, []byte(y), 0o644) //nolint:errcheck // test helper: errors caught by LoadFileConfig
+		fc, err := LoadFileConfig(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fc.Projects[0].PRs[0].Reactions
+	}
+	if r := loadPRReactions(t, "projects:\n  - repo: o/r\n    prs:\n      - watch: [1]\n        reactions: []\n"); r == nil || len(r) != 0 {
+		t.Errorf("reactions: [] should produce non-nil empty slice, got %#v", r)
+	}
+	if r := loadPRReactions(t, "projects:\n  - repo: o/r\n    prs:\n      - watch: [1]\n"); r != nil {
+		t.Errorf("omitted reactions should be nil, got %v", r)
+	}
+	// stringsOr preserves distinction through BuildRoleEntries
+	fc := &FileConfig{Projects: []ProjectConfig{{Repo: "o/r", PRs: []PRsRoleConfig{
+		{Watch: []int{1}, Reactions: []string{}}, {Watch: []int{2}},
+	}}}}
+	e := BuildRoleEntries(fc, "/tmp/w", Config{Agent: "claudecode"})
+	if len(e) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(e))
+	}
+	if e[0].Config.Reactions == nil || len(e[0].Config.Reactions) != 0 {
+		t.Errorf("entry 0: expected non-nil empty slice, got %#v", e[0].Config.Reactions)
+	}
+	if e[1].Config.Reactions != nil {
+		t.Errorf("entry 1: expected nil, got %v", e[1].Config.Reactions)
 	}
 }
 
