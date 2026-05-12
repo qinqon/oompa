@@ -98,6 +98,8 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 	flag.StringVar(&cfg.FlakyLabel, "flaky-label", envOrDefault("OOMPA_FLAKY_LABEL", "flaky-test"), "Label to apply to flaky CI issues")
 	flag.BoolVar(&cfg.OnlyAssigned, "only-assigned", envOrDefault("OOMPA_ONLY_ASSIGNED", "") == "true", "Only process issues assigned to the agent user")
 
+	cfg.SlackWebhookURL = os.Getenv("OOMPA_SLACK_WEBHOOK")
+
 	var forkFlag string
 	flag.StringVar(&forkFlag, "fork", envOrDefault("OOMPA_FORK", ""), "Fork repo as owner/repo for pushing (e.g. qinqon/ovn-kubernetes)")
 
@@ -493,6 +495,12 @@ func buildAgentForConfig(cfg agent.Config, ghClient *agent.GoGitHubClient, token
 		a.SetTokenFunc(tokenFunc)
 	}
 
+	if cfg.SlackWebhookURL != "" {
+		slack := agent.NewSlackReporter(cfg.SlackWebhookURL, cfg.Owner, cfg.Repo, logger)
+		a.SetSlackReporter(slack)
+		logger.Info("Slack reporting enabled")
+	}
+
 	return a
 }
 
@@ -816,6 +824,13 @@ func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 
 	// ProcessTriageJobs is independent of other reactions and runs when triage jobs are configured
 	a.ProcessTriageJobs(ctx)
+
+	// Slack reporting: run report-only checks for reactions NOT in the active list,
+	// then post consolidated findings to Slack.
+	if a.SlackEnabled() {
+		findings := a.RunReportOnlyChecks(ctx)
+		a.ReportToSlack(ctx, findings)
+	}
 
 	a.EmitPollCycleEnd()
 	logger.Debug("poll cycle complete")

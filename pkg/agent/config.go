@@ -38,6 +38,7 @@ type Config struct {
 	SkipChecks        []string // CI check names to ignore entirely (filtered before investigation)
 	MaxReviewNoOps    int      // consecutive no-op review cycles before pausing review processing (default: 3)
 	MaxPRSessionCost  float64  // max cumulative agent cost per PR per session before pausing (default: 0 = unlimited)
+	SlackWebhookURL   string   // Slack Incoming Webhook URL for per-cycle reporting (empty = disabled)
 
 	// GitHub App authentication (alternative to GITHUB_TOKEN)
 	GitHubAppID             int64
