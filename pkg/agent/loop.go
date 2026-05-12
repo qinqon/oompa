@@ -63,6 +63,7 @@ type Agent struct {
 	tokenFunc func(context.Context) (string, error) // optional: provides fresh GitHub tokens (for App auth)
 	codeAgent CodeAgent                             // coding agent backend (Claude Code or OpenCode)
 	emitter   EventEmitter                          // optional: event emitter for observability (default: NoopEmitter)
+	slack     *SlackReporter                        // optional: Slack reporting (nil = disabled)
 }
 
 // botComment returns the bot marker with the agent version embedded.
@@ -157,6 +158,73 @@ func NewAgent(gh GitHubClient, runner CommandRunner, worktrees WorktreeManager, 
 		codeAgent: codeAgent,
 		emitter:   &NoopEmitter{},
 	}
+}
+
+// SetSlackReporter sets the Slack reporter for per-cycle reporting.
+// If not called, no Slack messages are sent.
+func (a *Agent) SetSlackReporter(slack *SlackReporter) {
+	a.slack = slack
+}
+
+// SlackEnabled returns true if the Slack reporter is configured and enabled.
+func (a *Agent) SlackEnabled() bool {
+	return a.slack != nil && a.slack.IsEnabled()
+}
+
+// ReportToSlack sends findings to Slack if the reporter is configured.
+func (a *Agent) ReportToSlack(ctx context.Context, findings []SlackFinding) {
+	if a.slack == nil {
+		return
+	}
+	a.slack.Report(ctx, findings)
+}
+
+// RunReportOnlyChecks runs lightweight check methods for reactions NOT in the active
+// reactions list and returns findings. Only called when Slack reporting is enabled.
+func (a *Agent) RunReportOnlyChecks(ctx context.Context) []SlackFinding {
+	var findings []SlackFinding
+
+	if a.ShouldCheckReaction("ci") {
+		findings = append(findings, a.CheckCIStatus(ctx)...)
+	}
+
+	// Prefetch mergeable states once when both conflict and rebase checks are needed,
+	// avoiding redundant GitHub API calls for the same PRs.
+	checkConflicts := a.ShouldCheckReaction("conflicts")
+	checkRebase := a.ShouldCheckReaction("rebase")
+	if checkConflicts || checkRebase {
+		states := a.fetchMergeableStates(ctx)
+		if checkConflicts {
+			findings = append(findings, a.checkConflictsWithStates(ctx, states)...)
+		}
+		if checkRebase {
+			findings = append(findings, a.checkRebaseNeededWithStates(ctx, states)...)
+		}
+	}
+
+	if a.ShouldCheckReaction("reviews") {
+		findings = append(findings, a.CheckNewReviews(ctx)...)
+	}
+
+	return findings
+}
+
+// fetchMergeableStates fetches the mergeable state for all active open PRs.
+// Returns a map of PR number to mergeable state string.
+func (a *Agent) fetchMergeableStates(ctx context.Context) map[int]string {
+	states := make(map[int]string)
+	for _, work := range a.state.ActiveIssues {
+		if work.PRNumber == 0 || work.Status != StatusPROpen {
+			continue
+		}
+		mergeState, err := a.gh.GetPRMergeable(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		if err != nil {
+			a.logger.Error("failed to get PR mergeable state", "pr", work.PRNumber, "error", err)
+			continue
+		}
+		states[work.PRNumber] = mergeState
+	}
+	return states
 }
 
 // SetEmitter sets the event emitter for observability.
@@ -267,6 +335,21 @@ func (a *Agent) ShouldRunReaction(reaction string) bool {
 		return true
 	}
 	return slices.Contains(a.cfg.Reactions, reaction)
+}
+
+// ShouldCheckReaction returns true if a report-only check should run for the given reaction.
+// This is true when the Slack webhook is set AND the reaction is NOT in the active reactions list.
+// When Reactions is empty (all enabled), no report-only checks run because all reactions
+// are already being processed by their full Process* methods.
+func (a *Agent) ShouldCheckReaction(reaction string) bool {
+	if a.cfg.SlackWebhookURL == "" {
+		return false
+	}
+	if len(a.cfg.Reactions) == 0 {
+		// All reactions enabled → nothing is report-only
+		return false
+	}
+	return !slices.Contains(a.cfg.Reactions, reaction)
 }
 
 // ShouldSkipComment returns true if the given comment category should be suppressed.
@@ -461,6 +544,192 @@ func isConflictError(stderr string) bool {
 // unstaged changes are blocking the rebase (e.g. upstream file deletions).
 func isUnstagedChangesError(stderr string) bool {
 	return strings.Contains(strings.ToLower(stderr), "unstaged changes")
+}
+
+// CheckCIStatus is a lightweight report-only check that fetches CI check runs
+// and returns findings for any failures. No agent invocation, no fixes.
+func (a *Agent) CheckCIStatus(ctx context.Context) []SlackFinding {
+	var findings []SlackFinding
+
+	for _, work := range a.state.ActiveIssues {
+		if work.PRNumber == 0 || work.Status != StatusPROpen {
+			continue
+		}
+
+		headSHA, err := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		if err != nil {
+			a.logger.Error("check CI: failed to get PR head SHA", "pr", work.PRNumber, "error", err)
+			continue
+		}
+
+		runs, err := a.gh.GetCheckRuns(ctx, a.cfg.Owner, a.cfg.Repo, headSHA)
+		if err != nil {
+			a.logger.Error("check CI: failed to get check runs", "pr", work.PRNumber, "error", err)
+			continue
+		}
+
+		for _, r := range runs {
+			if slices.Contains(a.cfg.SkipChecks, r.Name) {
+				continue
+			}
+			if r.Status == "completed" && r.Conclusion == "failure" {
+				link := r.HTMLURL
+				if link == "" {
+					link = fmt.Sprintf("https://github.com/%s/%s/commit/%s/checks", a.cfg.Owner, a.cfg.Repo, headSHA)
+				}
+				msg := fmt.Sprintf("🔴 <%s|%s> failed", link, r.Name)
+				findings = append(findings, SlackFinding{
+					PRNumber: work.PRNumber,
+					PRTitle:  work.IssueTitle,
+					PRURL:    prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber),
+					Category: "ci",
+					Message:  msg,
+					DedupKey: fmt.Sprintf("ci:%s:%s", headSHA, r.Name),
+				})
+			}
+		}
+	}
+
+	return findings
+}
+
+// CheckRebaseNeeded is a lightweight report-only check that inspects PR mergeable state
+// and returns findings for PRs that are behind the base branch.
+// Fetches mergeable states from GitHub. Use checkRebaseNeededWithStates when states
+// are already available to avoid redundant API calls.
+func (a *Agent) CheckRebaseNeeded(ctx context.Context) []SlackFinding {
+	return a.checkRebaseNeededWithStates(ctx, a.fetchMergeableStates(ctx))
+}
+
+// checkRebaseNeededWithStates checks for outdated PRs using precomputed mergeable states.
+func (a *Agent) checkRebaseNeededWithStates(ctx context.Context, states map[int]string) []SlackFinding {
+	var findings []SlackFinding
+
+	for _, work := range a.state.ActiveIssues {
+		if work.PRNumber == 0 || work.Status != StatusPROpen {
+			continue
+		}
+
+		mergeState, ok := states[work.PRNumber]
+		if !ok {
+			continue
+		}
+
+		needsRebase := mergeState == "behind"
+		if !needsRebase && mergeState != "dirty" {
+			behind, err := a.gh.IsPRBehind(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+			if err != nil {
+				a.logger.Warn("check rebase: failed to check if PR is behind", "pr", work.PRNumber, "error", err)
+			}
+			needsRebase = behind
+		}
+
+		if needsRebase {
+			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+			findings = append(findings, SlackFinding{
+				PRNumber: work.PRNumber,
+				PRTitle:  work.IssueTitle,
+				PRURL:    pURL,
+				Category: "rebase",
+				Message:  fmt.Sprintf("⚠️ <%s|PR #%d> is behind %s", pURL, work.PRNumber, a.defaultBranch()),
+				DedupKey: fmt.Sprintf("rebase-needed:%d", work.PRNumber),
+			})
+		}
+	}
+
+	return findings
+}
+
+// CheckConflicts is a lightweight report-only check that inspects PR mergeable state
+// and returns findings for PRs with merge conflicts.
+// Fetches mergeable states from GitHub. Use checkConflictsWithStates when states
+// are already available to avoid redundant API calls.
+func (a *Agent) CheckConflicts(ctx context.Context) []SlackFinding {
+	return a.checkConflictsWithStates(ctx, a.fetchMergeableStates(ctx))
+}
+
+// checkConflictsWithStates checks for merge conflicts using precomputed mergeable states.
+func (a *Agent) checkConflictsWithStates(_ context.Context, states map[int]string) []SlackFinding {
+	var findings []SlackFinding
+
+	for _, work := range a.state.ActiveIssues {
+		if work.PRNumber == 0 || work.Status != StatusPROpen {
+			continue
+		}
+
+		mergeState, ok := states[work.PRNumber]
+		if !ok {
+			continue
+		}
+
+		if mergeState == "dirty" {
+			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+			findings = append(findings, SlackFinding{
+				PRNumber: work.PRNumber,
+				PRTitle:  work.IssueTitle,
+				PRURL:    pURL,
+				Category: "conflict",
+				Message:  fmt.Sprintf("⚠️ <%s|PR #%d> has merge conflicts", pURL, work.PRNumber),
+				DedupKey: fmt.Sprintf("conflict:%d", work.PRNumber),
+			})
+		}
+	}
+
+	return findings
+}
+
+// CheckNewReviews is a lightweight report-only check that counts new review comments
+// and returns findings when new comments exist.
+func (a *Agent) CheckNewReviews(ctx context.Context) []SlackFinding {
+	var findings []SlackFinding
+
+	for _, work := range a.state.ActiveIssues {
+		if work.PRNumber == 0 || work.Status != StatusPROpen {
+			continue
+		}
+
+		comments, err := a.gh.GetPRReviewComments(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, work.LastCommentID)
+		if err != nil {
+			a.logger.Error("check reviews: failed to get PR comments", "pr", work.PRNumber, "error", err)
+			continue
+		}
+
+		// Filter out bot comments, replies, and non-whitelisted reviewers
+		// (same filtering as ProcessReviewComments to avoid noise)
+		var humanComments []ReviewComment
+		for _, c := range comments {
+			if c.InReplyToID != 0 {
+				continue
+			}
+			if strings.Contains(c.Body, botMarker) {
+				continue
+			}
+			if !a.isAllowedReviewer(c.User) {
+				continue
+			}
+			humanComments = append(humanComments, c)
+		}
+
+		if len(humanComments) > 0 {
+			var maxID int64
+			for _, c := range humanComments {
+				if c.ID > maxID {
+					maxID = c.ID
+				}
+			}
+			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+			findings = append(findings, SlackFinding{
+				PRNumber: work.PRNumber,
+				PRTitle:  work.IssueTitle,
+				PRURL:    pURL,
+				Category: "review",
+				Message:  fmt.Sprintf("💬 <%s|PR #%d> has %d new review comment(s)", pURL, work.PRNumber, len(humanComments)),
+				DedupKey: fmt.Sprintf("review:%d:%d", work.PRNumber, maxID),
+			})
+		}
+	}
+
+	return findings
 }
 
 // markIssueFailed marks an issue as failed, unassigns the agent, and adds the ai-failed label.
