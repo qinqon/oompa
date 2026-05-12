@@ -329,6 +329,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			Version:            globalCfg.Version,
 			MaxReviewNoOps:     globalCfg.MaxReviewNoOps,
 			MaxPRSessionCost:   globalCfg.MaxPRSessionCost,
+			SlackWebhookURL:    globalCfg.SlackWebhookURL,
 			// GitHub App auth (shared)
 			GitHubAppID:             globalCfg.GitHubAppID,
 			GitHubAppPrivateKey:     globalCfg.GitHubAppPrivateKey,
