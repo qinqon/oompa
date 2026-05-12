@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -22,11 +24,21 @@ const (
 	// When exceeded, the map is cleared to prevent unbounded growth in long-running agents.
 	// 1000 entries is generous — each entry is a small string key, so memory is negligible.
 	maxDedupEntries = 1000
+
+	// maxSlackBlockTextLen is the maximum text length for a single Slack Block Kit
+	// section block. Slack enforces a 3000-character limit per block text field.
+	maxSlackBlockTextLen = 3000
+
+	// maxSlackBlocks is the maximum number of blocks Slack accepts per message.
+	// Messages exceeding this limit are rejected by the API.
+	maxSlackBlocks = 50
 )
 
 // SlackFinding represents a single reportable finding from a poll cycle.
 // Findings should have a PR context (PRNumber, PRURL) when available.
 type SlackFinding struct {
+	Owner    string // repository owner (e.g. "ovn-kubernetes")
+	Repo     string // repository name (e.g. "ovn-kubernetes")
 	PRNumber int    // PR number this finding relates to
 	PRTitle  string // PR title for display
 	PRURL    string // clickable PR URL
@@ -35,27 +47,28 @@ type SlackFinding struct {
 	DedupKey string // unique key for dedup (e.g. "ci:sha:checkName")
 }
 
-// SlackReporter collects findings and posts them to a Slack webhook.
+// SlackReporter collects findings from multiple projects and posts a consolidated
+// Slack message. Thread-safe: multiple agent goroutines can call Collect concurrently.
 // Zero external dependencies — uses only Go stdlib net/http + encoding/json.
 type SlackReporter struct {
 	webhookURL string
-	owner      string
-	repo       string
 	reported   map[string]bool // tracks DedupKeys already reported
 	logger     *slog.Logger
 	httpClient *http.Client // injectable for testing
+
+	flushMu  sync.Mutex     // serializes Flush calls (protects reported map)
+	mu       sync.Mutex     // protects pending
+	pending  []SlackFinding // findings collected since last Flush
 }
 
 // NewSlackReporter creates a new reporter. If webhookURL is empty, IsEnabled() returns false.
 // A nil logger defaults to slog.Default().
-func NewSlackReporter(webhookURL, owner, repo string, logger *slog.Logger) *SlackReporter {
+func NewSlackReporter(webhookURL string, logger *slog.Logger) *SlackReporter {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &SlackReporter{
 		webhookURL: webhookURL,
-		owner:      owner,
-		repo:       repo,
 		reported:   make(map[string]bool),
 		logger:     logger,
 		httpClient: &http.Client{Timeout: slackRequestTimeout},
@@ -67,10 +80,37 @@ func (r *SlackReporter) IsEnabled() bool {
 	return r.webhookURL != ""
 }
 
-// Report deduplicates findings, formats a Slack message, and POSTs it to the webhook.
+// Collect appends findings to the pending buffer. Thread-safe for concurrent callers.
+// Findings accumulate until Flush is called.
+func (r *SlackReporter) Collect(findings []SlackFinding) {
+	if len(findings) == 0 {
+		return
+	}
+	r.mu.Lock()
+	r.pending = append(r.pending, findings...)
+	r.mu.Unlock()
+}
+
+// Flush deduplicates all pending findings, formats a single consolidated Slack message
+// across all projects, and POSTs it to the webhook. Clears the pending buffer afterward.
 // No-op if there are no new findings after dedup, or if the reporter is disabled.
-func (r *SlackReporter) Report(ctx context.Context, findings []SlackFinding) {
-	if !r.IsEnabled() || len(findings) == 0 {
+func (r *SlackReporter) Flush(ctx context.Context) {
+	if !r.IsEnabled() {
+		return
+	}
+
+	// Serialize Flush calls to protect the reported map from concurrent access.
+	// The pending buffer has its own mutex, but reported is only accessed in Flush.
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
+
+	// Atomically drain the pending buffer
+	r.mu.Lock()
+	findings := r.pending
+	r.pending = nil
+	r.mu.Unlock()
+
+	if len(findings) == 0 {
 		return
 	}
 
@@ -92,7 +132,7 @@ func (r *SlackReporter) Report(ctx context.Context, findings []SlackFinding) {
 		return
 	}
 
-	body := formatSlackMessage(r.owner, r.repo, newFindings)
+	body := formatSlackMessage(newFindings)
 	if body == nil {
 		return
 	}
@@ -112,6 +152,17 @@ func (r *SlackReporter) Report(ctx context.Context, findings []SlackFinding) {
 	r.logger.Info("posted Slack report", "findings", len(newFindings))
 }
 
+// Report deduplicates findings, formats a Slack message, and POSTs it to the webhook.
+// This is the single-call path used in single-repo mode (collect + flush in one step).
+// No-op if there are no new findings after dedup, or if the reporter is disabled.
+func (r *SlackReporter) Report(ctx context.Context, findings []SlackFinding) {
+	if !r.IsEnabled() || len(findings) == 0 {
+		return
+	}
+	r.Collect(findings)
+	r.Flush(ctx)
+}
+
 // slackBlock represents a Slack Block Kit block.
 type slackBlock struct {
 	Type string     `json:"type"`
@@ -129,68 +180,179 @@ type slackMessage struct {
 	Blocks []slackBlock `json:"blocks"`
 }
 
-// formatSlackMessage builds a Slack Block Kit JSON payload grouped by PR.
+// projectKey returns the "owner/repo" string for grouping.
+func projectKey(owner, repo string) string {
+	return owner + "/" + repo
+}
+
+// formatSlackMessage builds a Slack Block Kit JSON payload grouped by project and then by PR.
 // Returns nil if there are no findings.
-func formatSlackMessage(owner, repo string, findings []SlackFinding) []byte {
+//
+// Format:
+//
+//	🏭 oompa report — N projects with activity
+//
+//	*<repo-link|owner/repo>* (M PRs)
+//	📋 <pr-link|PR #N> — title
+//	  🔴 <job-link|check-name> — failed
+//	  ⚠️ behind main
+//
+// Each project gets a header section + detail section + divider.
+func formatSlackMessage(findings []SlackFinding) []byte {
 	if len(findings) == 0 {
 		return nil
 	}
 
-	// Group findings by PR number, sorted for deterministic output.
+	// Group findings by project, then by PR number.
 	type prGroup struct {
 		prNumber int
 		prTitle  string
 		prURL    string
 		messages []string
 	}
-	groupMap := make(map[int]*prGroup)
-	var order []int
+	type projectGroup struct {
+		owner    string
+		repo     string
+		prs      map[int]*prGroup
+		prOrder  []int
+		prCount  int
+	}
+
+	projects := make(map[string]*projectGroup)
+	var projectOrder []string
 
 	for _, f := range findings {
-		g, ok := groupMap[f.PRNumber]
+		pk := projectKey(f.Owner, f.Repo)
+		pg, ok := projects[pk]
 		if !ok {
-			g = &prGroup{
+			pg = &projectGroup{
+				owner: f.Owner,
+				repo:  f.Repo,
+				prs:   make(map[int]*prGroup),
+			}
+			projects[pk] = pg
+			projectOrder = append(projectOrder, pk)
+		}
+
+		pr, ok := pg.prs[f.PRNumber]
+		if !ok {
+			pr = &prGroup{
 				prNumber: f.PRNumber,
 				prTitle:  f.PRTitle,
 				prURL:    f.PRURL,
 			}
-			groupMap[f.PRNumber] = g
-			order = append(order, f.PRNumber)
+			pg.prs[f.PRNumber] = pr
+			pg.prOrder = append(pg.prOrder, f.PRNumber)
+			pg.prCount++
 		}
-		g.messages = append(g.messages, f.Message)
+		pr.messages = append(pr.messages, f.Message)
 	}
 
-	// Sort by PR number for deterministic output
-	sort.Ints(order)
+	// Sort projects alphabetically for deterministic output
+	sort.Strings(projectOrder)
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "🏭 oompa — %s/%s\n", owner, repo)
-
-	for _, prNum := range order {
-		g := groupMap[prNum]
-		sb.WriteString("\n")
-		if g.prURL != "" {
-			fmt.Fprintf(&sb, "📋 <%s|PR #%d> — %s\n", g.prURL, g.prNumber, g.prTitle)
-		} else {
-			fmt.Fprintf(&sb, "📋 PR #%d — %s\n", g.prNumber, g.prTitle)
-		}
-		for _, msg := range g.messages {
-			fmt.Fprintf(&sb, "  %s\n", msg)
-		}
+	// Sort PRs within each project
+	for _, pg := range projects {
+		sort.Ints(pg.prOrder)
 	}
 
-	msg := slackMessage{
-		Blocks: []slackBlock{
-			{
+	// Build blocks
+	var blocks []slackBlock
+
+	// Header block
+	headerText := fmt.Sprintf("🏭 oompa report — %d project(s) with activity", len(projects))
+	blocks = append(blocks, slackBlock{
+		Type: "header",
+		Text: &slackText{
+			Type: "plain_text",
+			Text: headerText,
+		},
+	})
+
+	// Per-project blocks
+	for _, pk := range projectOrder {
+		pg := projects[pk]
+
+		// Project header section
+		repoLink := fmt.Sprintf("https://github.com/%s/%s", pg.owner, pg.repo)
+		projectHeader := fmt.Sprintf("*<%s|%s/%s>* (%d PR(s))", repoLink, pg.owner, pg.repo, pg.prCount)
+		blocks = append(blocks, slackBlock{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: projectHeader,
+			},
+		})
+
+		// Project detail section — all PRs and their findings
+		var sb strings.Builder
+		for _, prNum := range pg.prOrder {
+			pr := pg.prs[prNum]
+			if pr.prURL != "" {
+				fmt.Fprintf(&sb, "📋 <%s|PR #%d> — %s\n", pr.prURL, pr.prNumber, pr.prTitle)
+			} else {
+				fmt.Fprintf(&sb, "📋 PR #%d — %s\n", pr.prNumber, pr.prTitle)
+			}
+			for _, msg := range pr.messages {
+				fmt.Fprintf(&sb, "  %s\n", msg)
+			}
+		}
+
+		detailText := sb.String()
+		// Split into multiple blocks if exceeding Slack's 3000-char limit
+		for detailText != "" {
+			chunk := detailText
+			if len(chunk) > maxSlackBlockTextLen {
+				// Find the last newline within the limit to avoid cutting mid-line
+				cutIdx := strings.LastIndex(chunk[:maxSlackBlockTextLen], "\n")
+				if cutIdx < 0 {
+					// No newline found — hard-cut at the limit on a valid UTF-8 boundary
+					cut := maxSlackBlockTextLen
+					for cut > 0 && !utf8.ValidString(detailText[:cut]) {
+						cut--
+					}
+					if cut == 0 {
+						// Malformed input — skip remaining text to avoid infinite loop
+						break
+					}
+					chunk = detailText[:cut]
+				} else {
+					chunk = detailText[:cutIdx+1]
+				}
+			}
+			blocks = append(blocks, slackBlock{
 				Type: "section",
 				Text: &slackText{
 					Type: "mrkdwn",
-					Text: sb.String(),
+					Text: chunk,
 				},
-			},
-		},
+			})
+			detailText = detailText[len(chunk):]
+		}
+
+		// Divider between projects
+		blocks = append(blocks, slackBlock{Type: "divider"})
 	}
 
+	// Remove trailing divider
+	if len(blocks) > 0 && blocks[len(blocks)-1].Type == "divider" {
+		blocks = blocks[:len(blocks)-1]
+	}
+
+	// Slack rejects messages with more than 50 blocks. Truncate and add an
+	// overflow notice so the message is still delivered.
+	if len(blocks) > maxSlackBlocks {
+		blocks = blocks[:maxSlackBlocks-1]
+		blocks = append(blocks, slackBlock{
+			Type: "section",
+			Text: &slackText{
+				Type: "mrkdwn",
+				Text: "⚠️ _Message truncated — too many findings to fit in one Slack message._",
+			},
+		})
+	}
+
+	msg := slackMessage{Blocks: blocks}
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return nil
