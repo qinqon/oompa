@@ -1349,8 +1349,8 @@ func TestProcessCIFailures_InfrastructureSkipsFlakyIssue(t *testing.T) {
 	}
 
 	// Verify the comment mentions infrastructure
-	if !strings.Contains(gh.addedComments[0], "Infrastructure Issues") {
-		t.Errorf("expected comment to mention Infrastructure Issues, got: %q", gh.addedComments[0])
+	if !strings.Contains(gh.addedComments[0], "Infrastructure:") {
+		t.Errorf("expected comment to mention Infrastructure, got: %q", gh.addedComments[0])
 	}
 	if !strings.Contains(gh.addedComments[0], "Build-PR") {
 		t.Errorf("expected comment to mention the check name, got: %q", gh.addedComments[0])
@@ -1562,12 +1562,12 @@ func TestProcessCIFailures_SkipCommentFlaky(t *testing.T) {
 	if len(gh.addedComments) != 1 {
 		t.Fatalf("expected 1 consolidated comment (flaky ref suppressed), got %d", len(gh.addedComments))
 	}
-	if !strings.Contains(gh.addedComments[0], "Unrelated Failures") {
+	if !strings.Contains(gh.addedComments[0], "Unrelated:") {
 		t.Errorf("expected unrelated section in consolidated comment, got: %q", gh.addedComments[0])
 	}
-	// With flaky comment skipped, the issue reference should NOT appear in the table
-	if strings.Contains(gh.addedComments[0], "Flaky Issue") {
-		t.Errorf("expected flaky issue column to be suppressed when skip-comment: flaky, got: %q", gh.addedComments[0])
+	// With flaky comment skipped, the issue reference should NOT appear in the Known Issue section
+	if strings.Contains(gh.addedComments[0], "Known Issue") {
+		t.Errorf("expected Known Issue section to be suppressed when skip-comment: flaky, got: %q", gh.addedComments[0])
 	}
 }
 
@@ -1878,7 +1878,7 @@ func TestProcessCIFailures_NoMatchNoCreateWhenDisabled(t *testing.T) {
 	if len(gh.addedComments) != 1 {
 		t.Fatalf("expected 1 consolidated comment, got %d", len(gh.addedComments))
 	}
-	if !strings.Contains(gh.addedComments[0], "Unrelated Failures") {
+	if !strings.Contains(gh.addedComments[0], "Unrelated:") {
 		t.Errorf("expected consolidated comment with unrelated section, got: %q", gh.addedComments[0])
 	}
 }
@@ -2239,7 +2239,7 @@ func TestProcessCIFailures_DeduplicatesUnrelatedComments(t *testing.T) {
 	if len(gh.addedComments) != 1 {
 		t.Fatalf("expected 1 comment on first poll, got %d", len(gh.addedComments))
 	}
-	if !strings.Contains(gh.addedComments[0], "Unrelated Failures") || !strings.Contains(gh.addedComments[0], "`test`") {
+	if !strings.Contains(gh.addedComments[0], "Unrelated:") || !strings.Contains(gh.addedComments[0], "<code>test</code>") {
 		t.Errorf("unexpected comment body: %s", gh.addedComments[0])
 	}
 
@@ -3566,9 +3566,9 @@ func TestProcessCIFailures_ConsolidatesMultipleFailuresIntoSingleComment(t *test
 	if !strings.Contains(comment, "e2e-dual-conversion") {
 		t.Errorf("expected comment to mention e2e-dual-conversion")
 	}
-	// Should have infrastructure section with count
-	if !strings.Contains(comment, "Infrastructure Issues (3)") {
-		t.Errorf("expected Infrastructure Issues (3), got: %q", comment)
+	// Should have infrastructure section with grouped count in collapsible details
+	if !strings.Contains(comment, "Infrastructure (3)") {
+		t.Errorf("expected Infrastructure (3) in grouped details, got: %q", comment)
 	}
 	// Should have per-check dedup markers
 	if !strings.Contains(comment, ciMarker("abc123", "test-deploy")) {
@@ -3613,15 +3613,19 @@ func TestProcessCIFailures_ConsolidatesMixedCategories(t *testing.T) {
 	}
 
 	comment := gh.addedComments[0]
-	// All three sections should be present
-	if !strings.Contains(comment, "Infrastructure Issues (1)") {
-		t.Errorf("expected Infrastructure Issues section, got: %q", comment)
+	// All three categories should be present in collapsible details
+	if !strings.Contains(comment, "Infrastructure:") {
+		t.Errorf("expected Infrastructure details section, got: %q", comment)
 	}
-	if !strings.Contains(comment, "Unrelated Failures (1)") {
-		t.Errorf("expected Unrelated Failures section, got: %q", comment)
+	if !strings.Contains(comment, "Unrelated:") {
+		t.Errorf("expected Unrelated details section, got: %q", comment)
 	}
-	if !strings.Contains(comment, "Related Failures (1)") {
-		t.Errorf("expected Related Failures section, got: %q", comment)
+	if !strings.Contains(comment, "Related:") {
+		t.Errorf("expected Related details section, got: %q", comment)
+	}
+	// Summary header should have category breakdown
+	if !strings.Contains(comment, "1 infrastructure, 1 unrelated, 1 related") {
+		t.Errorf("expected category breakdown in summary, got: %q", comment)
 	}
 	// Related section should mention the fix was pushed
 	if !strings.Contains(comment, "Pushed a fix") {
@@ -3656,15 +3660,15 @@ func TestProcessCIFailures_SingleFailureStillConsolidated(t *testing.T) {
 		t.Fatalf("expected 1 comment, got %d", len(gh.addedComments))
 	}
 	comment := gh.addedComments[0]
-	// Should use the consolidated format (with header and table)
-	if !strings.Contains(comment, "CI failures on commit") {
-		t.Errorf("expected consolidated format header, got: %q", comment)
+	// Should use the structured format with summary header and collapsible details
+	if !strings.Contains(comment, "CI Failure Analysis") {
+		t.Errorf("expected structured format header, got: %q", comment)
 	}
-	if !strings.Contains(comment, "Unrelated Failures (1)") {
-		t.Errorf("expected Unrelated Failures section, got: %q", comment)
+	if !strings.Contains(comment, "Unrelated:") {
+		t.Errorf("expected Unrelated details section, got: %q", comment)
 	}
-	if !strings.Contains(comment, "`e2e-network`") {
-		t.Errorf("expected check name in table, got: %q", comment)
+	if !strings.Contains(comment, "<code>e2e-network</code>") {
+		t.Errorf("expected check name in details summary, got: %q", comment)
 	}
 }
 
@@ -3701,13 +3705,13 @@ func TestProcessCIFailures_ConsolidatedSkipsInfrastructureSection(t *testing.T) 
 	}
 
 	comment := gh.addedComments[0]
-	// Infrastructure section should be absent
-	if strings.Contains(comment, "Infrastructure Issues") {
-		t.Errorf("expected no Infrastructure Issues section (skipped), got: %q", comment)
+	// Infrastructure section should be absent (skipped by config)
+	if strings.Contains(comment, "Infrastructure:") || strings.Contains(comment, "Infrastructure (") {
+		t.Errorf("expected no Infrastructure section (skipped), got: %q", comment)
 	}
 	// Unrelated section should be present
-	if !strings.Contains(comment, "Unrelated Failures (1)") {
-		t.Errorf("expected Unrelated Failures section, got: %q", comment)
+	if !strings.Contains(comment, "Unrelated:") {
+		t.Errorf("expected Unrelated details section, got: %q", comment)
 	}
 	// Infrastructure check's dedup marker should still be present
 	if !strings.Contains(comment, ciMarker("abc123", "test-deploy")) {
@@ -3750,10 +3754,13 @@ func TestProcessCIFailures_FlakyIssueLinkInConsolidatedComment(t *testing.T) {
 		t.Fatalf("expected 2 comments, got %d", len(gh.addedComments))
 	}
 
-	// Consolidated comment should include a Flaky Issue column with #42
+	// Consolidated comment should include the flaky issue reference in the details block
 	consolidated := gh.addedComments[1]
-	if !strings.Contains(consolidated, "Flaky Issue") {
-		t.Errorf("expected Flaky Issue column header, got: %q", consolidated)
+	if !strings.Contains(consolidated, "flaky test (#42)") {
+		t.Errorf("expected flaky issue (#42) in details summary, got: %q", consolidated)
+	}
+	if !strings.Contains(consolidated, "Known Issue") {
+		t.Errorf("expected Known Issue section, got: %q", consolidated)
 	}
 	if !strings.Contains(consolidated, "#42") {
 		t.Errorf("expected flaky issue #42 reference, got: %q", consolidated)
@@ -3790,10 +3797,13 @@ func TestProcessCIFailures_RelatedPushedFixNoteInConsolidated(t *testing.T) {
 	}
 
 	comment := gh.addedComments[0]
-	if !strings.Contains(comment, "Related Failures (1)") {
-		t.Errorf("expected Related Failures section, got: %q", comment)
+	if !strings.Contains(comment, "Related:") {
+		t.Errorf("expected Related details section, got: %q", comment)
 	}
-	if !strings.Contains(comment, "Pushed a fix for the related failure.") {
+	if !strings.Contains(comment, "fix pushed") {
+		t.Errorf("expected 'fix pushed' in details summary, got: %q", comment)
+	}
+	if !strings.Contains(comment, "Pushed a fix") {
 		t.Errorf("expected pushed fix note, got: %q", comment)
 	}
 }
