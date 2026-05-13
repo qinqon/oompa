@@ -43,6 +43,7 @@ type GitHubClient interface {
 	ListWorkflowJobs(ctx context.Context, owner, repo string, runID int64) ([]WorkflowJob, error)
 	GetWorkflowJobLogs(ctx context.Context, owner, repo string, jobID int64) (string, error)
 	HasRepliesFromUser(ctx context.Context, owner, repo string, prNumber int, commentIDs []int64, username string) (map[int64]bool, error)
+	CountCommitsSince(ctx context.Context, owner, repo string, since time.Time) (int, error)
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -672,6 +673,35 @@ func (g *GoGitHubClient) HasRepliesFromUser(ctx context.Context, owner, repo str
 		opts.Page = resp.NextPage
 	}
 	return result, nil
+}
+
+// CountCommitsSince returns the number of commits on the default branch since the given time.
+// Uses a small page size since callers typically only need to know whether the count
+// exceeds a small threshold, avoiding unnecessary API calls on very active repos.
+func (g *GoGitHubClient) CountCommitsSince(ctx context.Context, owner, repo string, since time.Time) (int, error) {
+	opts := &github.CommitsListOptions{
+		Since:       since,
+		ListOptions: github.ListOptions{PerPage: 10},
+	}
+
+	var total int
+	for {
+		commits, resp, err := g.client.Repositories.ListCommits(ctx, owner, repo, opts)
+		if err != nil {
+			return 0, fmt.Errorf("counting commits since %s: %w", since.Format(time.RFC3339), err)
+		}
+		total += len(commits)
+		// Short-circuit: stop paginating once we have enough to exceed any
+		// reasonable threshold — callers only need to know "quiet vs active".
+		if total > rebaseQuietThreshold {
+			return total, nil
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return total, nil
 }
 
 // GetWorkflowJobLogs fetches the logs for a specific workflow job.

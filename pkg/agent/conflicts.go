@@ -3,6 +3,20 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
+)
+
+const (
+	// rebaseQuietWindow is the look-back period to measure merge activity on the default branch.
+	rebaseQuietWindow = 2 * time.Hour
+
+	// rebaseQuietThreshold is the maximum number of recent commits on the default branch
+	// to consider it "quiet" enough for a rebase. Above this, rebasing is deferred.
+	rebaseQuietThreshold = 5
+
+	// rebaseMinInterval is the minimum time between rebases for the same PR.
+	// Prevents edge cases where quiet windows oscillate.
+	rebaseMinInterval = 4 * time.Hour
 )
 
 // ProcessConflicts checks for merge conflicts (dirty mergeable_state) and tries to resolve them.
@@ -66,6 +80,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			if pushErr := a.gitPush(ctx, work.WorktreePath, true); pushErr != nil {
 				a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr)
 			} else {
+				work.LastRebaseTime = time.Now()
 				a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
 				a.emit(Event{
 					Type:      EventActionCompleted,
@@ -97,6 +112,40 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 
 	// Sequential phase: Claude invocations for conflict resolution
 	a.resolveConflictsSequential(ctx, tasks)
+}
+
+// shouldRebaseNow checks whether conditions are right to rebase a PR.
+// It enforces a minimum interval between rebases and defers rebasing when
+// the default branch is active (merge storm in progress).
+// Returns (true, "") if rebase should proceed, or (false, reason) if deferred.
+func (a *Agent) shouldRebaseNow(ctx context.Context, work *IssueWork) (allowed bool, reason string) {
+	// Guard: minimum interval between rebases for the same PR
+	if !work.LastRebaseTime.IsZero() && time.Since(work.LastRebaseTime) < rebaseMinInterval {
+		a.logger.Debug("skipping rebase (minimum interval not reached)",
+			"pr", work.PRNumber,
+			"lastRebase", work.LastRebaseTime,
+			"minInterval", rebaseMinInterval)
+		return false, "minimum interval not reached"
+	}
+
+	// Check recent merge activity on the default branch
+	since := time.Now().Add(-rebaseQuietWindow)
+	recentCommits, err := a.gh.CountCommitsSince(ctx, a.cfg.Owner, a.cfg.Repo, since)
+	if err != nil {
+		a.logger.Warn("failed to check main branch activity, proceeding with rebase", "error", err)
+		return true, "" // fail-open: rebase if we can't check
+	}
+
+	if recentCommits > rebaseQuietThreshold {
+		a.logger.Info("deferring rebase, main branch is active",
+			"pr", work.PRNumber,
+			"recentCommits", recentCommits,
+			"window", rebaseQuietWindow,
+			"threshold", rebaseQuietThreshold)
+		return false, fmt.Sprintf("main is active, %d commits in last %s", recentCommits, rebaseQuietWindow)
+	}
+
+	return true, ""
 }
 
 // ProcessRebase rebases PRs that are behind the base branch but have no merge conflicts.
@@ -149,6 +198,11 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 			continue
 		}
 
+		// Dynamic rebase: check if now is a good time to rebase
+		if ok, _ := a.shouldRebaseNow(ctx, work); !ok {
+			continue
+		}
+
 		headSHA, _ := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
 		if headSHA != "" && a.hasExistingBotComment(ctx, work.PRNumber, "rebase") && a.hasExistingBotComment(ctx, work.PRNumber, shortSHA(headSHA)) {
 			continue
@@ -186,6 +240,7 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 		if pushErr := a.gitPush(ctx, work.WorktreePath, true); pushErr != nil {
 			a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr)
 		} else {
+			work.LastRebaseTime = time.Now()
 			a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
 			a.emit(Event{
 				Type:      EventActionCompleted,
@@ -273,6 +328,7 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
 				fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(task.headSHA)))
 		} else {
+			task.work.LastRebaseTime = time.Now()
 			a.emit(Event{
 				Type:      EventActionCompleted,
 				Category:  CategoryConflict,

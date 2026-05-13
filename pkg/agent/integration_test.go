@@ -326,6 +326,10 @@ func (f *fakeGitHubClient) HasRepliesFromUser(_ context.Context, _, _ string, pr
 	return result, nil
 }
 
+func (f *fakeGitHubClient) CountCommitsSince(_ context.Context, _, _ string, _ time.Time) (int, error) {
+	return 0, nil // always quiet in integration tests
+}
+
 // initBareRepo creates a bare repo and a working clone for the agent to use.
 // Returns (cloneDir, cleanup).
 func initBareRepo(t *testing.T) string {

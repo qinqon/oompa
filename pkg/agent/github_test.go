@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/go-github/v84/github"
 )
@@ -865,5 +867,104 @@ func TestHasRepliesFromUser_MultipleComments(t *testing.T) {
 	}
 	if result[11] {
 		t.Error("expected comment 11 to have no reply")
+	}
+}
+
+func TestCountCommitsSince(t *testing.T) {
+	mux := http.NewServeMux()
+	var receivedSince string
+	mux.HandleFunc("/api/v3/repos/owner/repo/commits", func(w http.ResponseWriter, r *http.Request) {
+		receivedSince = r.URL.Query().Get("since")
+		commits := []map[string]any{
+			{"sha": "abc123", "commit": map[string]any{"message": "commit 1"}},
+			{"sha": "def456", "commit": map[string]any{"message": "commit 2"}},
+			{"sha": "ghi789", "commit": map[string]any{"message": "commit 3"}},
+		}
+		_ = json.NewEncoder(w).Encode(commits)
+	})
+
+	gh := setupTestClient(t, mux)
+	since := time.Now().Add(-2 * time.Hour)
+	count, err := gh.CountCommitsSince(context.Background(), "owner", "repo", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3 commits, got %d", count)
+	}
+	if receivedSince == "" {
+		t.Error("expected 'since' query parameter to be set")
+	}
+}
+
+func TestCountCommitsSince_ShortCircuitsAboveThreshold(t *testing.T) {
+	// When the first page returns more commits than the quiet threshold,
+	// CountCommitsSince should short-circuit and not fetch additional pages.
+	var pagesRequested int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/commits", func(w http.ResponseWriter, r *http.Request) {
+		pagesRequested++
+		page := r.URL.Query().Get("page")
+		if page == "" || page == "1" {
+			w.Header().Set("Link", fmt.Sprintf(`<%s?page=2>; rel="next"`, r.URL.Path))
+			commits := make([]map[string]any, 10)
+			for i := range commits {
+				commits[i] = map[string]any{
+					"sha":    fmt.Sprintf("sha-page1-%d", i),
+					"commit": map[string]any{"message": fmt.Sprintf("commit %d", i)},
+				}
+			}
+			_ = json.NewEncoder(w).Encode(commits)
+		} else {
+			commits := []map[string]any{
+				{"sha": "sha-page2-0", "commit": map[string]any{"message": "commit extra"}},
+			}
+			_ = json.NewEncoder(w).Encode(commits)
+		}
+	})
+
+	gh := setupTestClient(t, mux)
+	since := time.Now().Add(-2 * time.Hour)
+	count, err := gh.CountCommitsSince(context.Background(), "owner", "repo", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should return 10 (first page) and short-circuit without fetching page 2
+	if count != 10 {
+		t.Errorf("expected 10 commits (short-circuited after first page), got %d", count)
+	}
+	if pagesRequested != 1 {
+		t.Errorf("expected 1 page requested (short-circuit), got %d", pagesRequested)
+	}
+}
+
+func TestCountCommitsSince_NoCommits(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/commits", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	gh := setupTestClient(t, mux)
+	since := time.Now().Add(-2 * time.Hour)
+	count, err := gh.CountCommitsSince(context.Background(), "owner", "repo", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 commits, got %d", count)
+	}
+}
+
+func TestCountCommitsSince_APIError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/commits", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	gh := setupTestClient(t, mux)
+	since := time.Now().Add(-2 * time.Hour)
+	_, err := gh.CountCommitsSince(context.Background(), "owner", "repo", since)
+	if err == nil {
+		t.Fatal("expected error for API failure")
 	}
 }
