@@ -36,6 +36,8 @@ type mockGitHubClient struct {
 	workflowRuns    []WorkflowRun // workflow runs to return from ListWorkflowRuns
 	prReviews      []PRReview // reviews to return from GetPRReviews
 	headCommitDate time.Time  // date to return from GetPRHeadCommitDate
+	recentCommits  int        // number of recent commits returned by CountCommitsSince
+	countCommitsErr error     // error to return from CountCommitsSince
 
 	listIssuesCalled bool // tracks whether ListLabeledIssues was called
 	listIssuesErr    error
@@ -235,6 +237,10 @@ func (m *mockGitHubClient) ListWorkflowJobs(_ context.Context, _, _ string, _ in
 
 func (m *mockGitHubClient) GetWorkflowJobLogs(_ context.Context, _, _ string, _ int64) (string, error) {
 	return "", nil
+}
+
+func (m *mockGitHubClient) CountCommitsSince(_ context.Context, _, _ string, _ time.Time) (int, error) {
+	return m.recentCommits, m.countCommitsErr
 }
 
 // mockWorktreeManager implements WorktreeManager for testing.
@@ -4489,5 +4495,250 @@ func TestProcessReviewComments_CostTracking(t *testing.T) {
 	expectedCost := 2.75 // 2.0 + 0.75
 	if work.SessionCostUSD != expectedCost {
 		t.Errorf("expected SessionCostUSD %.2f, got %.2f", expectedCost, work.SessionCostUSD)
+	}
+}
+
+func TestProcessRebase_DefersWhenMainIsActive(t *testing.T) {
+	// High-velocity repo: >5 commits in 2h → rebase should be deferred.
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+		recentCommits:  10, // active main branch
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessRebase(context.Background())
+
+	// Should NOT have attempted any git operations (rebase deferred)
+	for _, c := range runner.calls {
+		if c.Name == "git" {
+			t.Errorf("should not run git commands when main is active, got: git %v", c.Args)
+		}
+	}
+}
+
+func TestProcessRebase_ProceedsWhenMainIsQuiet(t *testing.T) {
+	// Quiet repo: ≤5 commits in 2h → rebase should proceed.
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+		recentCommits:  2, // quiet main branch
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessRebase(context.Background())
+
+	// Should have attempted a rebase
+	var rebaseCalls int
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
+			rebaseCalls++
+		}
+	}
+	if rebaseCalls == 0 {
+		t.Error("expected git rebase to be called when main is quiet")
+	}
+}
+
+func TestProcessRebase_DefersWhenMinIntervalNotReached(t *testing.T) {
+	// Rebase 1h ago, main is quiet → still deferred because 4h minimum not reached.
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+		recentCommits:  0, // very quiet
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:    42,
+		PRNumber:       100,
+		BranchName:     "ai/issue-42",
+		Status:         "pr-open",
+		WorktreePath:   "/tmp/worktree",
+		LastRebaseTime: time.Now().Add(-1 * time.Hour), // rebased 1h ago
+	}
+
+	agent.ProcessRebase(context.Background())
+
+	// Should NOT have attempted any git operations
+	for _, c := range runner.calls {
+		if c.Name == "git" {
+			t.Errorf("should not rebase when min interval not reached, got: git %v", c.Args)
+		}
+	}
+}
+
+func TestProcessRebase_ProceedsWhenMinIntervalExpired(t *testing.T) {
+	// Rebase 5h ago, main is quiet → rebase proceeds.
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+		recentCommits:  2, // quiet
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:    42,
+		PRNumber:       100,
+		BranchName:     "ai/issue-42",
+		Status:         "pr-open",
+		WorktreePath:   "/tmp/worktree",
+		LastRebaseTime: time.Now().Add(-5 * time.Hour), // rebased 5h ago
+	}
+
+	agent.ProcessRebase(context.Background())
+
+	var rebaseCalls int
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
+			rebaseCalls++
+		}
+	}
+	if rebaseCalls == 0 {
+		t.Error("expected git rebase when min interval expired and main is quiet")
+	}
+}
+
+func TestProcessRebase_FailOpenOnAPIError(t *testing.T) {
+	// Can't count commits → fail-open, rebase proceeds.
+	gh := &mockGitHubClient{
+		mergeableState:  "behind",
+		countCommitsErr: fmt.Errorf("API rate limit exceeded"),
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessRebase(context.Background())
+
+	var rebaseCalls int
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
+			rebaseCalls++
+		}
+	}
+	if rebaseCalls == 0 {
+		t.Error("expected git rebase to proceed on API error (fail-open)")
+	}
+}
+
+func TestProcessRebase_FirstRebaseNoIntervalGuard(t *testing.T) {
+	// First rebase (LastRebaseTime is zero) → should proceed without interval guard.
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+		recentCommits:  3, // below threshold
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+		// LastRebaseTime is zero — first rebase
+	}
+
+	agent.ProcessRebase(context.Background())
+
+	var rebaseCalls int
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
+			rebaseCalls++
+		}
+	}
+	if rebaseCalls == 0 {
+		t.Error("expected git rebase on first rebase (no interval guard for zero time)")
+	}
+}
+
+func TestProcessRebase_SetsLastRebaseTimeOnSuccess(t *testing.T) {
+	// After a successful rebase, LastRebaseTime should be set.
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+		recentCommits:  0, // quiet
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	before := time.Now()
+	agent.ProcessRebase(context.Background())
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastRebaseTime.IsZero() {
+		t.Error("expected LastRebaseTime to be set after successful rebase")
+	}
+	if work.LastRebaseTime.Before(before) {
+		t.Error("expected LastRebaseTime to be after the test start time")
+	}
+}
+
+func TestProcessRebase_ExactThresholdAllowsRebase(t *testing.T) {
+	// Exactly 5 commits (= threshold) → rebase should proceed (only >threshold defers).
+	gh := &mockGitHubClient{
+		mergeableState: "behind",
+		recentCommits:  5, // exactly at threshold
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessRebase(context.Background())
+
+	var rebaseCalls int
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
+			rebaseCalls++
+		}
+	}
+	if rebaseCalls == 0 {
+		t.Error("expected git rebase when commit count equals threshold (only >threshold defers)")
 	}
 }

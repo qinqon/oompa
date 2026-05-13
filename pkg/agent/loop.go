@@ -615,6 +615,7 @@ func (a *Agent) CheckRebaseNeeded(ctx context.Context) []SlackFinding {
 }
 
 // checkRebaseNeededWithStates checks for outdated PRs using precomputed mergeable states.
+// Includes dynamic rebase deferral context when the main branch is active.
 func (a *Agent) checkRebaseNeededWithStates(ctx context.Context, states map[int]string) []SlackFinding {
 	var findings []SlackFinding
 
@@ -639,6 +640,13 @@ func (a *Agent) checkRebaseNeededWithStates(ctx context.Context, states map[int]
 
 		if needsRebase {
 			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+
+			// Check dynamic rebase conditions for richer Slack reporting
+			msg := fmt.Sprintf("⚠️ <%s|PR #%d> is behind %s", pURL, work.PRNumber, a.defaultBranch())
+			if allowed, reason := a.shouldRebaseNow(ctx, work); !allowed && reason != "" {
+				msg += fmt.Sprintf(" (rebase deferred — %s)", reason)
+			}
+
 			findings = append(findings, SlackFinding{
 				Owner:    a.cfg.Owner,
 				Repo:     a.cfg.Repo,
@@ -646,7 +654,7 @@ func (a *Agent) checkRebaseNeededWithStates(ctx context.Context, states map[int]
 				PRTitle:  work.IssueTitle,
 				PRURL:    pURL,
 				Category: "rebase",
-				Message:  fmt.Sprintf("⚠️ <%s|PR #%d> is behind %s", pURL, work.PRNumber, a.defaultBranch()),
+				Message:  msg,
 				DedupKey: fmt.Sprintf("rebase-needed:%d", work.PRNumber),
 			})
 		}

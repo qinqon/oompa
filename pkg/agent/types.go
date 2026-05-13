@@ -44,21 +44,22 @@ type AgentResult struct {
 
 // IssueWork tracks the state of work on a single issue.
 type IssueWork struct {
-	IssueNumber      int       `json:"issueNumber"`
-	IssueTitle       string    `json:"issueTitle"`
-	WorktreePath     string    `json:"worktreePath"`
-	BranchName       string    `json:"branchName"`
-	PRNumber         int       `json:"prNumber"`
-	LastCommentID    int64     `json:"lastCommentID"`
-	LastReviewID     int64     `json:"lastReviewID"`
-	Status           string    `json:"status"` // implementing, pr-open, failed, done
-	CIFixAttempts    int       `json:"ciFixAttempts"`
-	LastCIStatus     string            `json:"lastCIStatus"`     // "", "pending", "success", "failure"
-	LastCheckedCISHA string            `json:"lastCheckedCISHA"` // last commit SHA investigated for CI failures
-	CheckedCIChecks  map[string]bool   `json:"checkedCIChecks,omitempty"` // tracks "sha:check" keys investigated (for dedup without comments)
-	ReviewNoOpCount  int               `json:"reviewNoOpCount,omitempty"` // consecutive cycles where reviews produced no push
-	SessionCostUSD   float64           `json:"sessionCostUSD,omitempty"` // cumulative agent cost for this PR in current session
-	CreatedAt        time.Time         `json:"createdAt"`
+	IssueNumber      int             `json:"issueNumber"`
+	IssueTitle       string          `json:"issueTitle"`
+	WorktreePath     string          `json:"worktreePath"`
+	BranchName       string          `json:"branchName"`
+	PRNumber         int             `json:"prNumber"`
+	LastCommentID    int64           `json:"lastCommentID"`
+	LastReviewID     int64           `json:"lastReviewID"`
+	Status           string          `json:"status"` // implementing, pr-open, failed, done
+	CIFixAttempts    int             `json:"ciFixAttempts"`
+	LastCIStatus     string          `json:"lastCIStatus"`              // "", "pending", "success", "failure"
+	LastCheckedCISHA string          `json:"lastCheckedCISHA"`          // last commit SHA investigated for CI failures
+	CheckedCIChecks  map[string]bool `json:"checkedCIChecks,omitempty"` // tracks "sha:check" keys investigated (for dedup without comments)
+	ReviewNoOpCount  int             `json:"reviewNoOpCount,omitempty"` // consecutive cycles where reviews produced no push
+	SessionCostUSD   float64         `json:"sessionCostUSD,omitempty"`  // cumulative agent cost for this PR in current session
+	LastRebaseTime   time.Time       `json:"lastRebaseTime"`            // when this PR was last rebased (for min-interval guard)
+	CreatedAt        time.Time       `json:"createdAt"`
 }
 
 // PRReview represents a GitHub pull request review (approve, request changes, comment).

@@ -151,4 +151,8 @@ func (d *DryRunGitHubClient) HasRepliesFromUser(ctx context.Context, owner, repo
 	return d.inner.HasRepliesFromUser(ctx, owner, repo, prNumber, commentIDs, username)
 }
 
+func (d *DryRunGitHubClient) CountCommitsSince(ctx context.Context, owner, repo string, since time.Time) (int, error) {
+	return d.inner.CountCommitsSince(ctx, owner, repo, since)
+}
+
 
