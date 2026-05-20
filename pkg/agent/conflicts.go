@@ -120,11 +120,15 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 // Returns (true, "") if rebase should proceed, or (false, reason) if deferred.
 func (a *Agent) shouldRebaseNow(ctx context.Context, work *IssueWork) (allowed bool, reason string) {
 	// Guard: minimum interval between rebases for the same PR
-	if !work.LastRebaseTime.IsZero() && time.Since(work.LastRebaseTime) < rebaseMinInterval {
+	minInterval := a.cfg.RebaseInterval
+	if minInterval <= 0 {
+		minInterval = rebaseMinInterval // fallback default (4h)
+	}
+	if !work.LastRebaseTime.IsZero() && time.Since(work.LastRebaseTime) < minInterval {
 		a.logger.Debug("skipping rebase (minimum interval not reached)",
 			"pr", work.PRNumber,
 			"lastRebase", work.LastRebaseTime,
-			"minInterval", rebaseMinInterval)
+			"minInterval", minInterval)
 		return false, "minimum interval not reached"
 	}
 

@@ -939,3 +939,194 @@ projects:
 		t.Fatal("expected error for unknown YAML key")
 	}
 }
+
+func TestLoadFileConfig_RebaseIntervalValid(t *testing.T) {
+	yaml := `
+projects:
+  - repo: owner/repo
+    rebase-interval: 24h
+    prs:
+      - watch: [1]
+        rebase-interval: 8h
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
+
+	fc, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fc.Projects[0].RebaseInterval != "24h" {
+		t.Errorf("expected project rebase-interval '24h', got %q", fc.Projects[0].RebaseInterval)
+	}
+	if fc.Projects[0].PRs[0].RebaseInterval != "8h" {
+		t.Errorf("expected PR rebase-interval '8h', got %q", fc.Projects[0].PRs[0].RebaseInterval)
+	}
+}
+
+func TestLoadFileConfig_RebaseIntervalInvalidProject(t *testing.T) {
+	yaml := `
+projects:
+  - repo: owner/repo
+    rebase-interval: not-a-duration
+    prs:
+      - watch: [1]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
+
+	_, err := LoadFileConfig(path)
+	if err == nil {
+		t.Fatal("expected error for invalid project rebase-interval")
+	}
+}
+
+func TestLoadFileConfig_RebaseIntervalNegativeProject(t *testing.T) {
+	yaml := `
+projects:
+  - repo: owner/repo
+    rebase-interval: "-1h"
+    prs:
+      - watch: [1]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
+
+	_, err := LoadFileConfig(path)
+	if err == nil {
+		t.Fatal("expected error for negative project rebase-interval")
+	}
+}
+
+func TestLoadFileConfig_RebaseIntervalZeroProject(t *testing.T) {
+	yaml := `
+projects:
+  - repo: owner/repo
+    rebase-interval: "0s"
+    prs:
+      - watch: [1]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
+
+	_, err := LoadFileConfig(path)
+	if err == nil {
+		t.Fatal("expected error for zero project rebase-interval")
+	}
+}
+
+func TestLoadFileConfig_RebaseIntervalNegativePR(t *testing.T) {
+	yaml := `
+projects:
+  - repo: owner/repo
+    prs:
+      - watch: [1]
+        rebase-interval: "-2h"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
+
+	_, err := LoadFileConfig(path)
+	if err == nil {
+		t.Fatal("expected error for negative PR rebase-interval")
+	}
+}
+
+func TestLoadFileConfig_RebaseIntervalInvalidPR(t *testing.T) {
+	yaml := `
+projects:
+  - repo: owner/repo
+    prs:
+      - watch: [1]
+        rebase-interval: bad
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
+
+	_, err := LoadFileConfig(path)
+	if err == nil {
+		t.Fatal("expected error for invalid PR rebase-interval")
+	}
+}
+
+func TestBuildRoleEntries_RebaseIntervalTwoTierInheritance(t *testing.T) {
+	fc := &FileConfig{
+		Projects: []ProjectConfig{
+			{
+				Repo:           "owner/repo",
+				RebaseInterval: "24h",
+				PRs: []PRsRoleConfig{
+					{
+						Watch: []int{100},
+						// Inherits project-level rebase-interval (24h)
+					},
+					{
+						Watch:          []int{200},
+						RebaseInterval: "8h", // Override project level
+					},
+				},
+			},
+		},
+	}
+
+	entries := BuildRoleEntries(fc, "/tmp/work", Config{Agent: "claudecode"})
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	// First entry: inherits project-level 24h
+	if entries[0].Config.RebaseInterval != 24*time.Hour {
+		t.Errorf("expected RebaseInterval 24h, got %v", entries[0].Config.RebaseInterval)
+	}
+	// Second entry: overrides with 8h
+	if entries[1].Config.RebaseInterval != 8*time.Hour {
+		t.Errorf("expected RebaseInterval 8h, got %v", entries[1].Config.RebaseInterval)
+	}
+}
+
+func TestBuildRoleEntries_RebaseIntervalDefault(t *testing.T) {
+	fc := &FileConfig{
+		Projects: []ProjectConfig{
+			{
+				Repo: "owner/repo",
+				// No rebase-interval set
+				PRs: []PRsRoleConfig{
+					{Watch: []int{100}},
+				},
+			},
+		},
+	}
+
+	entries := BuildRoleEntries(fc, "/tmp/work", Config{Agent: "claudecode"})
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	// Default should be 4h
+	if entries[0].Config.RebaseInterval != 4*time.Hour {
+		t.Errorf("expected RebaseInterval 4h (default), got %v", entries[0].Config.RebaseInterval)
+	}
+}
+
+func TestParseDurationOr(t *testing.T) {
+	tests := []struct {
+		input    string
+		fallback time.Duration
+		want     time.Duration
+	}{
+		{"24h", 4 * time.Hour, 24 * time.Hour},
+		{"8h", 4 * time.Hour, 8 * time.Hour},
+		{"", 4 * time.Hour, 4 * time.Hour},
+		{"invalid", 4 * time.Hour, 4 * time.Hour},
+	}
+	for _, tt := range tests {
+		got := parseDurationOr(tt.input, tt.fallback)
+		if got != tt.want {
+			t.Errorf("parseDurationOr(%q, %v) = %v, want %v", tt.input, tt.fallback, got, tt.want)
+		}
+	}
+}
