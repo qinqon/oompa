@@ -41,6 +41,23 @@ func (s *State) IsRunInvestigated(jobName, runID string) bool {
 	return s.InvestigatedRuns[key]
 }
 
+// recoverLastRebaseTime recovers LastRebaseTime from the PR head commit date as
+// an approximation. This prevents an unnecessary rebase immediately after restart.
+// Future timestamps are clamped to now to avoid deferring rebases longer than configured.
+func recoverLastRebaseTime(ctx context.Context, gh GitHubClient, cfg Config, work *IssueWork, prNumber int, logger *slog.Logger) {
+	headCommitDate, err := gh.GetPRHeadCommitDate(ctx, cfg.Owner, cfg.Repo, prNumber)
+	if err != nil {
+		logger.Warn("failed to get PR head commit date for rebase time recovery", "pr", prNumber, "error", err)
+		return
+	}
+	if !headCommitDate.IsZero() {
+		if headCommitDate.After(time.Now()) {
+			headCommitDate = time.Now()
+		}
+		work.LastRebaseTime = headCommitDate
+	}
+}
+
 // BuildStateFromGitHub reconstructs state by scanning labeled issues and their PRs.
 func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, cloneDir string, logger *slog.Logger) *State {
 	state := NewState()
@@ -82,6 +99,7 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 					work.PRNumber = openPR.Number
 					work.Status = StatusPROpen
 					// lastCommentID stays 0 — ProcessReviewComments uses :eyes: reaction to skip already-handled comments
+					recoverLastRebaseTime(ctx, gh, cfg, work, openPR.Number, logger)
 					logger.Info("recovered state from GitHub", "issue", issue.Number, "pr", work.PRNumber)
 				case hasMerged:
 					// PR was merged — skip to avoid reprocessing a completed issue
@@ -139,6 +157,8 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 			Status:       StatusPROpen,
 			CreatedAt:    time.Now(),
 		}
+
+		recoverLastRebaseTime(ctx, gh, cfg, work, prNumber, logger)
 
 		state.ActiveIssues[IssueKey(cfg.Owner, cfg.Repo, prNumber)] = work
 		logger.Info("recovered watched PR state", "pr", prNumber, "branch", pr.Head)

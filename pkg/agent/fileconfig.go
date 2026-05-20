@@ -37,7 +37,8 @@ type ProjectConfig struct {
 	Reactions         []string `yaml:"reactions"`
 	Label             string   `yaml:"label"`
 	OnlyAssigned      *bool    `yaml:"only-assigned"`
-	Reviewers         []string `yaml:"reviewers"` // whitelist of users/bots whose reviews to address
+	Reviewers         []string `yaml:"reviewers"`         // whitelist of users/bots whose reviews to address
+	RebaseInterval    string   `yaml:"rebase-interval"`   // e.g. "24h", "12h" — minimum time between rebases
 
 	// Role arrays
 	PRs    []PRsRoleConfig    `yaml:"prs"`
@@ -54,7 +55,8 @@ type PRsRoleConfig struct {
 	SkipFix           *bool    `yaml:"skip-fix"`
 	CreateFlakyIssues *bool    `yaml:"create-flaky-issues"`
 	FlakyLabel        string   `yaml:"flaky-label"`
-	Reviewers         []string `yaml:"reviewers"` // overrides project-level reviewers
+	Reviewers         []string `yaml:"reviewers"`       // overrides project-level reviewers
+	RebaseInterval    string   `yaml:"rebase-interval"` // overrides project-level rebase-interval
 }
 
 // IssuesRoleConfig represents a single Issues role entry.
@@ -132,6 +134,19 @@ func validateFileConfig(cfg *FileConfig) error {
 		}
 	}
 
+	// Validate project-level rebase-interval
+	for i, p := range cfg.Projects {
+		if p.RebaseInterval != "" {
+			d, err := time.ParseDuration(p.RebaseInterval)
+			if err != nil {
+				return fmt.Errorf("project %d (%s): invalid rebase-interval %q: %w", i, p.Repo, p.RebaseInterval, err)
+			}
+			if d <= 0 {
+				return fmt.Errorf("project %d (%s): rebase-interval must be positive, got %q", i, p.Repo, p.RebaseInterval)
+			}
+		}
+	}
+
 	validReactions := map[string]bool{"reviews": true, "ci": true, "conflicts": true, "rebase": true}
 	validComments := map[string]bool{
 		"ci-unrelated": true, "ci-infrastructure": true, "ci-related": true,
@@ -184,6 +199,15 @@ func validateFileConfig(cfg *FileConfig) error {
 			for _, c := range pr.SkipComment {
 				if !validComments[c] {
 					return fmt.Errorf("project %d (%s): prs[%d]: invalid skip-comment %q", i, p.Repo, j, c)
+				}
+			}
+			if pr.RebaseInterval != "" {
+				d, err := time.ParseDuration(pr.RebaseInterval)
+				if err != nil {
+					return fmt.Errorf("project %d (%s): prs[%d]: invalid rebase-interval %q: %w", i, p.Repo, j, pr.RebaseInterval, err)
+				}
+				if d <= 0 {
+					return fmt.Errorf("project %d (%s): prs[%d]: rebase-interval must be positive, got %q", i, p.Repo, j, pr.RebaseInterval)
 				}
 			}
 		}
@@ -255,6 +279,19 @@ func stringsOr(s, fallback []string) []string {
 	return fallback
 }
 
+// parseDurationOr parses s as a time.Duration. If s is empty or invalid,
+// it returns the fallback value.
+func parseDurationOr(s string, fallback time.Duration) time.Duration {
+	if s == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fallback
+	}
+	return d
+}
+
 // RoleEntry describes a single role goroutine to run. Built from FileConfig by
 // expanding projects and roles with two-tier inheritance applied.
 type RoleEntry struct {
@@ -304,6 +341,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 		projLabel := stringOr(p.Label, "good-for-ai")
 		projOnlyAssigned := boolOr(p.OnlyAssigned, false)
 		projReviewers := stringsOr(p.Reviewers, globalCfg.Reviewers)
+		projRebaseInterval := parseDurationOr(p.RebaseInterval, 4*time.Hour)
 
 		// Base config for this project (shared fields)
 		baseCfg := Config{
@@ -353,6 +391,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			cfg.CreateFlakyIssues = boolOr(pr.CreateFlakyIssues, projCreateFlaky)
 			cfg.FlakyLabel = stringOr(pr.FlakyLabel, projFlakyLabel)
 			cfg.Reviewers = stringsOr(pr.Reviewers, projReviewers)
+			cfg.RebaseInterval = parseDurationOr(pr.RebaseInterval, projRebaseInterval)
 			entries = append(entries, RoleEntry{Config: cfg, Role: "prs"})
 		}
 

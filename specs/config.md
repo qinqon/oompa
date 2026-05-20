@@ -21,6 +21,7 @@ type Config struct {
     CreateFlakyIssues bool     // when true, create issues for unrelated CI failures (opt-in)
     SkipComments      []string // comment categories to suppress (empty = none suppressed)
     SkipChecks        []string // CI check names to ignore entirely (filtered before investigation)
+    RebaseInterval    time.Duration // minimum time between rebases (default: 4h)
 }
 ```
 
@@ -46,6 +47,32 @@ type Config struct {
 | `OOMPA_CREATE_FLAKY_ISSUES` | `--create-flaky-issues` | `false` | When true, create issues for unrelated CI failures (opt-in) |
 
 Config from env vars (`OOMPA_*`) with flag overrides, read in `main()`.
+
+## YAML File Config: `rebase-interval`
+
+The `rebase-interval` field controls the minimum time between rebases for a PR.
+It is configured via the YAML file config (not via env vars or flags).
+
+**Syntax**: Any positive Go duration string (e.g., `4h`, `24h`, `168h`).
+
+**Levels** (two-tier inheritance):
+- **Project level**: Sets the default for all PR watch groups in the project.
+- **PR role level**: Overrides the project-level default for a specific watch group.
+
+**Default**: `4h` (when not specified at either level).
+
+```yaml
+projects:
+  - repo: RedHatQE/openshift-virtualization-tests
+    rebase-interval: 24h    # project default: at most once per day
+    prs:
+      - watch: [4770]
+        reactions: [ci, conflicts, rebase]
+      - watch: [5000]
+        rebase-interval: 12h  # override: twice per day for this group
+```
+
+**Validation**: Non-positive values (zero or negative) are rejected at config load time.
 
 ## Required External Setup
 
