@@ -48,6 +48,7 @@ func stripSignedOffBy(s string) string {
 
 // ensureWorktreeReady ensures the repo is cloned and the worktree exists for the given work item.
 // If the worktree was lost (e.g. after a restart with a fresh volume), it recreates it.
+// If the worktree is corrupted (e.g. after a kill mid-operation), CreateWorktree auto-recovers.
 func (a *Agent) ensureWorktreeReady(ctx context.Context, work *IssueWork) error {
 	if err := a.worktrees.EnsureRepoCloned(ctx); err != nil {
 		return err

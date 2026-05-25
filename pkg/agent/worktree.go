@@ -73,21 +73,29 @@ func (g *GitWorktreeManager) EnsureRepoCloned(ctx context.Context) error {
 	defer g.mu.Unlock()
 
 	if _, err := os.Stat(filepath.Join(g.cloneDir, ".git")); err == nil {
-		// Verify origin URL matches the configured repo to prevent stale clones
-		urlOut, _, _ := g.runner.Run(ctx, g.cloneDir, "git", "remote", "get-url", "origin")
-		currentURL := strings.TrimSpace(string(urlOut))
-		if currentURL != g.repoURL {
-			// Origin points to a different repo — re-set it
-			g.runner.Run(ctx, g.cloneDir, "git", "remote", "set-url", "origin", g.repoURL) //nolint:errcheck // best-effort
-		}
+		// Verify the base repo is not corrupted
+		_, _, revParseErr := g.runner.Run(ctx, g.cloneDir, "git", "rev-parse", "HEAD")
+		if revParseErr != nil {
+			// Base repo is corrupted — nuke and re-clone
+			os.RemoveAll(g.cloneDir) //nolint:errcheck // best-effort
+			// Fall through to the clone path below
+		} else {
+			// Verify origin URL matches the configured repo to prevent stale clones
+			urlOut, _, _ := g.runner.Run(ctx, g.cloneDir, "git", "remote", "get-url", "origin")
+			currentURL := strings.TrimSpace(string(urlOut))
+			if currentURL != g.repoURL {
+				// Origin points to a different repo — re-set it
+				g.runner.Run(ctx, g.cloneDir, "git", "remote", "set-url", "origin", g.repoURL) //nolint:errcheck // best-effort
+			}
 
-		_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "fetch", "origin")
-		if err != nil {
-			return fmt.Errorf("git fetch origin: %w (stderr: %s)", err, string(stderr))
+			_, stderr, err := g.runner.Run(ctx, g.cloneDir, "git", "fetch", "origin")
+			if err != nil {
+				return fmt.Errorf("git fetch origin: %w (stderr: %s)", err, string(stderr))
+			}
+			g.ensureForkRemote(ctx)
+			g.detectDefaultBranch(ctx)
+			return nil
 		}
-		g.ensureForkRemote(ctx)
-		g.detectDefaultBranch(ctx)
-		return nil
 	}
 
 	_, stderr, err := g.runner.Run(ctx, "", "git", "clone", g.repoURL, g.cloneDir)
@@ -146,8 +154,8 @@ func (g *GitWorktreeManager) CreateWorktree(ctx context.Context, branchName stri
 
 	worktreePath := filepath.Join(g.cloneDir, "worktrees", branchName)
 
-	// Reuse existing worktree if it's still valid
-	if _, err := os.Stat(filepath.Join(worktreePath, ".git")); err == nil {
+	// Reuse existing worktree if it's still healthy
+	if g.isWorktreeHealthy(ctx, worktreePath) {
 		g.configureGitIdentity(ctx, worktreePath)
 		return worktreePath, nil
 	}
@@ -204,3 +212,20 @@ func (g *GitWorktreeManager) RemoveWorktree(ctx context.Context, worktreePath st
 	}
 	return nil
 }
+
+// isWorktreeHealthy checks whether a worktree directory is usable.
+// A healthy worktree has a .git file (not directory) and passes `git status`.
+func (g *GitWorktreeManager) isWorktreeHealthy(ctx context.Context, worktreePath string) bool {
+	// Check .git file exists (worktrees have a .git FILE, not directory)
+	gitPath := filepath.Join(worktreePath, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil || info.IsDir() {
+		return false // missing or is a directory (should be a file for worktrees)
+	}
+
+	// Check git status works
+	_, _, err = g.runner.Run(ctx, worktreePath, "git", "status")
+	return err == nil
+}
+
+
