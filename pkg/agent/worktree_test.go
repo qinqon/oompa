@@ -72,8 +72,12 @@ func TestCreateWorktree_ReusesExisting(t *testing.T) {
 		t.Errorf("expected path %q, got %q", worktreePath, path)
 	}
 
-	if len(runner.calls) != 0 {
-		t.Errorf("expected no git calls when reusing worktree, got %d", len(runner.calls))
+	// Only git status health check should run when reusing a healthy worktree
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 call (git status health check), got %d", len(runner.calls))
+	}
+	if runner.calls[0].Args[0] != "status" {
+		t.Errorf("expected 'git status', got %v", runner.calls[0].Args)
 	}
 }
 
@@ -151,18 +155,21 @@ func TestEnsureRepoCloned_AlreadyCloned(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(runner.calls) != 3 {
-		t.Fatalf("expected 3 calls (get-url, fetch, symbolic-ref), got %d", len(runner.calls))
+	if len(runner.calls) != 4 {
+		t.Fatalf("expected 4 calls (rev-parse, get-url, fetch, symbolic-ref), got %d", len(runner.calls))
 	}
 
-	if runner.calls[0].Args[0] != "remote" || runner.calls[0].Args[1] != "get-url" {
-		t.Errorf("expected 'git remote get-url', got %v", runner.calls[0].Args)
+	if runner.calls[0].Args[0] != "rev-parse" || runner.calls[0].Args[1] != "HEAD" {
+		t.Errorf("expected 'git rev-parse HEAD', got %v", runner.calls[0].Args)
 	}
-	if runner.calls[1].Args[0] != "fetch" {
-		t.Errorf("expected 'git fetch', got %v", runner.calls[1].Args)
+	if runner.calls[1].Args[0] != "remote" || runner.calls[1].Args[1] != "get-url" {
+		t.Errorf("expected 'git remote get-url', got %v", runner.calls[1].Args)
 	}
-	if runner.calls[2].Args[0] != "symbolic-ref" {
-		t.Errorf("expected 'git symbolic-ref', got %v", runner.calls[2].Args)
+	if runner.calls[2].Args[0] != "fetch" {
+		t.Errorf("expected 'git fetch', got %v", runner.calls[2].Args)
+	}
+	if runner.calls[3].Args[0] != "symbolic-ref" {
+		t.Errorf("expected 'git symbolic-ref', got %v", runner.calls[3].Args)
 	}
 }
 
@@ -181,21 +188,24 @@ func TestEnsureRepoCloned_URLMismatch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(runner.calls) != 4 {
-		t.Fatalf("expected 4 calls (get-url, set-url, fetch, symbolic-ref), got %d", len(runner.calls))
+	if len(runner.calls) != 5 {
+		t.Fatalf("expected 5 calls (rev-parse, get-url, set-url, fetch, symbolic-ref), got %d", len(runner.calls))
 	}
 
-	if runner.calls[0].Args[0] != "remote" || runner.calls[0].Args[1] != "get-url" {
-		t.Errorf("expected 'git remote get-url', got %v", runner.calls[0].Args)
+	if runner.calls[0].Args[0] != "rev-parse" || runner.calls[0].Args[1] != "HEAD" {
+		t.Errorf("expected 'git rev-parse HEAD', got %v", runner.calls[0].Args)
 	}
-	if runner.calls[1].Args[0] != "remote" || runner.calls[1].Args[1] != "set-url" {
-		t.Errorf("expected 'git remote set-url', got %v", runner.calls[1].Args)
+	if runner.calls[1].Args[0] != "remote" || runner.calls[1].Args[1] != "get-url" {
+		t.Errorf("expected 'git remote get-url', got %v", runner.calls[1].Args)
 	}
-	if runner.calls[2].Args[0] != "fetch" {
-		t.Errorf("expected 'git fetch', got %v", runner.calls[2].Args)
+	if runner.calls[2].Args[0] != "remote" || runner.calls[2].Args[1] != "set-url" {
+		t.Errorf("expected 'git remote set-url', got %v", runner.calls[2].Args)
 	}
-	if runner.calls[3].Args[0] != "symbolic-ref" {
-		t.Errorf("expected 'git symbolic-ref', got %v", runner.calls[3].Args)
+	if runner.calls[3].Args[0] != "fetch" {
+		t.Errorf("expected 'git fetch', got %v", runner.calls[3].Args)
+	}
+	if runner.calls[4].Args[0] != "symbolic-ref" {
+		t.Errorf("expected 'git symbolic-ref', got %v", runner.calls[4].Args)
 	}
 }
 
@@ -220,4 +230,225 @@ func TestEnsureRepoCloned_Fresh(t *testing.T) {
 	if runner.calls[1].Args[0] != "symbolic-ref" {
 		t.Errorf("expected 'git symbolic-ref', got %v", runner.calls[1].Args)
 	}
+}
+
+func TestEnsureRepoCloned_CorruptedBaseRepo(t *testing.T) {
+	dir := t.TempDir()
+	// Create a .git directory to simulate an existing (but corrupted) clone
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock that fails on rev-parse HEAD (corrupted repo)
+	runner := &worktreeHealthRunner{
+		mockCommandRunner: &mockCommandRunner{},
+		failRevParse:      true,
+	}
+	mgr := NewGitWorktreeManager(runner, dir, "https://github.com/owner/repo.git", "")
+
+	err := mgr.EnsureRepoCloned(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have nuked the corrupted repo and re-cloned.
+	// Calls: rev-parse HEAD (fails) -> clone -> symbolic-ref
+	foundClone := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "clone" {
+			foundClone = true
+		}
+	}
+	if !foundClone {
+		t.Error("expected 'git clone' after corrupted base repo detected")
+	}
+}
+
+func TestIsWorktreeHealthy_EmptyDirectory(t *testing.T) {
+	// Empty directory (no .git file) should be detected as unhealthy
+	worktreePath := t.TempDir()
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+
+	if mgr.isWorktreeHealthy(context.Background(), worktreePath) {
+		t.Error("expected empty directory to be unhealthy")
+	}
+
+	// git status should NOT be called when .git file is missing
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "status" {
+			t.Error("git status should not be called when .git file is missing")
+		}
+	}
+}
+
+func TestIsWorktreeHealthy_GitStatusFails(t *testing.T) {
+	// Worktree with .git file but git status fails → unhealthy
+	worktreePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: ..."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &mockCommandRunner{err: &mockError{msg: "fatal: not a git repository"}}
+	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+
+	if mgr.isWorktreeHealthy(context.Background(), worktreePath) {
+		t.Error("expected worktree with failing git status to be unhealthy")
+	}
+}
+
+func TestIsWorktreeHealthy_Healthy(t *testing.T) {
+	// Worktree with .git file and git status succeeds → healthy
+	worktreePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: ..."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+
+	if !mgr.isWorktreeHealthy(context.Background(), worktreePath) {
+		t.Error("expected healthy worktree to pass validation")
+	}
+}
+
+func TestCreateWorktree_HealthyReusesNoRecreate(t *testing.T) {
+	// Healthy worktree → reused, no cleanup/recreate
+	cloneDir := t.TempDir()
+	worktreePath := filepath.Join(cloneDir, "worktrees", "ai", "issue-42")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: ..."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
+
+	path, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if path != worktreePath {
+		t.Errorf("expected path %q, got %q", worktreePath, path)
+	}
+
+	// Only the git status health check should have run; no prune/recreate
+	foundPrune := false
+	foundWorktreeAdd := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 1 && c.Args[0] == "worktree" && c.Args[1] == "prune" {
+			foundPrune = true
+		}
+		if c.Name == "git" && len(c.Args) > 1 && c.Args[0] == "worktree" && c.Args[1] == "add" {
+			foundWorktreeAdd = true
+		}
+	}
+	if foundPrune {
+		t.Error("should not prune when worktree is healthy")
+	}
+	if foundWorktreeAdd {
+		t.Error("should not recreate worktree when healthy")
+	}
+}
+
+func TestCreateWorktree_EmptyDirectoryRecreates(t *testing.T) {
+	// Empty worktree directory (no .git file) → detected as unhealthy, cleaned up and recreated
+	cloneDir := t.TempDir()
+	worktreePath := filepath.Join(cloneDir, "worktrees", "ai", "issue-42")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
+
+	_, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify cleanup + recreate was called
+	foundPrune := false
+	foundWorktreeAdd := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 1 && c.Args[0] == "worktree" && c.Args[1] == "prune" {
+			foundPrune = true
+		}
+		if c.Name == "git" && len(c.Args) > 1 && c.Args[0] == "worktree" && c.Args[1] == "add" {
+			foundWorktreeAdd = true
+		}
+	}
+	if !foundPrune {
+		t.Error("expected 'git worktree prune' for empty worktree directory")
+	}
+	if !foundWorktreeAdd {
+		t.Error("expected 'git worktree add' to recreate empty worktree directory")
+	}
+}
+
+func TestCreateWorktree_CorruptedGitStatusRecreates(t *testing.T) {
+	// Worktree with .git file but git status fails → detected as unhealthy, cleaned up and recreated
+	cloneDir := t.TempDir()
+	worktreePath := filepath.Join(cloneDir, "worktrees", "ai", "issue-42")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: ..."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Runner that fails on git status (simulating corrupted objects)
+	// but succeeds on subsequent calls (worktree remove, prune, add, etc.)
+	runner := &worktreeHealthRunner{
+		mockCommandRunner: &mockCommandRunner{},
+		failGitStatus:     true,
+	}
+	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
+
+	_, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify cleanup + recreate was called
+	foundPrune := false
+	foundWorktreeAdd := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 1 && c.Args[0] == "worktree" && c.Args[1] == "prune" {
+			foundPrune = true
+		}
+		if c.Name == "git" && len(c.Args) > 1 && c.Args[0] == "worktree" && c.Args[1] == "add" {
+			foundWorktreeAdd = true
+		}
+	}
+	if !foundPrune {
+		t.Error("expected 'git worktree prune' after corrupted worktree detected")
+	}
+	if !foundWorktreeAdd {
+		t.Error("expected 'git worktree add' to recreate corrupted worktree")
+	}
+}
+
+// worktreeHealthRunner selectively fails git commands for health check tests.
+type worktreeHealthRunner struct {
+	*mockCommandRunner
+	failGitStatus bool // fail on "git status"
+	failRevParse  bool // fail on "git rev-parse HEAD"
+}
+
+func (r *worktreeHealthRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
+	r.mockCommandRunner.Run(ctx, workDir, name, args...) //nolint:errcheck // recording call
+
+	if name == "git" && len(args) > 0 {
+		if r.failGitStatus && args[0] == "status" {
+			return nil, []byte("fatal: not a git repository"), &mockError{msg: "exit status 128"}
+		}
+		if r.failRevParse && args[0] == "rev-parse" && len(args) > 1 && args[1] == "HEAD" {
+			return nil, []byte("fatal: unable to read sha1"), &mockError{msg: "exit status 128"}
+		}
+	}
+
+	return nil, nil, nil
 }
