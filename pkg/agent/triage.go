@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -146,6 +147,17 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 	if a.cfg.CreateFlakyIssues {
 		a.logger.Info("creating issue for CI failure", "job", ciSource.JobName(), "runID", run.ID)
 
+		// Extract a short failure signature from the analysis for content-aware dedup
+		failureSig := extractFailureSignature(analysis)
+
+		// Build a content-aware title that includes the failure signature
+		var title string
+		if failureSig != "" {
+			title = fmt.Sprintf("CI Failure: %s / %s", ciSource.JobName(), failureSig)
+		} else {
+			title = fmt.Sprintf("CI Failure: %s", ciSource.JobName())
+		}
+
 		// Search for existing issues about this job to avoid duplicates
 		searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open in:title %q", a.cfg.Owner, a.cfg.Repo, ciSource.JobName())
 		existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
@@ -153,11 +165,13 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 			a.logger.Warn("failed to search for existing issues", "error", err)
 		}
 
-		if len(existingIssues) > 0 {
-			a.logger.Info("found existing issue for this job, skipping issue creation", "job", ciSource.JobName(), "issue", existingIssues[0].Number)
+		matchedIssue := a.matchExistingTriageIssue(ctx, ciSource.JobName(), title, analysis, existingIssues, worktreePath)
+
+		if matchedIssue > 0 {
+			a.logger.Info("found matching issue for this failure, adding run link", "job", ciSource.JobName(), "issue", matchedIssue)
+			a.addTriageRunLinkComment(ctx, ciSource.JobName(), run, matchedIssue)
 		} else {
-			// Create a new issue
-			title := fmt.Sprintf("CI Failure: %s", ciSource.JobName())
+			// Create a new issue with the failure signature in the title
 			body := fmt.Sprintf(`Periodic CI job **%s** failed in run [%s](%s).
 
 ## Analysis
@@ -184,4 +198,133 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 	if err := a.worktrees.RemoveWorktree(ctx, worktreePath); err != nil {
 		a.logger.Warn("failed to remove triage worktree", "path", worktreePath, "error", err)
 	}
+}
+
+// matchExistingTriageIssue searches for an existing open issue that matches the
+// current failure by content, not just job name. Returns the issue number if found, 0 otherwise.
+//
+// Strategy (mirrors matchExistingFlakyIssue in ci.go):
+//  1. Fast path: exact title match skips LLM matching entirely.
+//  2. Slow path: LLM-based root-cause matching when no exact title match exists.
+func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, analysis string, existingIssues []Issue, worktreePath string) int {
+	if len(existingIssues) == 0 {
+		return 0
+	}
+
+	// Fast path: exact title match
+	for _, existing := range existingIssues {
+		if existing.Title == title {
+			a.logger.Info("exact title match for existing triage issue", "issue", existing.Number, "job", jobName)
+			return existing.Number
+		}
+	}
+
+	// Slow path: LLM-based root-cause matching
+	matchPrompt := buildTriageMatchPrompt(jobName, analysis, existingIssues)
+	matchResult, matchErr := a.codeAgent.Run(ctx, a.runner, worktreePath, matchPrompt, a.logger, false)
+	if matchErr != nil {
+		a.logger.Warn("failed to run agent for triage issue matching", "error", matchErr)
+		return 0
+	}
+
+	matchResponse := strings.TrimSpace(matchResult.Result)
+	if matchedNum, ok := parseFlakyMatch(matchResponse); ok {
+		for _, existing := range existingIssues {
+			if existing.Number == matchedNum {
+				a.logger.Info("agent matched existing triage issue", "issue", matchedNum, "job", jobName)
+				return matchedNum
+			}
+		}
+		a.logger.Warn("agent returned MATCH for unknown issue", "matched_issue", matchedNum, "job", jobName)
+	}
+
+	return 0
+}
+
+// addTriageRunLinkComment posts a comment on an existing triage issue with the
+// new run's details, building up evidence of repeated failures.
+func (a *Agent) addTriageRunLinkComment(ctx context.Context, jobName string, run JobRun, issueNum int) {
+	comment := fmt.Sprintf("Same failure observed in periodic job **%s**, run [%s](%s).\n\n%s",
+		jobName, run.ID, run.LogURL, a.botComment())
+
+	if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issueNum, comment); err != nil {
+		a.logger.Error("failed to post run link comment on triage issue", "issue", issueNum, "error", err)
+	}
+}
+
+// extractFailureSignature extracts a short failure identifier from the agent's
+// analysis output. It looks for common structured patterns in the analysis:
+//   - "## Summary" section content
+//   - "## Classification" section content
+//
+// Returns a short (< 60 char) signature for inclusion in the issue title.
+// Returns empty string if no signature can be extracted.
+func extractFailureSignature(analysis string) string {
+	// Try to extract from "## Summary" section
+	sig := extractSection(analysis, "## Summary")
+	if sig != "" {
+		return truncateSignature(sig)
+	}
+
+	// Fall back to first non-empty line
+	for line := range strings.SplitSeq(analysis, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Skip markdown headings and empty lines
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "---") {
+			continue
+		}
+		return truncateSignature(trimmed)
+	}
+
+	return ""
+}
+
+// extractSection extracts the first paragraph of content under a markdown heading.
+func extractSection(text, heading string) string {
+	idx := strings.Index(text, heading)
+	if idx < 0 {
+		return ""
+	}
+	// Skip the heading line itself
+	rest := text[idx+len(heading):]
+	if newline := strings.IndexByte(rest, '\n'); newline >= 0 {
+		rest = rest[newline+1:]
+	} else {
+		return ""
+	}
+
+	// Take text until the next heading or empty line, skipping leading empty lines
+	var lines []string
+	for line := range strings.SplitSeq(rest, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if len(lines) > 0 {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		lines = append(lines, trimmed)
+	}
+
+	return strings.Join(lines, " ")
+}
+
+// truncateSignature returns a signature truncated to at most 60 runes.
+// Uses rune-aware truncation to avoid splitting multi-byte UTF-8 characters.
+func truncateSignature(s string) string {
+	s = strings.TrimSpace(s)
+	runes := []rune(s)
+	if len(runes) > 60 {
+		runes = runes[:60]
+		// Try to break at a word boundary
+		truncated := string(runes)
+		if lastSpace := strings.LastIndexByte(truncated, ' '); lastSpace > 30 {
+			truncated = truncated[:lastSpace]
+		}
+		return truncated
+	}
+	return s
 }

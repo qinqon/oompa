@@ -4896,3 +4896,335 @@ func TestBuildStateFromGitHub_NoHeadCommitDate(t *testing.T) {
 		t.Errorf("expected LastRebaseTime to be zero when no head commit date, got %v", work.LastRebaseTime)
 	}
 }
+
+func TestTriageDedup_DifferentFailuresSameJob_CreatesSeparateIssues(t *testing.T) {
+	// Two different failures from the same job should create two separate issues.
+	// Existing issue is about VLAN test failure; new failure is CRI-O mirror 404.
+	// The LLM says NONE — no match.
+	gh := &mockGitHubClient{
+		searchResults: []Issue{
+			{Number: 1501, Title: "CI Failure: periodic-knmstate-e2e-handler-k8s-latest / VLAN bridge test timeout",
+				Body: "Periodic CI job failed. VLAN configuration test failed with timeout."},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+		TriageJobs:        []string{},
+	}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "NONE"}}, // LLM matching says no match
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+
+	// Simulate calling matchExistingTriageIssue + issue creation path directly
+	title := "CI Failure: periodic-knmstate-e2e-handler-k8s-latest / CRI-O mirror returned HTTP 404"
+	analysis := "## Summary\nCRI-O mirror returned HTTP 404\n\n## Root Cause\nInfrastructure mirror outage"
+
+	matchedIssue := a.matchExistingTriageIssue(context.Background(),
+		"periodic-knmstate-e2e-handler-k8s-latest",
+		title,
+		analysis,
+		gh.searchResults,
+		"/tmp/worktree",
+	)
+
+	// Title doesn't match, LLM says NONE → no match found
+	if matchedIssue != 0 {
+		t.Errorf("expected no match (different failure), got issue #%d", matchedIssue)
+	}
+
+	// The LLM matching agent should have been called (no exact title match)
+	if codeAgent.callCount != 1 {
+		t.Errorf("expected 1 agent call for LLM matching, got %d", codeAgent.callCount)
+	}
+
+	// Verify the prompt contains the analysis and existing issues
+	if len(codeAgent.prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d", len(codeAgent.prompts))
+	}
+	prompt := codeAgent.prompts[0]
+	if !strings.Contains(prompt, "periodic-knmstate-e2e-handler-k8s-latest") {
+		t.Error("expected prompt to contain job name")
+	}
+	if !strings.Contains(prompt, "CRI-O mirror returned HTTP 404") {
+		t.Error("expected prompt to contain analysis")
+	}
+	if !strings.Contains(prompt, "Issue #1501") {
+		t.Error("expected prompt to contain existing issue")
+	}
+
+	// Now verify a new issue would be created with the failure signature in the title
+	issueNum, err := gh.CreateIssue(context.Background(), "owner", "repo", title, "analysis body", []string{"ci-flake"})
+	if err != nil {
+		t.Fatalf("unexpected error creating issue: %v", err)
+	}
+	if issueNum == 0 {
+		t.Error("expected issue to be created")
+	}
+	if gh.createdIssues[0].Title != title {
+		t.Errorf("expected title %q, got %q", title, gh.createdIssues[0].Title)
+	}
+}
+
+func TestTriageDedup_SameFailureSameJob_MatchesExistingIssue(t *testing.T) {
+	// Same failure from the same job should match the existing issue via LLM.
+	gh := &mockGitHubClient{
+		searchResults: []Issue{
+			{Number: 42, Title: "CI Failure: periodic-e2e-test / DNS resolution failure",
+				Body: "Periodic CI job failed. DNS resolution timed out."},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+	}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "MATCH 42"}}, // LLM says it matches
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+
+	// New failure is also a DNS issue, but slightly different title
+	title := "CI Failure: periodic-e2e-test / DNS lookup timed out for registry.k8s.io"
+	analysis := "## Summary\nDNS lookup timed out for registry.k8s.io\n\n## Root Cause\nDNS resolution failure"
+
+	matchedIssue := a.matchExistingTriageIssue(context.Background(),
+		"periodic-e2e-test",
+		title,
+		analysis,
+		gh.searchResults,
+		"/tmp/worktree",
+	)
+
+	// LLM says MATCH 42 → should match
+	if matchedIssue != 42 {
+		t.Errorf("expected match on issue #42, got #%d", matchedIssue)
+	}
+}
+
+func TestTriageDedup_ExactTitleMatch_SkipsLLM(t *testing.T) {
+	// Exact title match should skip LLM invocation entirely.
+	gh := &mockGitHubClient{
+		searchResults: []Issue{
+			{Number: 99, Title: "CI Failure: periodic-e2e-test / CRI-O mirror HTTP 404",
+				Body: "CRI-O mirror outage"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+	}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{}, // No results — should NOT be called
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+
+	title := "CI Failure: periodic-e2e-test / CRI-O mirror HTTP 404"
+	analysis := "## Summary\nCRI-O mirror HTTP 404\n\n## Root Cause\nMirror outage"
+
+	matchedIssue := a.matchExistingTriageIssue(context.Background(),
+		"periodic-e2e-test",
+		title,
+		analysis,
+		gh.searchResults,
+		"/tmp/worktree",
+	)
+
+	// Exact title match — should return issue #99
+	if matchedIssue != 99 {
+		t.Errorf("expected exact title match on issue #99, got #%d", matchedIssue)
+	}
+
+	// LLM should NOT have been called
+	if codeAgent.callCount != 0 {
+		t.Errorf("expected 0 agent calls (exact title match), got %d", codeAgent.callCount)
+	}
+}
+
+func TestTriageDedup_NoExistingIssues_ReturnsZero(t *testing.T) {
+	// No existing issues → should return 0 (will create a new issue).
+	gh := &mockGitHubClient{
+		searchResults: []Issue{},
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+	}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+
+	matchedIssue := a.matchExistingTriageIssue(context.Background(),
+		"periodic-e2e-test",
+		"CI Failure: periodic-e2e-test / some failure",
+		"analysis",
+		[]Issue{},
+		"/tmp/worktree",
+	)
+
+	if matchedIssue != 0 {
+		t.Errorf("expected 0 (no existing issues), got #%d", matchedIssue)
+	}
+	if codeAgent.callCount != 0 {
+		t.Errorf("expected 0 agent calls (no existing issues), got %d", codeAgent.callCount)
+	}
+}
+
+func TestTriageDedup_AddRunLinkComment(t *testing.T) {
+	// When a match IS found, a comment should be added to the existing issue.
+	gh := &mockGitHubClient{}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner: "owner",
+		Repo:  "repo",
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), &ClaudeCodeAgent{})
+
+	run := JobRun{
+		ID:     "12345",
+		LogURL: "https://example.com/logs/12345",
+	}
+
+	a.addTriageRunLinkComment(context.Background(), "periodic-e2e-test", run, 42)
+
+	if len(gh.addedComments) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(gh.addedComments))
+	}
+
+	comment := gh.addedComments[0]
+	if !strings.Contains(comment, "Same failure observed") {
+		t.Errorf("expected comment to mention 'Same failure observed', got: %q", comment)
+	}
+	if !strings.Contains(comment, "periodic-e2e-test") {
+		t.Errorf("expected comment to mention job name, got: %q", comment)
+	}
+	if !strings.Contains(comment, "12345") {
+		t.Errorf("expected comment to mention run ID, got: %q", comment)
+	}
+	if !strings.Contains(comment, "https://example.com/logs/12345") {
+		t.Errorf("expected comment to mention log URL, got: %q", comment)
+	}
+	if gh.addedCommentTargets[0] != 42 {
+		t.Errorf("expected comment posted to issue #42, got #%d", gh.addedCommentTargets[0])
+	}
+}
+
+func TestExtractFailureSignature(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "summary section",
+			input: "## Summary\nCRI-O mirror returned HTTP 404\n\n## Root Cause\nMirror outage",
+			want:  "CRI-O mirror returned HTTP 404",
+		},
+		{
+			name:  "multi-line summary",
+			input: "## Summary\nDNS resolution failed for registry.k8s.io causing cluster bootstrap to hang\n\n## Root Cause\nDNS outage",
+			want:  "DNS resolution failed for registry.k8s.io causing cluster",
+		},
+		{
+			name:  "no summary section falls back to first line",
+			input: "The test timed out waiting for pod readiness",
+			want:  "The test timed out waiting for pod readiness",
+		},
+		{
+			name:  "empty analysis",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "truncates long signature",
+			input: "## Summary\n" + strings.Repeat("x", 200) + "\n\n## Root Cause\nSomething",
+			want:  strings.Repeat("x", 60),
+		},
+		{
+			name:  "blank line after heading",
+			input: "## Summary\n\nCRI-O mirror returned HTTP 404\n\n## Root Cause\nMirror outage",
+			want:  "CRI-O mirror returned HTTP 404",
+		},
+		{
+			name:  "truncates by runes not bytes",
+			input: "## Summary\n" + strings.Repeat("\u00e9", 100) + "\n\n## Root Cause\nSomething",
+			want:  strings.Repeat("\u00e9", 60),
+		},
+		{
+			name:  "skips markdown headings",
+			input: "## Summary\n\n## Root Cause\nThe actual content here",
+			want:  "The actual content here",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractFailureSignature(tt.input)
+			if got != tt.want {
+				t.Errorf("extractFailureSignature() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildTriageMatchPrompt(t *testing.T) {
+	existingIssues := []Issue{
+		{Number: 1501, Title: "CI Failure: periodic-e2e / VLAN test timeout",
+			Body: "VLAN configuration test failed with timeout."},
+	}
+
+	prompt := buildTriageMatchPrompt("periodic-e2e", "CRI-O mirror HTTP 404 error", existingIssues)
+
+	checks := []string{
+		"periodic-e2e",
+		"CRI-O mirror HTTP 404 error",
+		"Issue #1501",
+		"CI Failure: periodic-e2e / VLAN test timeout",
+		"ROOT CAUSE",
+		"not error message",
+		"same underlying problem",
+		"MATCH",
+		"NONE",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
