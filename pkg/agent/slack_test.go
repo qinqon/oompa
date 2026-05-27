@@ -814,3 +814,136 @@ func TestFormatSlackMessage_TruncatesAt50Blocks(t *testing.T) {
 		t.Error("expected last block to be the truncation notice")
 	}
 }
+
+func TestSlackReporter_FlushDedup_WithinBatch(t *testing.T) {
+	var mu sync.Mutex
+	var postCount int
+	var receivedBody string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		postCount++
+		receivedBody = string(body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reporter := NewSlackReporter(ts.URL, logger)
+	reporter.httpClient = ts.Client()
+
+	ctx := context.Background()
+
+	// Simulate multiple poll cycles collecting the same findings before Flush fires.
+	// This is the exact scenario from the bug: unsynchronized timers cause 2-3 poll
+	// cycles to append identical findings to pending before the flush goroutine runs.
+	for range 3 {
+		reporter.Collect([]SlackFinding{
+			{Owner: "org", Repo: "repo", PRNumber: 8365, PRTitle: "Generate KubeVirt nmstate", PRURL: "https://github.com/org/repo/pull/8365", Category: "rebase", Message: "⚠️ PR #8365 is behind main", DedupKey: "rebase:8365"},
+			{Owner: "org", Repo: "repo", PRNumber: 8365, PRTitle: "Generate KubeVirt nmstate", PRURL: "https://github.com/org/repo/pull/8365", Category: "review", Message: "💬 PR #8365 has 1 new review comment(s)", DedupKey: "review:8365:10"},
+		})
+	}
+
+	// A single flush should produce exactly one message with each finding once
+	reporter.Flush(ctx)
+
+	mu.Lock()
+	count := postCount
+	body := receivedBody
+	mu.Unlock()
+
+	if count != 1 {
+		t.Fatalf("expected 1 POST, got %d", count)
+	}
+
+	// Verify the message contains each finding exactly once
+	rebaseCount := strings.Count(body, "behind main")
+	if rebaseCount != 1 {
+		t.Errorf("expected 1 'behind main' in message, got %d", rebaseCount)
+	}
+	reviewCount := strings.Count(body, "new review comment")
+	if reviewCount != 1 {
+		t.Errorf("expected 1 'new review comment' in message, got %d", reviewCount)
+	}
+}
+
+func TestSlackReporter_FlushDedup_DifferentFindingsSamePR(t *testing.T) {
+	var mu sync.Mutex
+	var receivedBody string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		receivedBody = string(b)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reporter := NewSlackReporter(ts.URL, logger)
+	reporter.httpClient = ts.Client()
+
+	ctx := context.Background()
+
+	// Collect different findings for the same PR — all should appear (no over-dedup)
+	reporter.Collect([]SlackFinding{
+		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/100", Category: "ci", Message: "🔴 e2e failed", DedupKey: "ci:abc:e2e"},
+		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/100", Category: "rebase", Message: "⚠️ behind main", DedupKey: "rebase:100"},
+		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/100", Category: "review", Message: "💬 2 new review comments", DedupKey: "review:100:5"},
+	})
+
+	reporter.Flush(ctx)
+
+	mu.Lock()
+	body := receivedBody
+	mu.Unlock()
+
+	if !strings.Contains(body, "e2e failed") {
+		t.Error("expected 'e2e failed' in message")
+	}
+	if !strings.Contains(body, "behind main") {
+		t.Error("expected 'behind main' in message")
+	}
+	if !strings.Contains(body, "new review comments") {
+		t.Error("expected 'new review comments' in message")
+	}
+}
+
+func TestSlackReporter_FlushDedup_EmptyDedupKeyNotDeduped(t *testing.T) {
+	var mu sync.Mutex
+	var receivedBody string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		receivedBody = string(b)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reporter := NewSlackReporter(ts.URL, logger)
+	reporter.httpClient = ts.Client()
+
+	ctx := context.Background()
+
+	// Findings without a DedupKey should always be included, even if identical
+	for range 3 {
+		reporter.Collect([]SlackFinding{
+			{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Test", PRURL: "https://github.com/org/repo/pull/100", Category: "error", Message: "⚠️ transient error", DedupKey: ""},
+		})
+	}
+
+	reporter.Flush(ctx)
+
+	mu.Lock()
+	body := receivedBody
+	mu.Unlock()
+
+	// All 3 should appear (empty DedupKey is never deduplicated)
+	errorCount := strings.Count(body, "transient error")
+	if errorCount != 3 {
+		t.Errorf("expected 3 'transient error' in message (empty DedupKey), got %d", errorCount)
+	}
+}
