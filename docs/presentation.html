@@ -1,0 +1,892 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oompa — How I built an autonomous code maintenance agent (and why I had to turn it down)</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@400;500;700;900&family=Red+Hat+Text:wght@400;500;700&family=Red+Hat+Mono:wght@400;500;700&display=swap');
+
+    :root {
+      --rh-red: #EE0000;
+      --rh-red-dark: #A30000;
+      --rh-dark: #151515;
+      --rh-darker: #0C0C0C;
+      --rh-gray-light: #F2F2F2;
+      --rh-gray: #6A6E73;
+      --rh-blue: #06C;
+      --rh-cyan: #009596;
+      --rh-gold: #F0AB00;
+      --rh-green: #3E8635;
+      --rh-orange: #EC7A08;
+    }
+
+    .reveal {
+      font-family: 'Red Hat Text', 'Segoe UI', system-ui, sans-serif;
+      font-size: 32px;
+      color: var(--rh-gray-light);
+    }
+
+    .reveal .slides {
+      text-align: left;
+    }
+
+    .reveal .slides section {
+      padding: 40px 60px;
+    }
+
+    .reveal h1, .reveal h2, .reveal h3, .reveal h4 {
+      font-family: 'Red Hat Display', 'Segoe UI', system-ui, sans-serif;
+      font-weight: 700;
+      text-transform: none;
+      letter-spacing: -0.02em;
+      color: var(--rh-gray-light);
+    }
+
+    .reveal h1 {
+      font-size: 2.2em;
+      font-weight: 900;
+      line-height: 1.1;
+    }
+
+    .reveal h2 {
+      font-size: 1.6em;
+      margin-bottom: 0.6em;
+    }
+
+    .reveal h3 {
+      font-size: 1.1em;
+      color: var(--rh-gray);
+      font-weight: 500;
+      margin-bottom: 0.4em;
+    }
+
+    .reveal p, .reveal li {
+      line-height: 1.6;
+      font-size: 0.85em;
+    }
+
+    .reveal ul {
+      list-style: none;
+      padding-left: 0;
+    }
+
+    .reveal ul li {
+      padding-left: 1.2em;
+      position: relative;
+      margin-bottom: 0.4em;
+    }
+
+    .reveal ul li::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0.55em;
+      width: 8px;
+      height: 8px;
+      background: var(--rh-red);
+      border-radius: 1px;
+    }
+
+    .reveal code, .reveal pre code {
+      font-family: 'Red Hat Mono', 'Fira Code', 'Consolas', monospace;
+    }
+
+    .reveal pre {
+      width: 100%;
+      margin: 0.8em 0;
+      box-shadow: none;
+    }
+
+    .reveal pre code {
+      font-size: 0.65em;
+      line-height: 1.5;
+      padding: 1em 1.2em;
+      border-radius: 6px;
+      background: var(--rh-darker);
+      border: 1px solid #2a2a2a;
+      max-height: 500px;
+    }
+
+    .reveal code:not(pre code) {
+      background: rgba(238, 0, 0, 0.1);
+      color: #ff6666;
+      padding: 0.1em 0.35em;
+      border-radius: 3px;
+      font-size: 0.9em;
+    }
+
+    /* Section divider slides */
+    .reveal .section-divider {
+      text-align: center;
+    }
+
+    .reveal .section-divider h2 {
+      font-size: 2em;
+      font-weight: 900;
+    }
+
+    .reveal .section-number {
+      display: inline-block;
+      color: var(--rh-red);
+      font-family: 'Red Hat Display', sans-serif;
+      font-weight: 900;
+      font-size: 3em;
+      line-height: 1;
+      margin-bottom: 0.1em;
+      opacity: 0.4;
+    }
+
+    /* Accent text */
+    .reveal .accent { color: var(--rh-red); }
+    .reveal .accent-gold { color: var(--rh-gold); }
+    .reveal .accent-green { color: var(--rh-green); }
+    .reveal .accent-orange { color: var(--rh-orange); }
+    .reveal .accent-cyan { color: var(--rh-cyan); }
+    .reveal .accent-gray { color: var(--rh-gray); }
+    .reveal .accent-blue { color: var(--rh-blue); }
+
+    .reveal .dim { opacity: 0.5; }
+
+    .reveal strong {
+      color: #ffffff;
+      font-weight: 700;
+    }
+
+    .reveal em {
+      color: var(--rh-gray);
+      font-style: normal;
+    }
+
+    /* Quote blocks for "what I'd say" */
+    .reveal blockquote {
+      background: rgba(238, 0, 0, 0.05);
+      border-left: 4px solid var(--rh-red);
+      padding: 0.6em 1em;
+      margin: 0.8em 0;
+      font-style: italic;
+      color: var(--rh-gray-light);
+      width: auto;
+      box-shadow: none;
+    }
+
+    /* Tables */
+    .reveal table {
+      border-collapse: collapse;
+      font-size: 0.7em;
+      width: 100%;
+    }
+
+    .reveal table th {
+      background: rgba(238, 0, 0, 0.15);
+      color: var(--rh-gray-light);
+      font-weight: 700;
+      padding: 0.5em 0.8em;
+      text-align: left;
+      border-bottom: 2px solid var(--rh-red);
+    }
+
+    .reveal table td {
+      padding: 0.4em 0.8em;
+      border-bottom: 1px solid #2a2a2a;
+    }
+
+    /* PR link cards */
+    .pr-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid #2a2a2a;
+      border-left: 4px solid var(--rh-red);
+      border-radius: 6px;
+      padding: 0.6em 1em;
+      margin: 0.5em 0;
+      font-size: 0.75em;
+    }
+
+    .pr-card .pr-repo {
+      color: var(--rh-gray);
+      font-size: 0.85em;
+    }
+
+    .pr-card .pr-title {
+      color: var(--rh-gray-light);
+      font-weight: 700;
+    }
+
+    .pr-card .pr-what {
+      color: var(--rh-gray);
+      font-size: 0.9em;
+      margin-top: 0.3em;
+    }
+
+    /* Red Hat logo bar */
+    .rh-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: var(--rh-red);
+      z-index: 100;
+    }
+
+    /* Flow diagram */
+    .flow-diagram {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.3em;
+      margin: 1em 0;
+      font-size: 0.85em;
+    }
+
+    .flow-box {
+      background: rgba(238, 0, 0, 0.1);
+      border: 1px solid var(--rh-red);
+      border-radius: 6px;
+      padding: 0.5em 1em;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    .flow-arrow {
+      color: var(--rh-gray);
+      font-size: 1.5em;
+    }
+
+    /* Two column layout */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2em;
+      align-items: start;
+    }
+
+    /* War story cards */
+    .war-story {
+      background: rgba(236, 122, 8, 0.05);
+      border: 1px solid rgba(236, 122, 8, 0.3);
+      border-radius: 6px;
+      padding: 0.8em 1em;
+      margin: 0.6em 0;
+      font-size: 0.75em;
+    }
+
+    .war-story .ws-title {
+      color: var(--rh-orange);
+      font-weight: 700;
+      font-size: 1.1em;
+      margin-bottom: 0.3em;
+    }
+
+    /* Slide background */
+    .reveal .slides section {
+      background: var(--rh-dark);
+    }
+
+    /* Title slide special */
+    .title-slide {
+      text-align: center !important;
+    }
+
+    .title-slide h1 {
+      font-size: 2.5em;
+      margin-bottom: 0.1em;
+    }
+
+    .title-slide .subtitle {
+      color: var(--rh-gray);
+      font-size: 0.9em;
+      margin-top: 0;
+      font-family: 'Red Hat Text', sans-serif;
+    }
+
+    .title-slide .author {
+      color: var(--rh-gray);
+      font-size: 0.7em;
+      margin-top: 2em;
+    }
+
+    /* Oompa ASCII art */
+    .oompa-art {
+      font-family: 'Red Hat Mono', monospace;
+      font-size: 0.5em;
+      color: var(--rh-gold);
+      line-height: 1.2;
+      text-align: center;
+      margin: 1em 0;
+    }
+
+    /* Speaker notes styling */
+    .reveal .speaker-controls-notes {
+      font-family: 'Red Hat Text', sans-serif;
+    }
+
+    /* Slide number */
+    .reveal .slide-number {
+      font-family: 'Red Hat Mono', monospace;
+      font-size: 14px;
+      color: var(--rh-gray);
+      background: transparent;
+      right: 20px;
+      bottom: 12px;
+    }
+
+    /* Progress bar */
+    .reveal .progress {
+      height: 3px;
+      color: var(--rh-red);
+    }
+
+    /* Highlight important */
+    .highlight-box {
+      background: rgba(238, 0, 0, 0.08);
+      border: 1px solid rgba(238, 0, 0, 0.3);
+      border-radius: 6px;
+      padding: 0.8em 1em;
+      margin: 0.8em 0;
+    }
+
+    /* Dial visualization */
+    .dial {
+      display: flex;
+      align-items: stretch;
+      margin: 1em 0;
+      border-radius: 6px;
+      overflow: hidden;
+      font-size: 0.65em;
+    }
+
+    .dial-level {
+      flex: 1;
+      padding: 0.6em 0.5em;
+      text-align: center;
+      border-right: 1px solid var(--rh-dark);
+    }
+
+    .dial-level:last-child { border-right: none; }
+
+    .dial-level.active {
+      outline: 2px solid #fff;
+      outline-offset: -2px;
+    }
+
+    .dial-off { background: rgba(110, 110, 110, 0.2); }
+    .dial-low { background: rgba(0, 149, 150, 0.2); }
+    .dial-med { background: rgba(240, 171, 0, 0.2); }
+    .dial-high { background: rgba(238, 0, 0, 0.2); }
+
+    .dial-label {
+      font-weight: 700;
+      display: block;
+      margin-bottom: 0.2em;
+    }
+
+    .dial-project {
+      color: var(--rh-gray);
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+
+<div class="rh-bar"></div>
+
+<div class="reveal">
+  <div class="slides">
+
+    <!-- ============================================ -->
+    <!-- TITLE SLIDE                                   -->
+    <!-- ============================================ -->
+    <section class="title-slide" data-background-color="#151515">
+      <div class="oompa-art">
+<pre>
+    O
+   /|\    /|\ 
+   / \    / \
+  oompa  oompa
+</pre>
+      </div>
+      <h1>Oompa</h1>
+      <p class="subtitle">How I built an autonomous code maintenance agent<br>
+      <span class="accent">&mdash; and why I had to turn it down</span></p>
+      <p class="author">Eduardo Llorent | Red Hat</p>
+
+      <aside class="notes">
+        30 minute talk. Honest, personal, not a sales pitch.
+        This is about my workflow, my mistakes, and what I learned.
+      </aside>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- SECTION 1: THE QUESTION                       -->
+    <!-- ============================================ -->
+    <section>
+      <section class="section-divider">
+        <div class="section-number">01</div>
+        <h2>The question</h2>
+      </section>
+
+      <section>
+        <h2>The pain</h2>
+        <ul>
+          <li>I maintain PRs across <strong>6+ repositories</strong></li>
+          <li>Rebases pile up. CI failures go stale. Reviews rot.</li>
+          <li>By the time I get to a PR, it needs rebasing again</li>
+          <li>Flaky tests block merges for days &mdash; nobody tracks them</li>
+        </ul>
+
+        <aside class="notes">
+          Start with the real problem. Don't oversell it, just state facts.
+          Everyone in the room has felt this.
+        </aside>
+      </section>
+
+      <section>
+        <h2>The inspiration</h2>
+        <ul>
+          <li>I saw projects like <strong>OpenClaw</strong> &mdash; 53k commits, <code>AGENTS.md</code> baked in, AI agents as first-class contributors</li>
+          <li>I wanted to explore a question:</li>
+        </ul>
+
+        <div class="highlight-box" style="text-align: center; margin-top: 1em;">
+          <strong style="font-size: 1.1em;">Can a software project maintain itself?<br>
+          How far can we push that today with LLMs?</strong>
+        </div>
+
+        <p style="margin-top: 1em; font-size: 0.8em;" class="accent-gray">That curiosity, plus the real maintenance pain, led me to build <strong>oompa</strong>.</p>
+
+        <aside class="notes">
+          OpenClaw by Peter Steinberger. 375k stars. AI-maintained.
+          I was inspired by the idea, not trying to replicate it.
+          I wanted to see what "autonomous maintenance" looks like in practice.
+        </aside>
+      </section>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- SECTION 2: HOW IT WORKS                       -->
+    <!-- ============================================ -->
+    <section>
+      <section class="section-divider">
+        <div class="section-number">02</div>
+        <h2>How it works</h2>
+      </section>
+
+      <section>
+        <h2>The loop</h2>
+
+        <div class="flow-diagram">
+          <div class="flow-box">Poll<br><em style="font-size:0.7em">GitHub API</em></div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-box">Analyze<br><em style="font-size:0.7em">CI logs, reviews</em></div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-box">Act<br><em style="font-size:0.7em">fix, rebase, reply</em></div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-box">Report<br><em style="font-size:0.7em">Slack, comments</em></div>
+        </div>
+
+        <ul style="margin-top: 1em;">
+          <li><strong>Single Go binary</strong>, YAML config, one goroutine per role</li>
+          <li>Runs as a <strong>systemd user service</strong> on a VM</li>
+          <li><strong>Auto-deploys</strong> on push to main &mdash; CI builds a release, oompa detects the new version, restarts itself</li>
+        </ul>
+
+        <aside class="notes">
+          Keep this brief. One slide, move on.
+          The architecture isn't the interesting part -- what it does and what went wrong is.
+        </aside>
+      </section>
+
+      <section>
+        <h2>The config <em>&mdash; the dial</em></h2>
+        <pre><code class="language-yaml" data-trim>
+projects:
+  - owner: ovn-org
+    repo: ovn-kubernetes
+    roles: [prs]
+    reactions: []              # report-only -- just watch
+    
+  - owner: nmstate
+    repo: kubernetes-nmstate
+    roles: [prs, issues, triage]
+    reactions: [ci, rebase, review]
+    
+  - owner: qinqon
+    repo: oompa
+    roles: [prs, issues]
+    reactions: [ci, rebase, review]
+    skip-checks: [can-be-merged]
+        </code></pre>
+
+        <p style="font-size: 0.75em;" class="accent-gray">
+          Each project gets its own level of automation.<br>
+          <code>reactions: []</code> means oompa watches but does nothing.<br>
+          This dial exists because I learned I needed it.
+        </p>
+
+        <aside class="notes">
+          Show the real config. Point out reactions: [] vs full reactions.
+          "This dial exists because I learned I needed it" -- foreshadow section 4.
+        </aside>
+      </section>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- SECTION 3: WHAT I ACTUALLY DO WITH IT         -->
+    <!-- ============================================ -->
+    <section>
+      <section class="section-divider">
+        <div class="section-number">03</div>
+        <h2>What I do with it</h2>
+        <h3>Live examples from real repos</h3>
+      </section>
+
+      <!-- OVN-KUBERNETES -->
+      <section>
+        <h2>ovn-kubernetes <em>&mdash; the one where I went too far</em></h2>
+
+        <div class="pr-card">
+          <div class="pr-repo">ovn-org/ovn-kubernetes</div>
+          <div class="pr-title">#6229 &mdash; kubevirt live migration cleanup</div>
+          <div class="pr-what">Someone else's PR. Oompa started commenting without anyone asking.</div>
+        </div>
+
+        <ul>
+          <li><strong>~15 CI analysis comments</strong> &mdash; each analyzing a different failure</li>
+          <li><strong>5 flaky issues created</strong> (#6297, #6312, #6321, #6337, #6338)</li>
+          <li>Duplicate detection &mdash; <em>"This appears to be a duplicate of #6141"</em></li>
+          <li>Deep root cause analysis &mdash; FRR SIGSEGV, KIND CDN corruption, Koji 404, closure bugs</li>
+        </ul>
+
+        <p style="font-size: 0.75em;" class="accent-orange">
+          <strong>All of this on someone else's PR, on a project where nobody asked for it.</strong>
+        </p>
+
+        <aside class="notes">
+          OPEN: https://github.com/ovn-org/ovn-kubernetes/pull/6229
+          Scroll through the comments. Show the depth of analysis.
+          Then: "Nobody asked for this. This is where I crossed the line."
+        </aside>
+      </section>
+
+      <!-- HYPERSHIFT -->
+      <section>
+        <h2>hypershift <em>&mdash; where the cost incident started</em></h2>
+
+        <div class="pr-card">
+          <div class="pr-repo">openshift/hypershift</div>
+          <div class="pr-title">#8365 &mdash; Generate KubeVirt nmstate network config conditionally</div>
+          <div class="pr-what">My PR. Oompa went full autonomous.</div>
+        </div>
+
+        <ul>
+          <li>CI fix pushed &mdash; <em>Lint failure, pushed a fix</em></li>
+          <li>Infrastructure failure detection &mdash; <em>RPM mirror HTTP 404</em></li>
+          <li>Flaky issue creation &mdash; <em>#8376 for codecov/project</em></li>
+          <li>Review response &mdash; <em>"Done. Added nil guards to all three exported helpers"</em></li>
+          <li>Retests &mdash; <code>/test e2e-kubevirt-aws-ovn</code></li>
+        </ul>
+
+        <p style="font-size: 0.75em;" class="accent-orange">
+          <strong>This is also where the review retry loop burned ~$2-4k in 5 days.</strong>
+        </p>
+
+        <aside class="notes">
+          OPEN: https://github.com/openshift/hypershift/pull/8365
+          Show the review comment reply. Show the CI analysis.
+          Then transition: "And this is also where oompa got stuck in a loop
+          trying to address the same review over and over."
+        </aside>
+      </section>
+
+      <!-- KUBERNETES-NMSTATE -->
+      <section>
+        <h2>kubernetes-nmstate <em>&mdash; the right way</em></h2>
+
+        <div class="pr-card">
+          <div class="pr-repo">nmstate/kubernetes-nmstate</div>
+          <div class="pr-title">#1467 &mdash; eliminate API server dependency at startup for TLS config</div>
+          <div class="pr-what">My own PR, my own project. This is the legitimate use case.</div>
+        </div>
+
+        <ul>
+          <li><strong>Human reviewer</strong> (mkowalski) + bot reviewer feedback addressed</li>
+          <li><em>"Good point. Fixed in 27617adc9"</em></li>
+          <li><em>"Makes sense. Extracted to a <code>tlsProfileConfigPath</code> constant"</em></li>
+          <li><strong>5 CI checks fixed</strong> at once &mdash; docs, unit tests, e2e, upgrade, operator</li>
+          <li>Rebase with conflict resolution</li>
+          <li>Structured CI analysis with root cause and recommendation</li>
+          <li><strong>Merged</strong></li>
+        </ul>
+
+        <p style="font-size: 0.75em;" class="accent-green">
+          Oompa keeps my PRs alive so I can focus on the next thing.
+        </p>
+
+        <aside class="notes">
+          OPEN: https://github.com/nmstate/kubernetes-nmstate/pull/1467
+          Show the review thread -- oompa addressing mkowalski's feedback.
+          Show the CI comments. This is oompa working FOR me, not on behalf of me.
+          "This is the right use case. My PR, my project."
+        </aside>
+      </section>
+
+      <!-- OOMPA SELF-FIX -->
+      <section>
+        <h2>oompa <em>&mdash; it maintains itself</em></h2>
+
+        <div class="pr-card">
+          <div class="pr-repo">qinqon/oompa</div>
+          <div class="pr-title">#193 &mdash; fix: triage dedup matches on job name only</div>
+          <div class="pr-what">The full self-maintenance loop.</div>
+        </div>
+
+        <ul>
+          <li>I create an issue with <code>good-for-ai</code> label</li>
+          <li>Oompa picks it up, creates a PR</li>
+          <li><strong>gemini-code-assist</strong> and <strong>coderabbitai</strong> leave review comments</li>
+          <li>Oompa responds inline:</li>
+        </ul>
+
+        <div style="font-size: 0.75em; margin-left: 1.2em;">
+          <p><span class="accent-green">"Fixed."</span> &mdash; accepts feedback, pushes rune-aware truncation fix</p>
+          <p><span class="accent-orange">"Declining this one."</span> &mdash; <em>"The exact same <code>body[:500]</code> pattern exists in the pre-existing code..."</em></p>
+          <p><span class="accent-cyan">Reviewer acknowledges:</span> <em>"@qinqon, thanks for the thorough update"</em></p>
+        </div>
+
+        <aside class="notes">
+          OPEN: https://github.com/qinqon/oompa/pull/193
+          Show the review thread. Point out the "Declining" reply -- it reasons about WHY.
+          "I create the issue. Oompa does the rest. Picks it up, writes the fix,
+          addresses reviewers, merges. Then auto-deploys. I don't touch it."
+        </aside>
+      </section>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- SECTION 4: WHAT WENT WRONG                    -->
+    <!-- ============================================ -->
+    <section>
+      <section class="section-divider">
+        <div class="section-number">04</div>
+        <h2>What went wrong</h2>
+      </section>
+
+      <!-- SOCIAL -->
+      <section>
+        <h2>The social mistake</h2>
+
+        <ul>
+          <li><strong>I got excited.</strong> AI can do this! Let me turn everything on everywhere.</li>
+          <li class="fragment"><strong>I didn't ask.</strong> Deploying an agent on a project is a <strong>policy decision</strong>. It affects everyone who contributes. I treated it as a technical problem.</li>
+          <li class="fragment"><strong>It eroded trust.</strong> When people see bot comments they didn't expect, bot reviews they didn't ask for &mdash; it doesn't matter how good the analysis is.</li>
+          <li class="fragment"><strong>I entered AI psychosis.</strong> The excitement is real, the hype is contagious, but the damage to your reputation and community standing is also real.</li>
+        </ul>
+
+        <aside class="notes">
+          This is the most important slide. Pause between fragments.
+          Be honest. Don't soften it. The audience will respect it.
+        </aside>
+      </section>
+
+      <section>
+        <h2>Doing it wrong erodes trust <em>&mdash; with reason</em></h2>
+
+        <div class="highlight-box" style="text-align: center;">
+          <p style="font-size: 1.1em; margin: 0;">
+            Agent integration is a <strong>project policy</strong>, not a technical decision.<br>
+            <span class="accent-gray">It's not your call to make alone.</span>
+          </p>
+        </div>
+
+        <ul style="margin-top: 1em;">
+          <li>You wouldn't add a new CI check to someone's repo without asking</li>
+          <li>You wouldn't merge changes to their test suite without asking</li>
+          <li>An AI agent commenting on their PRs is the same thing</li>
+          <li>The community's confidence in you is not infinite</li>
+        </ul>
+
+        <aside class="notes">
+          Draw the parallel to CI checks and test changes.
+          "Would you add a new Prow job to someone's repo without asking? No? 
+          Then why would you deploy a bot that comments on their PRs?"
+        </aside>
+      </section>
+
+      <!-- TECHNICAL -->
+      <section>
+        <h2>The technical mistakes</h2>
+
+        <div class="two-col">
+          <div class="war-story">
+            <div class="ws-title">$2-4k review retry loop</div>
+            <p>Oompa got stuck trying to address the same review comment over and over on hypershift. 5 days. No cost guard.</p>
+            <p><strong>Fix:</strong> retry counter, no-op detection, cost guard per PR.</p>
+          </div>
+
+          <div class="war-story">
+            <div class="ws-title">Wrong issue dedup</div>
+            <p>CRI-O mirror 404 matched a VLAN test failure issue &mdash; because dedup only checked the job name, not the failure content.</p>
+            <p><strong>Fix:</strong> content-aware matching with failure signatures. <em>(PR #193 &mdash; the self-fix you just saw)</em></p>
+          </div>
+        </div>
+
+        <p style="font-size: 0.75em; margin-top: 0.5em;" class="accent-gray">
+          Every failure taught me something. Every guardrail was added after something broke.
+        </p>
+
+        <aside class="notes">
+          Keep this quick -- 2 minutes max. The social mistake was the bigger lesson.
+          "And on top of the social mistake, the code had bugs too."
+          Point out that PR #193 (the self-fix) is oompa fixing its own dedup bug.
+        </aside>
+      </section>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- SECTION 5: WHERE I AM NOW                     -->
+    <!-- ============================================ -->
+    <section>
+      <section class="section-divider">
+        <div class="section-number">05</div>
+        <h2>Where I am now</h2>
+      </section>
+
+      <section>
+        <h2>The dial</h2>
+
+        <div class="dial">
+          <div class="dial-level dial-off active">
+            <span class="dial-label">Report only</span>
+            <span class="dial-project">ovn-kubernetes</span>
+          </div>
+          <div class="dial-level dial-low active">
+            <span class="dial-label">Triage + Rebase</span>
+            <span class="dial-project">kubernetes-nmstate</span>
+          </div>
+          <div class="dial-level dial-med active">
+            <span class="dial-label">CI + Reviews</span>
+            <span class="dial-project">virt-tests</span>
+          </div>
+          <div class="dial-level dial-high active">
+            <span class="dial-label">Self-maintaining</span>
+            <span class="dial-project">oompa</span>
+          </div>
+        </div>
+
+        <ul style="margin-top: 0.8em;">
+          <li><strong>Report-only</strong> where I don't have permission or trust yet</li>
+          <li><strong>Full automation</strong> only on my own project</li>
+          <li>The goal isn't "more automation everywhere"</li>
+          <li>It's <strong>the right amount, with consent</strong></li>
+        </ul>
+
+        <aside class="notes">
+          Point at the dial. "ovn-k is report-only because I moved it there AFTER 
+          I realized nobody asked for it. hypershift reviews are disabled because 
+          of the cost incident. The only project with full autonomy is oompa itself."
+        </aside>
+      </section>
+
+      <section>
+        <h2>Being pragmatic</h2>
+
+        <ul>
+          <li>Slack reports give me visibility without touching anyone's PRs</li>
+          <li class="fragment">I ask before enabling actions on a project</li>
+          <li class="fragment">The tool has a dial <strong>because I learned I needed one</strong></li>
+          <li class="fragment">Don't enter AI psychosis. Be pragmatic.</li>
+        </ul>
+
+        <div class="highlight-box fragment" style="text-align: center; margin-top: 1em;">
+          <p style="font-size: 1em; margin: 0;">
+            The interesting question isn't <em>"how much can we automate?"</em><br>
+            It's <strong>"how much should we, and who decides?"</strong>
+          </p>
+        </div>
+
+        <aside class="notes">
+          SHOW SLACK: Open your Slack channel and show a real oompa report.
+          "This is what report-only looks like. I get visibility. Nobody's PR gets touched."
+          End with the quote. Let it land.
+        </aside>
+      </section>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- SECTION 6: LIVE DEMO                          -->
+    <!-- ============================================ -->
+    <section>
+      <section class="section-divider">
+        <div class="section-number">06</div>
+        <h2>Live demo</h2>
+        <h3>The factory floor</h3>
+      </section>
+
+      <section>
+        <h2>What you're about to see</h2>
+
+        <ul>
+          <li>The <strong>TUI</strong> &mdash; real-time view of every oompa working</li>
+          <li>Each project gets a <strong>super box</strong> with its oompas inside</li>
+          <li>Animated sprites &mdash; ladder-climbing (rebasing), hammer-swinging (working), sleeping (Zzz), magnifying glass (reviewing)</li>
+          <li><strong>Slack notifications</strong> from the live service</li>
+          <li><code>oompa status --events</code> &mdash; filtered event stream</li>
+        </ul>
+
+        <p style="font-size: 0.85em; margin-top: 1em; text-align: center;" class="accent-gray">
+          The oompas on screen are the ones I have permission to run.
+        </p>
+
+        <aside class="notes">
+          SSH into the machine. Run the TUI.
+          Walk through each project box. Point out which oompas are sleeping vs working.
+          Open Slack, show a real report.
+          Run: oompa status --events --project=nmstate
+          Take questions while pointing at the screen.
+        </aside>
+      </section>
+    </section>
+
+    <!-- ============================================ -->
+    <!-- CLOSING                                       -->
+    <!-- ============================================ -->
+    <section class="title-slide" data-background-color="#151515">
+      <h2 style="font-size: 1.8em;">Thanks</h2>
+
+      <div style="font-size: 0.75em; margin-top: 1.5em; color: var(--rh-gray);">
+        <p><strong style="color: var(--rh-gray-light);">oompa</strong> &mdash; github.com/qinqon/oompa</p>
+        <p><strong style="color: var(--rh-gray-light);">OpenClaw</strong> (inspiration) &mdash; github.com/openclaw/openclaw</p>
+      </div>
+
+      <div style="margin-top: 2em; font-size: 0.65em; color: var(--rh-gray);">
+        Eduardo Llorent | Red Hat
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    slideNumber: true,
+    progress: true,
+    controls: false,
+    center: false,
+    transition: 'none',
+    width: 1280,
+    height: 720,
+    margin: 0,
+    plugins: [RevealHighlight, RevealNotes]
+  });
+</script>
+
+</body>
+</html>
