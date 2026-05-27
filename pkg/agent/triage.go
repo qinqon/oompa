@@ -281,12 +281,12 @@ func extractFailureSignature(analysis string) string {
 
 // extractSection extracts the first paragraph of content under a markdown heading.
 func extractSection(text, heading string) string {
-	idx := strings.Index(text, heading)
-	if idx < 0 {
+	_, after, ok := strings.Cut(text, heading)
+	if !ok {
 		return ""
 	}
 	// Skip the heading line itself
-	rest := text[idx+len(heading):]
+	rest := after
 	if newline := strings.IndexByte(rest, '\n'); newline >= 0 {
 		rest = rest[newline+1:]
 	} else {

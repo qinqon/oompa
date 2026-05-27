@@ -114,6 +114,21 @@ func (r *SlackReporter) Flush(ctx context.Context) {
 		return
 	}
 
+	// Deduplicate within the pending batch (multiple poll cycles may have
+	// collected the same finding before this Flush ran).
+	seen := make(map[string]bool)
+	deduped := make([]SlackFinding, 0, len(findings))
+	for _, f := range findings {
+		if f.DedupKey != "" {
+			if seen[f.DedupKey] {
+				continue
+			}
+			seen[f.DedupKey] = true
+		}
+		deduped = append(deduped, f)
+	}
+	findings = deduped
+
 	// Prune dedup map if it has grown too large to prevent unbounded memory growth.
 	if len(r.reported) > maxDedupEntries {
 		r.logger.Info("pruning Slack dedup map", "entries", len(r.reported))
