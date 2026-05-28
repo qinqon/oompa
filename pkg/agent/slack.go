@@ -52,6 +52,7 @@ type SlackFinding struct {
 // Zero external dependencies — uses only Go stdlib net/http + encoding/json.
 type SlackReporter struct {
 	webhookURL string
+	version    string          // build version (short commit SHA) included in report header
 	reported   map[string]bool // tracks DedupKeys already reported
 	logger     *slog.Logger
 	httpClient *http.Client // injectable for testing
@@ -62,13 +63,15 @@ type SlackReporter struct {
 }
 
 // NewSlackReporter creates a new reporter. If webhookURL is empty, IsEnabled() returns false.
-// A nil logger defaults to slog.Default().
-func NewSlackReporter(webhookURL string, logger *slog.Logger) *SlackReporter {
+// A nil logger defaults to slog.Default(). The version string (typically a short commit SHA)
+// is included in the Slack report header to identify which build generated the report.
+func NewSlackReporter(webhookURL, version string, logger *slog.Logger) *SlackReporter {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &SlackReporter{
 		webhookURL: webhookURL,
+		version:    version,
 		reported:   make(map[string]bool),
 		logger:     logger,
 		httpClient: &http.Client{Timeout: slackRequestTimeout},
@@ -147,7 +150,7 @@ func (r *SlackReporter) Flush(ctx context.Context) {
 		return
 	}
 
-	body := formatSlackMessage(newFindings)
+	body := formatSlackMessage(newFindings, r.version)
 	if body == nil {
 		return
 	}
@@ -201,11 +204,12 @@ func projectKey(owner, repo string) string {
 }
 
 // formatSlackMessage builds a Slack Block Kit JSON payload grouped by project and then by PR.
-// Returns nil if there are no findings.
+// Returns nil if there are no findings. The version string (short commit SHA) is included
+// in the header when non-empty.
 //
 // Format:
 //
-//	🏭 oompa report — N projects with activity
+//	🏭 oompa report (38767d1) — N project(s) with activity
 //
 //	*<repo-link|owner/repo>* (M PRs)
 //	📋 <pr-link|PR #N> — title
@@ -213,7 +217,7 @@ func projectKey(owner, repo string) string {
 //	  ⚠️ behind main
 //
 // Each project gets a header section + detail section + divider.
-func formatSlackMessage(findings []SlackFinding) []byte {
+func formatSlackMessage(findings []SlackFinding, version string) []byte {
 	if len(findings) == 0 {
 		return nil
 	}
@@ -275,7 +279,12 @@ func formatSlackMessage(findings []SlackFinding) []byte {
 	var blocks []slackBlock
 
 	// Header block
-	headerText := fmt.Sprintf("🏭 oompa report — %d project(s) with activity", len(projects))
+	var headerText string
+	if version != "" {
+		headerText = fmt.Sprintf("🏭 oompa report (%s) — %d project(s) with activity", shortSHA(version), len(projects))
+	} else {
+		headerText = fmt.Sprintf("🏭 oompa report — %d project(s) with activity", len(projects))
+	}
 	blocks = append(blocks, slackBlock{
 		Type: "header",
 		Text: &slackText{

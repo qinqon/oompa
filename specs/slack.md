@@ -36,6 +36,7 @@ type SlackFinding struct {
 
 type SlackReporter struct {
     webhookURL string
+    version    string          // build version (short commit SHA) included in report header
     reported   map[string]bool // tracks DedupKeys already reported
     logger     *slog.Logger
     httpClient *http.Client    // injectable for testing
@@ -47,12 +48,12 @@ type SlackReporter struct {
 
 ## SlackReporter Methods
 
-- `NewSlackReporter(webhookURL string, logger *slog.Logger) *SlackReporter`
+- `NewSlackReporter(webhookURL string, version string, logger *slog.Logger) *SlackReporter`
 - `(r *SlackReporter) IsEnabled() bool` — returns true if webhookURL is non-empty
 - `(r *SlackReporter) Collect(findings []SlackFinding)` — thread-safe append to pending buffer
 - `(r *SlackReporter) Flush(ctx context.Context)` — dedup, format, POST, clear pending
 - `(r *SlackReporter) Report(ctx context.Context, findings []SlackFinding)` — convenience: Collect + Flush in one call (single-repo mode)
-- `formatSlackMessage(findings []SlackFinding) []byte` — builds Slack Block Kit JSON grouped by project then PR
+- `formatSlackMessage(findings []SlackFinding, version string) []byte` — builds Slack Block Kit JSON grouped by project then PR; includes short SHA in header when version is non-empty
 - `postToSlack(ctx context.Context, client *http.Client, webhookURL string, body []byte) error` — HTTP POST
 
 ## Collection Architecture
@@ -111,7 +112,7 @@ Each `runLoop` call collects findings and flushes immediately at the end of the 
 Slack Block Kit with header + per-project sections. One consolidated message per cycle, grouped by project then by PR:
 
 ```text
-🏭 oompa report — 3 project(s) with activity
+🏭 oompa report (38767d1) — 3 project(s) with activity
 
 *<repo-link|owner1/repo1>* (2 PRs)
 📋 <pr-link|PR #100> — Fix kubevirt test flake
@@ -129,7 +130,7 @@ Slack Block Kit with header + per-project sections. One consolidated message per
 
 ### Block structure
 
-1. `header` block — "🏭 oompa report — N project(s) with activity"
+1. `header` block — "🏭 oompa report (SHORT_SHA) — N project(s) with activity" (version omitted when empty)
 2. Per project:
    - `section` block (mrkdwn) — project name with link and PR count
    - `section` block (mrkdwn) — PR details with findings (split if >3000 chars)
