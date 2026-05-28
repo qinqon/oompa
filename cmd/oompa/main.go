@@ -500,7 +500,7 @@ func buildAgentForConfig(cfg agent.Config, ghClient *agent.GoGitHubClient, token
 		a.SetSlackReporter(sharedSlack[0])
 		logger.Info("Slack reporting enabled (shared reporter)")
 	} else if cfg.SlackWebhookURL != "" {
-		slack := agent.NewSlackReporter(cfg.SlackWebhookURL, logger)
+		slack := agent.NewSlackReporter(cfg.SlackWebhookURL, cfg.Version, logger)
 		a.SetSlackReporter(slack)
 		logger.Info("Slack reporting enabled")
 	}
@@ -682,7 +682,7 @@ func runMultiProject(globalCfg agent.Config, configPath string, ghClient *agent.
 	// goroutine flushes them periodically as a single consolidated message.
 	var sharedSlack *agent.SlackReporter
 	if globalCfg.SlackWebhookURL != "" {
-		sharedSlack = agent.NewSlackReporter(globalCfg.SlackWebhookURL, logger)
+		sharedSlack = agent.NewSlackReporter(globalCfg.SlackWebhookURL, globalCfg.Version, logger)
 		logger.Info("Slack consolidated reporting enabled")
 	}
 

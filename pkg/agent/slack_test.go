@@ -20,7 +20,7 @@ func TestFormatSlackMessage_GroupsByPR(t *testing.T) {
 		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Fix flaky test", PRURL: "https://github.com/org/repo/pull/100", Category: "rebase", Message: "⚠️ 15 commits behind main"},
 	}
 
-	body := formatSlackMessage(findings)
+	body := formatSlackMessage(findings, "")
 	if body == nil {
 		t.Fatal("expected non-nil body")
 	}
@@ -79,13 +79,65 @@ func TestFormatSlackMessage_GroupsByPR(t *testing.T) {
 	}
 }
 
+func TestFormatSlackMessage_IncludesVersion(t *testing.T) {
+	findings := []SlackFinding{
+		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/100", Category: "ci", Message: "🔴 failed"},
+	}
+
+	body := formatSlackMessage(findings, "38767d1abc123")
+	if body == nil {
+		t.Fatal("expected non-nil body")
+	}
+
+	var msg slackMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	// Header should include the short SHA (7 chars)
+	headerText := msg.Blocks[0].Text.Text
+	if !strings.Contains(headerText, "(38767d1)") {
+		t.Errorf("expected header to contain short SHA (38767d1), got: %s", headerText)
+	}
+
+	// Also verify the full format
+	if !strings.Contains(headerText, "oompa report (38767d1)") {
+		t.Errorf("expected header format 'oompa report (38767d1)', got: %s", headerText)
+	}
+}
+
+func TestFormatSlackMessage_EmptyVersionOmitted(t *testing.T) {
+	findings := []SlackFinding{
+		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/100", Category: "ci", Message: "🔴 failed"},
+	}
+
+	body := formatSlackMessage(findings, "")
+	if body == nil {
+		t.Fatal("expected non-nil body")
+	}
+
+	var msg slackMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	// Header should NOT contain parentheses when version is empty
+	headerText := msg.Blocks[0].Text.Text
+	if strings.Contains(headerText, "()") {
+		t.Errorf("expected no empty parens in header, got: %s", headerText)
+	}
+	if !strings.Contains(headerText, "oompa report —") {
+		t.Errorf("expected plain header without version, got: %s", headerText)
+	}
+}
+
 func TestFormatSlackMessage_EmptyFindings(t *testing.T) {
-	body := formatSlackMessage(nil)
+	body := formatSlackMessage(nil, "")
 	if body != nil {
 		t.Error("expected nil body for empty findings")
 	}
 
-	body = formatSlackMessage([]SlackFinding{})
+	body = formatSlackMessage([]SlackFinding{}, "")
 	if body != nil {
 		t.Error("expected nil body for empty slice")
 	}
@@ -98,7 +150,7 @@ func TestFormatSlackMessage_MultipleProjects(t *testing.T) {
 		{Owner: "org1", Repo: "repo1", PRNumber: 101, PRTitle: "Fix lint", PRURL: "https://github.com/org1/repo1/pull/101", Category: "rebase", Message: "⚠️ behind main"},
 	}
 
-	body := formatSlackMessage(findings)
+	body := formatSlackMessage(findings, "")
 	if body == nil {
 		t.Fatal("expected non-nil body")
 	}
@@ -147,7 +199,7 @@ func TestFormatSlackMessage_SingleProjectNoFindings(t *testing.T) {
 		{Owner: "org", Repo: "active", PRNumber: 1, PRTitle: "Work", PRURL: "https://github.com/org/active/pull/1", Category: "ci", Message: "🔴 failed"},
 	}
 
-	body := formatSlackMessage(findings)
+	body := formatSlackMessage(findings, "")
 	if body == nil {
 		t.Fatal("expected non-nil body")
 	}
@@ -167,7 +219,7 @@ func TestFormatSlackMessage_LinksCorrect(t *testing.T) {
 		{Owner: "org", Repo: "repo", PRNumber: 42, PRTitle: "Test PR", PRURL: "https://github.com/org/repo/pull/42", Category: "ci", Message: "🔴 <https://ci.example.com/job/1|e2e-test> failed"},
 	}
 
-	body := formatSlackMessage(findings)
+	body := formatSlackMessage(findings, "")
 	if body == nil {
 		t.Fatal("expected non-nil body")
 	}
@@ -196,7 +248,7 @@ func TestFormatSlackMessage_HasDividersBetweenProjects(t *testing.T) {
 		{Owner: "org2", Repo: "repo2", PRNumber: 2, PRTitle: "PR2", PRURL: "https://github.com/org2/repo2/pull/2", Category: "ci", Message: "🔴 failed"},
 	}
 
-	body := formatSlackMessage(findings)
+	body := formatSlackMessage(findings, "")
 	if body == nil {
 		t.Fatal("expected non-nil body")
 	}
@@ -232,7 +284,7 @@ func TestSlackReporter_Dedup(t *testing.T) {
 	defer ts.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, logger)
+	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
 	findings := []SlackFinding{
@@ -263,7 +315,7 @@ func TestSlackReporter_DedupReset(t *testing.T) {
 	defer ts.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, logger)
+	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
 	ctx := context.Background()
@@ -287,7 +339,7 @@ func TestSlackReporter_DedupReset(t *testing.T) {
 
 func TestSlackReporter_Disabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter("", logger)
+	reporter := NewSlackReporter("", "", logger)
 
 	if reporter.IsEnabled() {
 		t.Error("expected IsEnabled() to be false with empty webhook URL")
@@ -557,7 +609,7 @@ func TestSlackReporter_EmptyDedupKey(t *testing.T) {
 	defer ts.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, logger)
+	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
 	ctx := context.Background()
@@ -599,7 +651,7 @@ func TestSlackReporter_CollectAndFlush(t *testing.T) {
 	defer ts.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, logger)
+	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
 	ctx := context.Background()
@@ -646,7 +698,7 @@ func TestSlackReporter_CollectConcurrent(t *testing.T) {
 	defer ts.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, logger)
+	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
 	// Simulate concurrent collection from multiple goroutines
@@ -684,7 +736,7 @@ func TestSlackReporter_FlushDedup(t *testing.T) {
 	defer ts.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, logger)
+	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
 	ctx := context.Background()
@@ -724,7 +776,7 @@ func TestFormatSlackMessage_BlockTextLimit(t *testing.T) {
 		})
 	}
 
-	body := formatSlackMessage(findings)
+	body := formatSlackMessage(findings, "")
 	if body == nil {
 		t.Fatal("expected non-nil body")
 	}
@@ -750,7 +802,7 @@ func TestFormatSlackMessage_BlockTextLimit_SingleLongLine(t *testing.T) {
 		{Owner: "org", Repo: "repo", PRNumber: 1, PRTitle: "Long", PRURL: "https://github.com/org/repo/pull/1", Category: "ci", Message: longMsg},
 	}
 
-	body := formatSlackMessage(findings)
+	body := formatSlackMessage(findings, "")
 	if body == nil {
 		t.Fatal("expected non-nil body")
 	}
@@ -794,7 +846,7 @@ func TestFormatSlackMessage_TruncatesAt50Blocks(t *testing.T) {
 		})
 	}
 
-	body := formatSlackMessage(findings)
+	body := formatSlackMessage(findings, "")
 	if body == nil {
 		t.Fatal("expected non-nil body")
 	}
@@ -830,7 +882,7 @@ func TestSlackReporter_FlushDedup_WithinBatch(t *testing.T) {
 	defer ts.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, logger)
+	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
 	ctx := context.Background()
@@ -881,7 +933,7 @@ func TestSlackReporter_FlushDedup_DifferentFindingsSamePR(t *testing.T) {
 	defer ts.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, logger)
+	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
 	ctx := context.Background()
@@ -923,7 +975,7 @@ func TestSlackReporter_FlushDedup_EmptyDedupKeyNotDeduped(t *testing.T) {
 	defer ts.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, logger)
+	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
 	ctx := context.Background()
