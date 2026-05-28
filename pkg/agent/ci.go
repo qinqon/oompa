@@ -333,9 +333,13 @@ func (a *Agent) classifyCIInfrastructure(_ context.Context, task ciTask, cleaned
 	idx := strings.Index(cleaned, "INFRASTRUCTURE")
 	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "INFRASTRUCTURE"), " :—–-"))
 
+	// Always mark as checked in memory to prevent re-investigation on next poll.
+	// Comment markers serve as a secondary dedup mechanism but can be lost
+	// (e.g. if comments are deleted), so in-memory state is the primary guard.
+	a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
+
 	if a.ShouldSkipComment("ci-infrastructure") {
 		a.logger.Info("skipping CI infrastructure comment (--skip-comment)", "pr", task.work.PRNumber)
-		a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
 	}
 
 	task.work.LastCIStatus = "infrastructure-failure"
@@ -371,9 +375,13 @@ func (a *Agent) classifyCIUnrelated(ctx context.Context, task ciTask, cleaned st
 	idx := strings.Index(cleaned, "UNRELATED")
 	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "UNRELATED"), " :—–-"))
 
+	// Always mark as checked in memory to prevent re-investigation on next poll.
+	// Comment markers serve as a secondary dedup mechanism but can be lost
+	// (e.g. if comments are deleted), so in-memory state is the primary guard.
+	a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
+
 	if a.ShouldSkipComment("ci-unrelated") {
 		a.logger.Info("skipping CI unrelated comment (--skip-comment)", "pr", task.work.PRNumber)
-		a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
 	}
 
 	task.work.LastCIStatus = "unrelated-failure"
@@ -669,9 +677,10 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 	if a.cfg.SkipFix {
 		// Skip-fix mode: just record the analysis, don't try to fix or push
 		a.logger.Info("CI failure is related (skip-fix mode, not pushing)", "pr", task.work.PRNumber)
+		// Always mark as checked in memory to prevent re-investigation on next poll.
+		a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
 		if a.ShouldSkipComment("ci-related") {
 			a.logger.Info("skipping CI related comment (--skip-comment)", "pr", task.work.PRNumber)
-			a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
 		}
 		task.work.LastCIStatus = "related-skip-fix"
 		task.work.LastCheckedCISHA = task.headSHA
@@ -742,9 +751,13 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 		a.logger.Warn("Claude said RELATED but no changes to push", "pr", task.work.PRNumber)
 	}
 
+	// Always mark as checked in memory to prevent re-investigation on next poll.
+	// Comment markers serve as a secondary dedup mechanism but can be lost
+	// (e.g. if comments are deleted), so in-memory state is the primary guard.
+	a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
+
 	if a.ShouldSkipComment("ci-related") {
 		a.logger.Info("skipping CI related comment (--skip-comment)", "pr", task.work.PRNumber)
-		a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
 	}
 
 	task.work.CIFixAttempts++
