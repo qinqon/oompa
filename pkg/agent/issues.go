@@ -144,6 +144,48 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 
 	// Sequential phase: run Claude, push, create PR
 	runSequential(ctx, tasks, func(ctx context.Context, task newIssueTask) {
+		var success bool
+		defer func() {
+			if !success {
+				a.emit(Event{
+					Type:     EventAgentCompleted,
+					Category: CategoryAgent,
+					Worker:   a.workerName(),
+					State:    "idle",
+					Action:   fmt.Sprintf("Agent failed implementing issue #%d", task.issue.Number),
+				})
+				a.emit(Event{
+					Type:     EventActionCompleted,
+					Category: CategoryIssue,
+					Worker:   a.workerName(),
+					State:    "idle",
+					Action:   fmt.Sprintf("Failed to process issue #%d", task.issue.Number),
+				})
+			} else {
+				a.emit(Event{
+					Type:     EventAgentCompleted,
+					Category: CategoryAgent,
+					Worker:   a.workerName(),
+					State:    "idle",
+					Action:   fmt.Sprintf("Agent finished implementing issue #%d", task.issue.Number),
+				})
+			}
+		}()
+
+		a.emit(Event{
+			Type:     EventActionStarted,
+			Category: CategoryIssue,
+			Worker:   a.workerName(),
+			State:    "working",
+			Action:   fmt.Sprintf("Working on issue #%d: %s", task.issue.Number, task.issue.Title),
+		})
+		a.emit(Event{
+			Type:     EventAgentInvocation,
+			Category: CategoryAgent,
+			Worker:   a.workerName(),
+			State:    "working",
+			Action:   fmt.Sprintf("Agent implementing issue #%d", task.issue.Number),
+		})
 		prompt := buildImplementationPrompt(task.issue, a.cfg.SignedOffBy)
 		_, err := a.codeAgent.Run(ctx, a.runner, task.worktreePath, prompt, a.logger, false)
 		if err != nil {
@@ -193,6 +235,15 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		task.work.PRNumber = prNumber
 		task.work.Status = StatusPROpen
 		a.logger.Info("created PR", "issue", task.issue.Number, "pr", prNumber)
+		a.emit(Event{
+			Type:      EventActionCompleted,
+			Category:  CategoryIssue,
+			Worker:    a.workerName(),
+			State:     "idle",
+			Action:    fmt.Sprintf("Created PR #%d for issue #%d", prNumber, task.issue.Number),
+			PRNumbers: []int{prNumber},
+		})
+		success = true
 
 		_ = a.gh.UnassignIssue(ctx, a.cfg.Owner, a.cfg.Repo, task.issue.Number, a.cfg.GitHubUser)
 	})

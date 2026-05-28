@@ -510,6 +510,53 @@ func (r *recordingEmitter) Emit(event Event) {
 	r.events = append(r.events, event)
 }
 
+func TestProcessNewIssues_EmitsIssueAndAgentEvents(t *testing.T) {
+	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	emitter := &recordingEmitter{}
+	agent.SetEmitter(emitter)
+
+	agent.ProcessNewIssues(context.Background())
+
+	// Verify issue-category event emitted when processing starts
+	var foundIssueWorking, foundAgentInvocation, foundPRCreated, foundAgentCompleted bool
+	for _, e := range emitter.events {
+		if e.Category == CategoryIssue && e.State == "working" && strings.Contains(e.Action, "Working on issue #42") {
+			foundIssueWorking = true
+		}
+		if e.Category == CategoryAgent && e.State == "working" && strings.Contains(e.Action, "Agent implementing issue #42") {
+			foundAgentInvocation = true
+		}
+		if e.Category == CategoryIssue && e.State == "idle" && strings.Contains(e.Action, "Created PR #100 for issue #42") {
+			foundPRCreated = true
+			if len(e.PRNumbers) != 1 || e.PRNumbers[0] != 100 {
+				t.Errorf("expected PRNumbers [100], got %v", e.PRNumbers)
+			}
+		}
+		if e.Category == CategoryAgent && e.State == "idle" && strings.Contains(e.Action, "Agent finished implementing issue #42") {
+			foundAgentCompleted = true
+		}
+	}
+	if !foundIssueWorking {
+		t.Error("expected CategoryIssue event with state 'working' when issue processing starts")
+	}
+	if !foundAgentInvocation {
+		t.Error("expected CategoryAgent event with state 'working' when agent starts running")
+	}
+	if !foundPRCreated {
+		t.Error("expected CategoryIssue event with state 'idle' when PR is created")
+	}
+	if !foundAgentCompleted {
+		t.Error("expected CategoryAgent event with state 'idle' when agent finishes implementing")
+	}
+}
+
 func TestProcessReviewComments_NoNewComments(t *testing.T) {
 	gh := &mockGitHubClient{}
 	runner := &mockCommandRunner{}
