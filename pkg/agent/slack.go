@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
@@ -42,6 +41,13 @@ const (
 	lastReportAtFile = "last-report-at"
 	defaultStateDir  = ".local/state/oompa"
 )
+
+// reportState is the JSON-serializable state persisted to the last-report-at file.
+// It contains both the timestamp and the dedup keys to survive restarts.
+type reportState struct {
+	LastReportedAt string   `json:"lastReportedAt"`
+	ReportedKeys   []string `json:"reportedKeys"`
+}
 
 // SlackFinding represents a single reportable finding from a poll cycle.
 // Findings should have a PR context (PRNumber, PRURL) when available.
@@ -86,12 +92,16 @@ func NewSlackReporter(webhookURL, version string, logger *slog.Logger) *SlackRep
 	}
 
 	stateFilePath := defaultLastReportAtPath(webhookURL)
-	lastReportedAt := loadLastReportedAt(stateFilePath, logger)
+
+	// Migrate: remove old hashed state files (e.g. last-report-at-ff4b1805)
+	migrateOldHashedFiles(stateFilePath, logger)
+
+	lastReportedAt, reported := loadLastReportedAt(stateFilePath, logger)
 
 	return &SlackReporter{
 		webhookURL:     webhookURL,
 		version:        version,
-		reported:       make(map[string]bool),
+		reported:       reported,
 		logger:         logger,
 		httpClient:     &http.Client{Timeout: slackRequestTimeout},
 		lastReportedAt: lastReportedAt,
@@ -111,64 +121,147 @@ func (r *SlackReporter) LastReportedAt() time.Time {
 // defaultLastReportAtPath returns the default path for the last-report-at state file,
 // following XDG Base Directory spec for state data.
 // Uses $XDG_STATE_HOME/oompa/ if set, otherwise ~/.local/state/oompa/.
-// It hashes the webhookURL to ensure different Slack destinations do not interfere
-// when multiple oompa instances run on the same machine.
-func defaultLastReportAtPath(webhookURL string) string {
-	filename := lastReportAtFile
-	if webhookURL != "" {
-		h := fnv.New32a()
-		h.Write([]byte(webhookURL))
-		filename = fmt.Sprintf("%s-%x", lastReportAtFile, h.Sum32())
-	}
-
+// The webhookURL parameter is accepted for API compatibility but ignored —
+// only one oompa instance runs per machine, so hashing the URL is unnecessary.
+func defaultLastReportAtPath(_ string) string {
 	// Honor XDG_STATE_HOME per the XDG Base Directory spec.
 	if xdgState := os.Getenv("XDG_STATE_HOME"); xdgState != "" {
-		return filepath.Join(xdgState, "oompa", filename)
+		return filepath.Join(xdgState, "oompa", lastReportAtFile)
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
 		// Fallback: write directly to tmpdir with prefix to avoid shared-directory
 		// permission conflicts on multi-user systems.
-		return filepath.Join(os.TempDir(), "oompa-"+filename)
+		return filepath.Join(os.TempDir(), "oompa-"+lastReportAtFile)
 	}
-	return filepath.Join(home, defaultStateDir, filename)
+	return filepath.Join(home, defaultStateDir, lastReportAtFile)
 }
 
-// loadLastReportedAt reads and parses the persisted timestamp from the state file.
-// Returns time.Now() if the file is missing, empty, or unparseable.
-func loadLastReportedAt(path string, logger *slog.Logger) time.Time {
+// migrateOldHashedFiles migrates old hashed state files (e.g. last-report-at-ff4b1805)
+// from the state directory. These were created by a previous version that hashed the
+// webhook URL into the filename.
+//
+// If the current (non-hashed) state file does not exist, the first old hashed file
+// found is renamed to the current path to preserve the last reported timestamp.
+// Any remaining old hashed files are deleted.
+func migrateOldHashedFiles(currentPath string, logger *slog.Logger) {
+	dir := filepath.Dir(currentPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // Directory doesn't exist yet — nothing to migrate
+	}
+
+	// Check whether the current (non-hashed) state file already exists.
+	// If it does, we only need to clean up old files. If not, we rename
+	// the first old file to preserve state across the upgrade.
+	_, statErr := os.Stat(currentPath)
+	currentExists := statErr == nil
+
+	promoted := false
+	for _, entry := range entries {
+		name := entry.Name()
+		// Match files like "last-report-at-ff4b1805" but not "last-report-at" itself
+		// or "last-report-at.tmp"
+		if !strings.HasPrefix(name, lastReportAtFile+"-") || name == lastReportAtFile {
+			continue
+		}
+		// Skip .tmp files left over from atomic writes
+		if strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		oldPath := filepath.Join(dir, name)
+		if !currentExists && !promoted {
+			// Rename the first old file to the current path to preserve state
+			if err := os.Rename(oldPath, currentPath); err != nil {
+				logger.Warn("failed to rename old hashed state file", "from", oldPath, "to", currentPath, "error", err)
+			} else {
+				logger.Info("migrated old hashed state file", "from", oldPath, "to", currentPath)
+				promoted = true
+			}
+			continue
+		}
+		if err := os.Remove(oldPath); err != nil {
+			logger.Warn("failed to remove old hashed state file", "path", oldPath, "error", err)
+		} else {
+			logger.Info("removed old hashed state file", "path", oldPath)
+		}
+	}
+}
+
+// loadLastReportedAt reads and parses the persisted state from the state file.
+// Returns (time.Now(), empty map) if the file is missing, empty, or unparseable.
+//
+// Backward compatible: tries JSON first, then falls back to plain RFC 3339
+// timestamp (old format before dedup keys were persisted).
+func loadLastReportedAt(path string, logger *slog.Logger) (lastReported time.Time, reported map[string]bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// File missing (first run) or unreadable — use time.Now() as baseline
-		return time.Now()
+		return time.Now(), make(map[string]bool)
 	}
 
-	ts := strings.TrimSpace(string(data))
-	if ts == "" {
-		return time.Now()
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return time.Now(), make(map[string]bool)
 	}
 
-	t, err := time.Parse(time.RFC3339, ts)
+	// Try JSON format first (new format with dedup keys)
+	var state reportState
+	if err := json.Unmarshal(data, &state); err == nil && state.LastReportedAt != "" {
+		t, err := time.Parse(time.RFC3339, state.LastReportedAt)
+		if err != nil {
+			logger.Warn("unparseable lastReportedAt in JSON state file, using time.Now() as baseline", "path", path, "error", err)
+			return time.Now(), make(map[string]bool)
+		}
+		reported := make(map[string]bool, len(state.ReportedKeys))
+		for _, key := range state.ReportedKeys {
+			reported[key] = true
+		}
+		return t, reported
+	}
+
+	// Fall back to plain RFC 3339 timestamp (old format)
+	t, err := time.Parse(time.RFC3339, content)
 	if err != nil {
-		logger.Warn("unparseable last-report-at file, using time.Now() as baseline", "path", path, "content", ts, "error", err)
-		return time.Now()
+		logger.Warn("unparseable last-report-at file, using time.Now() as baseline", "path", path, "content", content, "error", err)
+		return time.Now(), make(map[string]bool)
 	}
 
-	return t
+	return t, make(map[string]bool)
 }
 
-// persistLastReportedAt writes the timestamp to the state file in RFC 3339 format.
+// persistLastReportedAt writes the timestamp and dedup keys to the state file as JSON.
 // Creates the directory if it doesn't exist. Uses atomic write (temp file + rename)
 // to prevent corruption if the process is killed mid-write.
-func persistLastReportedAt(path string, t time.Time, logger *slog.Logger) {
+// The in-memory reported map is already bounded by maxDedupEntries (cleared when
+// exceeded in Flush), so persisting all keys is safe and avoids pruning bias.
+func persistLastReportedAt(path string, t time.Time, reported map[string]bool, logger *slog.Logger) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		logger.Error("failed to create state directory", "dir", dir, "error", err)
 		return
 	}
 
-	data := []byte(t.UTC().Format(time.RFC3339) + "\n")
+	keys := make([]string, 0, len(reported))
+	for k := range reported {
+		keys = append(keys, k)
+	}
+	// Sort for deterministic file output (no cap needed — the in-memory map
+	// is already bounded by maxDedupEntries, cleared when exceeded in Flush).
+	sort.Strings(keys)
+
+	state := reportState{
+		LastReportedAt: t.UTC().Format(time.RFC3339),
+		ReportedKeys:   keys,
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		logger.Error("failed to marshal report state", "error", err)
+		return
+	}
+	data = append(data, '\n')
+
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		logger.Error("failed to write temporary last-report-at file", "path", tmpPath, "error", err)
@@ -270,13 +363,13 @@ func (r *SlackReporter) Flush(ctx context.Context) {
 		}
 	}
 
-	// Persist the report timestamp so it survives restarts.
+	// Persist the report timestamp and dedup keys so they survive restarts.
 	// Future report-only checks use this to filter out stale findings.
 	// Subtract a 2-minute safety margin to avoid missing findings created
 	// between when the GitHub API was queried and when Flush runs. The
 	// in-memory DedupKey map filters out duplicates within the overlap window.
 	r.lastReportedAt = time.Now().Add(-2 * time.Minute)
-	persistLastReportedAt(r.stateFilePath, r.lastReportedAt, r.logger)
+	persistLastReportedAt(r.stateFilePath, r.lastReportedAt, r.reported, r.logger)
 
 	r.logger.Info("posted Slack report", "findings", len(newFindings))
 }
