@@ -8,9 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestFormatSlackMessage_GroupsByPR(t *testing.T) {
@@ -417,7 +420,7 @@ func TestCheckCIStatus_ReportsFailures(t *testing.T) {
 		Status:     StatusPROpen,
 	}
 
-	findings := a.CheckCIStatus(context.Background())
+	findings := a.CheckCIStatus(context.Background(), time.Time{})
 
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
@@ -529,7 +532,7 @@ func TestCheckNewReviews_ReportsComments(t *testing.T) {
 		Status:     StatusPROpen,
 	}
 
-	findings := a.CheckNewReviews(context.Background())
+	findings := a.CheckNewReviews(context.Background(), time.Time{})
 
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
@@ -567,7 +570,7 @@ func TestCheckCIStatus_NoFailures(t *testing.T) {
 		Status:     StatusPROpen,
 	}
 
-	findings := a.CheckCIStatus(context.Background())
+	findings := a.CheckCIStatus(context.Background(), time.Time{})
 
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for passing CI, got %d", len(findings))
@@ -997,5 +1000,386 @@ func TestSlackReporter_FlushDedup_EmptyDedupKeyNotDeduped(t *testing.T) {
 	errorCount := strings.Count(body, "transient error")
 	if errorCount != 3 {
 		t.Errorf("expected 3 'transient error' in message (empty DedupKey), got %d", errorCount)
+	}
+}
+
+// --- LastReportedAt persistence tests ---
+
+func TestLoadLastReportedAt_FileExists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "last-report-at")
+	expected := time.Date(2026, 5, 29, 8, 38, 23, 0, time.UTC)
+	if err := os.WriteFile(path, []byte("2026-05-29T08:38:23Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	got := loadLastReportedAt(path, logger)
+
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestLoadLastReportedAt_FileMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nonexistent")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	before := time.Now()
+	got := loadLastReportedAt(path, logger)
+	after := time.Now()
+
+	if got.Before(before) || got.After(after) {
+		t.Errorf("expected time.Now() fallback, got %v (before=%v, after=%v)", got, before, after)
+	}
+}
+
+func TestLoadLastReportedAt_FileCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "last-report-at")
+	if err := os.WriteFile(path, []byte("not-a-timestamp"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	before := time.Now()
+	got := loadLastReportedAt(path, logger)
+	after := time.Now()
+
+	if got.Before(before) || got.After(after) {
+		t.Errorf("expected time.Now() fallback for corrupt file, got %v", got)
+	}
+}
+
+func TestLoadLastReportedAt_FileEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "last-report-at")
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	before := time.Now()
+	got := loadLastReportedAt(path, logger)
+	after := time.Now()
+
+	if got.Before(before) || got.After(after) {
+		t.Errorf("expected time.Now() fallback for empty file, got %v", got)
+	}
+}
+
+func TestPersistLastReportedAt_WritesAndReads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "subdir", "last-report-at")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	ts := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
+	persistLastReportedAt(path, ts, logger)
+
+	got := loadLastReportedAt(path, logger)
+	if !got.Equal(ts) {
+		t.Errorf("expected %v after persist+load, got %v", ts, got)
+	}
+}
+
+func TestPersistLastReportedAt_CreatesDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a", "b", "c", "last-report-at")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	ts := time.Now()
+	persistLastReportedAt(path, ts, logger)
+
+	// Verify directory was created
+	if _, err := os.Stat(filepath.Dir(path)); os.IsNotExist(err) {
+		t.Error("expected directory to be created")
+	}
+	// Verify file exists and is readable
+	got := loadLastReportedAt(path, logger)
+	if got.IsZero() {
+		t.Error("expected non-zero timestamp after persist")
+	}
+}
+
+func TestDefaultLastReportAtPath_UniquePerWebhook(t *testing.T) {
+	path1 := defaultLastReportAtPath("https://hooks.slack.com/services/T000/B000/xxx")
+	path2 := defaultLastReportAtPath("https://hooks.slack.com/services/T111/B111/yyy")
+	pathEmpty := defaultLastReportAtPath("")
+
+	if path1 == path2 {
+		t.Errorf("expected different paths for different webhook URLs, both got: %s", path1)
+	}
+	if path1 == pathEmpty {
+		t.Errorf("expected different path for non-empty vs empty webhook URL")
+	}
+	// Empty webhook should use the base filename without hash
+	if !strings.HasSuffix(pathEmpty, lastReportAtFile) {
+		t.Errorf("expected empty webhook path to end with %q, got: %s", lastReportAtFile, pathEmpty)
+	}
+	// Non-empty webhook should have a hash suffix
+	if strings.HasSuffix(path1, lastReportAtFile) {
+		t.Errorf("expected non-empty webhook path to have hash suffix, got: %s", path1)
+	}
+}
+
+func TestSlackReporter_FlushPersistsLastReportedAt(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "last-report-at")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reporter := &SlackReporter{
+		webhookURL:     ts.URL,
+		reported:       make(map[string]bool),
+		logger:         logger,
+		httpClient:     ts.Client(),
+		lastReportedAt: time.Now().Add(-1 * time.Hour),
+		stateFilePath:  stateFile,
+	}
+
+	before := time.Now()
+	reporter.Collect([]SlackFinding{
+		{Owner: "org", Repo: "repo", PRNumber: 1, PRTitle: "Test", Message: "test", DedupKey: "test:1"},
+	})
+	reporter.Flush(context.Background())
+	after := time.Now()
+
+	// Verify lastReportedAt was updated.
+	// Flush subtracts a 2-minute safety margin, so lastReportedAt should be ~2min before now.
+	safetyMargin := 2 * time.Minute
+	if reporter.LastReportedAt().Before(before.Add(-safetyMargin-1*time.Second)) || reporter.LastReportedAt().After(after.Add(-safetyMargin+1*time.Second)) {
+		t.Errorf("expected LastReportedAt to be ~now minus 2min safety margin, got %v", reporter.LastReportedAt())
+	}
+
+	// Verify the file was written.
+	// RFC 3339 truncates to seconds, so the loaded timestamp may be up to 1s off.
+	got := loadLastReportedAt(stateFile, logger)
+	if got.Before(before.Add(-safetyMargin-1*time.Second)) || got.After(after.Add(-safetyMargin+1*time.Second)) {
+		t.Errorf("expected persisted timestamp to be ~now minus 2min, got %v (before=%v, after=%v)", got, before, after)
+	}
+}
+
+func TestSlackReporter_LastReportedAtSurvivesRestart(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "last-report-at")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// First reporter: flush to persist timestamp
+	reporter1 := &SlackReporter{
+		webhookURL:     ts.URL,
+		reported:       make(map[string]bool),
+		logger:         logger,
+		httpClient:     ts.Client(),
+		lastReportedAt: time.Now().Add(-1 * time.Hour),
+		stateFilePath:  stateFile,
+	}
+
+	reporter1.Collect([]SlackFinding{
+		{Owner: "org", Repo: "repo", PRNumber: 1, PRTitle: "Test", Message: "test", DedupKey: "test:1"},
+	})
+	reporter1.Flush(context.Background())
+	firstReportTime := reporter1.LastReportedAt()
+
+	// Second reporter: simulate restart by loading from the same file
+	reporter2 := &SlackReporter{
+		webhookURL:     ts.URL,
+		reported:       make(map[string]bool),
+		logger:         logger,
+		httpClient:     ts.Client(),
+		lastReportedAt: loadLastReportedAt(stateFile, logger),
+		stateFilePath:  stateFile,
+	}
+
+	// The second reporter should have the same lastReportedAt as the first.
+	// RFC 3339 truncates to seconds, so compare at second precision.
+	firstTrunc := firstReportTime.UTC().Truncate(time.Second)
+	secondTrunc := reporter2.LastReportedAt().UTC().Truncate(time.Second)
+	if !secondTrunc.Equal(firstTrunc) {
+		t.Errorf("expected LastReportedAt to survive restart: first=%v, second=%v",
+			firstTrunc, secondTrunc)
+	}
+}
+
+// --- Timestamp-based filtering tests ---
+
+func TestCheckCIStatus_FiltersStaleFailures(t *testing.T) {
+	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
+
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "stale-test", Status: "completed", Conclusion: "failure",
+				CompletedAt: time.Date(2026, 5, 29, 9, 0, 0, 0, time.UTC), // Before lastReportedAt
+				HTMLURL:     "https://github.com/org/repo/actions/runs/1/job/1"},
+			{ID: 2, Name: "new-test", Status: "completed", Conclusion: "failure",
+				CompletedAt: time.Date(2026, 5, 29, 11, 0, 0, 0, time.UTC), // After lastReportedAt
+				HTMLURL:     "https://github.com/org/repo/actions/runs/2/job/2"},
+		},
+		prHeadSHAs: []string{"abc123"},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := &Agent{
+		gh:     gh,
+		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:  NewState(),
+		logger: logger,
+	}
+
+	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
+		PRNumber:   100,
+		IssueTitle: "Fix test",
+		Status:     StatusPROpen,
+	}
+
+	findings := a.CheckCIStatus(context.Background(), lastReportedAt)
+
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding (only new failure), got %d", len(findings))
+	}
+	if !strings.Contains(findings[0].Message, "new-test") {
+		t.Errorf("expected finding for new-test, got: %s", findings[0].Message)
+	}
+}
+
+func TestCheckCIStatus_IncludesFailuresWithZeroCompletedAt(t *testing.T) {
+	// Failures with zero CompletedAt (e.g. commit statuses) should not be filtered
+	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
+
+	gh := &mockGitHubClient{
+		checkRuns: []CheckRun{
+			{ID: 1, Name: "no-timestamp", Status: "completed", Conclusion: "failure",
+				HTMLURL: "https://github.com/org/repo/actions/runs/1/job/1"},
+		},
+		prHeadSHAs: []string{"abc123"},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := &Agent{
+		gh:     gh,
+		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:  NewState(),
+		logger: logger,
+	}
+
+	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
+		PRNumber:   100,
+		IssueTitle: "Fix test",
+		Status:     StatusPROpen,
+	}
+
+	findings := a.CheckCIStatus(context.Background(), lastReportedAt)
+
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding (zero CompletedAt not filtered), got %d", len(findings))
+	}
+}
+
+func TestCheckNewReviews_FiltersStaleComments(t *testing.T) {
+	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
+
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 10, User: "reviewer1", Body: "Old comment",
+				CreatedAt: time.Date(2026, 5, 29, 9, 0, 0, 0, time.UTC)}, // Before lastReportedAt
+			{ID: 11, User: "reviewer2", Body: "New comment",
+				CreatedAt: time.Date(2026, 5, 29, 11, 0, 0, 0, time.UTC)}, // After lastReportedAt
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := &Agent{
+		gh:     gh,
+		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:  NewState(),
+		logger: logger,
+	}
+
+	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
+		PRNumber:   100,
+		IssueTitle: "Fix test",
+		Status:     StatusPROpen,
+	}
+
+	findings := a.CheckNewReviews(context.Background(), lastReportedAt)
+
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding (only new comment), got %d", len(findings))
+	}
+	if !strings.Contains(findings[0].Message, "1 new review comment") {
+		t.Errorf("expected message about 1 new review comment, got: %s", findings[0].Message)
+	}
+}
+
+func TestCheckNewReviews_IncludesCommentsWithZeroCreatedAt(t *testing.T) {
+	// Comments with zero CreatedAt should not be filtered
+	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
+
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 10, User: "reviewer1", Body: "No timestamp comment"},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := &Agent{
+		gh:     gh,
+		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:  NewState(),
+		logger: logger,
+	}
+
+	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
+		PRNumber:   100,
+		IssueTitle: "Fix test",
+		Status:     StatusPROpen,
+	}
+
+	findings := a.CheckNewReviews(context.Background(), lastReportedAt)
+
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding (zero CreatedAt not filtered), got %d", len(findings))
+	}
+}
+
+func TestCheckNewReviews_AllStaleNoFindings(t *testing.T) {
+	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
+
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 10, User: "reviewer1", Body: "Old comment",
+				CreatedAt: time.Date(2026, 5, 29, 9, 0, 0, 0, time.UTC)},
+			{ID: 11, User: "reviewer2", Body: "Also old",
+				CreatedAt: time.Date(2026, 5, 29, 8, 0, 0, 0, time.UTC)},
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := &Agent{
+		gh:     gh,
+		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:  NewState(),
+		logger: logger,
+	}
+
+	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
+		PRNumber:   100,
+		IssueTitle: "Fix test",
+		Status:     StatusPROpen,
+	}
+
+	findings := a.CheckNewReviews(context.Background(), lastReportedAt)
+
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings when all comments are stale, got %d", len(findings))
 	}
 }

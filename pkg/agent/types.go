@@ -19,6 +19,7 @@ type ReviewComment struct {
 	Body        string
 	Path        string
 	Line        int
+	CreatedAt   time.Time
 }
 
 // PR represents a GitHub pull request.
@@ -76,12 +77,13 @@ type PRReview struct {
 // For commit statuses (e.g. Prow): ID is 0, Output contains the target_url.
 // Callers must check ID != 0 before calling GetCheckRunLog.
 type CheckRun struct {
-	ID         int64
-	Name       string
-	Status     string // queued, in_progress, completed
-	Conclusion string // success, failure, neutral, cancelled, skipped, timed_out, action_required
-	Output     string // summary/text from the check run, or target_url for commit statuses
-	HTMLURL    string // direct link to the check run page on GitHub
+	ID          int64
+	Name        string
+	Status      string    // queued, in_progress, completed
+	Conclusion  string    // success, failure, neutral, cancelled, skipped, timed_out, action_required
+	Output      string    // summary/text from the check run, or target_url for commit statuses
+	HTMLURL     string    // direct link to the check run page on GitHub
+	CompletedAt time.Time // when the check run completed (zero if not completed or unknown)
 }
 
 // JobRun represents a CI job run (periodic or triggered).

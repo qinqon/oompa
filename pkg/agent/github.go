@@ -128,6 +128,7 @@ func (g *GoGitHubClient) GetPRReviewComments(ctx context.Context, owner, repo st
 				Body:        c.GetBody(),
 				Path:        c.GetPath(),
 				Line:        c.GetLine(),
+				CreatedAt:   c.GetCreatedAt().Time,
 			})
 		}
 		if resp.NextPage == 0 {
@@ -278,13 +279,18 @@ func (g *GoGitHubClient) GetCheckRuns(ctx context.Context, owner, repo, ref stri
 				output = r.Output.GetSummary()
 			}
 		}
+		var completedAt time.Time
+		if t := r.GetCompletedAt(); !t.IsZero() {
+			completedAt = t.Time
+		}
 		runs = append(runs, CheckRun{
-			ID:         r.GetID(),
-			Name:       r.GetName(),
-			Status:     r.GetStatus(),
-			Conclusion: r.GetConclusion(),
-			Output:     output,
-			HTMLURL:    r.GetHTMLURL(),
+			ID:          r.GetID(),
+			Name:        r.GetName(),
+			Status:      r.GetStatus(),
+			Conclusion:  r.GetConclusion(),
+			Output:      output,
+			HTMLURL:     r.GetHTMLURL(),
+			CompletedAt: completedAt,
 		})
 	}
 	return runs, nil
