@@ -786,6 +786,14 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 		{ID: 1, Name: "test", Status: "completed", Conclusion: "failure", Output: "test failed: expected 1 got 2"},
 	})
 
+	// Simulate push updating the PR's head SHA on each Claude invocation.
+	// In production, each fix push changes the HEAD SHA, so the in-memory
+	// dedup (keyed by SHA+check) allows re-investigation on the new SHA.
+	prNum := work.PRNumber
+	runner.onClaudeRun = func() {
+		gh.simulatePush(prNum)
+	}
+
 	// First fix attempt
 	agent.ProcessCIFailures(ctx)
 	if agent.state.ActiveIssues[IssueKey("owner", "repo", 77)].CIFixAttempts != 1 {

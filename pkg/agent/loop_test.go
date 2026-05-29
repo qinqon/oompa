@@ -1821,6 +1821,87 @@ func TestProcessCIFailures_SkipCommentCIInfrastructure(t *testing.T) {
 	}
 }
 
+// TestProcessCIFailures_CheckedCIChecksPopulatedWhenCommentsPosted verifies that
+// the in-memory CheckedCIChecks map is populated even when comments are posted
+// (the default, non-skip path). This is the primary dedup mechanism; comment
+// markers are a secondary fallback that can be lost if comments are deleted.
+func TestProcessCIFailures_CheckedCIChecksPopulatedWhenCommentsPosted(t *testing.T) {
+	// Test all three classification categories
+	tests := []struct {
+		name           string
+		claudeResponse string
+		checkName      string
+		wantCIStatus   string
+	}{
+		{
+			name:           "infrastructure",
+			claudeResponse: "INFRASTRUCTURE Fedora koji server returned HTTP 502 Bad Gateway",
+			checkName:      "Build-PR",
+			wantCIStatus:   "infrastructure-failure",
+		},
+		{
+			name:           "unrelated",
+			claudeResponse: "UNRELATED The test database connection times out intermittently",
+			checkName:      "integration-tests",
+			wantCIStatus:   "unrelated-failure",
+		},
+		{
+			name:           "related-skip-fix",
+			claudeResponse: "RELATED The unit test fails because the new function returns nil",
+			checkName:      "unit-tests",
+			wantCIStatus:   "related-skip-fix",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			claudeResult := streamResultJSON(AgentResult{Result: tt.claudeResponse})
+			gh := &mockGitHubClient{
+				checkRuns: []CheckRun{
+					{ID: 1, Name: tt.checkName, Status: "completed", Conclusion: "failure", Output: "Error details here for analysis context padding to reach the 50 char minimum threshold"},
+				},
+				checkRunLogs: map[int64]string{
+					1: "Build log output with enough content for analysis context padding to reach minimum",
+				},
+			}
+			runner := &mockCommandRunner{stdout: claudeResult}
+			wt := &mockWorktreeManager{}
+
+			agent := newTestAgent(gh, runner, wt)
+			agent.cfg.SkipFix = true // Prevent push attempts for RELATED
+			// SkipComments is empty — comments will be posted (default behavior)
+			agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+				IssueNumber:  42,
+				IssueTitle:   "Fix bug",
+				PRNumber:     100,
+				BranchName:   "ai/issue-42",
+				Status:       "pr-open",
+				WorktreePath: "/tmp/worktree",
+			}
+
+			agent.ProcessCIFailures(context.Background())
+
+			work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+
+			// Verify in-memory dedup map is populated even though comments are posted
+			dedupKey := "abc123:" + tt.checkName
+			if !work.CheckedCIChecks[dedupKey] {
+				t.Errorf("expected CheckedCIChecks[%q] to be true when comments are posted (not skipped), but it was false", dedupKey)
+			}
+
+			// Verify status was set correctly
+			if work.LastCIStatus != tt.wantCIStatus {
+				t.Errorf("expected LastCIStatus %q, got %q", tt.wantCIStatus, work.LastCIStatus)
+			}
+
+			// Verify a comment was actually posted (confirming we're testing the non-skip path)
+			if len(gh.addedComments) == 0 {
+				t.Error("expected at least 1 comment to be posted (testing non-skip path), got 0")
+			}
+		})
+	}
+}
+
 func TestProcessCIFailures_SkipCommentFlaky(t *testing.T) {
 	claudeResult := streamResultJSON(AgentResult{Result: "UNRELATED The test database connection times out intermittently"})
 	gh := &mockGitHubClient{
