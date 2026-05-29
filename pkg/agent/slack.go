@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -32,6 +35,12 @@ const (
 	// maxSlackBlocks is the maximum number of blocks Slack accepts per message.
 	// Messages exceeding this limit are rejected by the API.
 	maxSlackBlocks = 50
+
+	// lastReportAtFile is the filename (under stateDir) where the last successful
+	// Slack report timestamp is persisted. Follows XDG Base Directory spec for
+	// state data: ~/.local/state/oompa/last-report-at
+	lastReportAtFile = "last-report-at"
+	defaultStateDir  = ".local/state/oompa"
 )
 
 // SlackFinding represents a single reportable finding from a poll cycle.
@@ -51,11 +60,13 @@ type SlackFinding struct {
 // Slack message. Thread-safe: multiple agent goroutines can call Collect concurrently.
 // Zero external dependencies — uses only Go stdlib net/http + encoding/json.
 type SlackReporter struct {
-	webhookURL string
-	version    string          // build version (short commit SHA) included in report header
-	reported   map[string]bool // tracks DedupKeys already reported
-	logger     *slog.Logger
-	httpClient *http.Client // injectable for testing
+	webhookURL     string
+	version        string          // build version (short commit SHA) included in report header
+	reported       map[string]bool // tracks DedupKeys already reported
+	logger         *slog.Logger
+	httpClient     *http.Client // injectable for testing
+	lastReportedAt time.Time    // when findings were last successfully flushed to Slack
+	stateFilePath  string       // path to the persisted last-report-at file
 
 	flushMu  sync.Mutex     // serializes Flush calls (protects reported map)
 	mu       sync.Mutex     // protects pending
@@ -65,16 +76,108 @@ type SlackReporter struct {
 // NewSlackReporter creates a new reporter. If webhookURL is empty, IsEnabled() returns false.
 // A nil logger defaults to slog.Default(). The version string (typically a short commit SHA)
 // is included in the Slack report header to identify which build generated the report.
+//
+// On construction, reads ~/.local/state/oompa/last-report-at to restore LastReportedAt
+// across restarts. If the file is missing or unparseable, falls back to time.Now()
+// (first cycle is silent baseline, subsequent cycles report changes).
 func NewSlackReporter(webhookURL, version string, logger *slog.Logger) *SlackReporter {
 	if logger == nil {
 		logger = slog.Default()
 	}
+
+	stateFilePath := defaultLastReportAtPath(webhookURL)
+	lastReportedAt := loadLastReportedAt(stateFilePath, logger)
+
 	return &SlackReporter{
-		webhookURL: webhookURL,
-		version:    version,
-		reported:   make(map[string]bool),
-		logger:     logger,
-		httpClient: &http.Client{Timeout: slackRequestTimeout},
+		webhookURL:     webhookURL,
+		version:        version,
+		reported:       make(map[string]bool),
+		logger:         logger,
+		httpClient:     &http.Client{Timeout: slackRequestTimeout},
+		lastReportedAt: lastReportedAt,
+		stateFilePath:  stateFilePath,
+	}
+}
+
+// LastReportedAt returns the timestamp of the last successful Slack report flush.
+// Report-only check methods use this to filter out stale findings.
+// Thread-safe: protects against concurrent reads while Flush() updates the field.
+func (r *SlackReporter) LastReportedAt() time.Time {
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
+	return r.lastReportedAt
+}
+
+// defaultLastReportAtPath returns the default path for the last-report-at state file,
+// following XDG Base Directory spec for state data.
+// Uses $XDG_STATE_HOME/oompa/ if set, otherwise ~/.local/state/oompa/.
+// It hashes the webhookURL to ensure different Slack destinations do not interfere
+// when multiple oompa instances run on the same machine.
+func defaultLastReportAtPath(webhookURL string) string {
+	filename := lastReportAtFile
+	if webhookURL != "" {
+		h := fnv.New32a()
+		h.Write([]byte(webhookURL))
+		filename = fmt.Sprintf("%s-%x", lastReportAtFile, h.Sum32())
+	}
+
+	// Honor XDG_STATE_HOME per the XDG Base Directory spec.
+	if xdgState := os.Getenv("XDG_STATE_HOME"); xdgState != "" {
+		return filepath.Join(xdgState, "oompa", filename)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Fallback: write directly to tmpdir with prefix to avoid shared-directory
+		// permission conflicts on multi-user systems.
+		return filepath.Join(os.TempDir(), "oompa-"+filename)
+	}
+	return filepath.Join(home, defaultStateDir, filename)
+}
+
+// loadLastReportedAt reads and parses the persisted timestamp from the state file.
+// Returns time.Now() if the file is missing, empty, or unparseable.
+func loadLastReportedAt(path string, logger *slog.Logger) time.Time {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// File missing (first run) or unreadable — use time.Now() as baseline
+		return time.Now()
+	}
+
+	ts := strings.TrimSpace(string(data))
+	if ts == "" {
+		return time.Now()
+	}
+
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		logger.Warn("unparseable last-report-at file, using time.Now() as baseline", "path", path, "content", ts, "error", err)
+		return time.Now()
+	}
+
+	return t
+}
+
+// persistLastReportedAt writes the timestamp to the state file in RFC 3339 format.
+// Creates the directory if it doesn't exist. Uses atomic write (temp file + rename)
+// to prevent corruption if the process is killed mid-write.
+func persistLastReportedAt(path string, t time.Time, logger *slog.Logger) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		logger.Error("failed to create state directory", "dir", dir, "error", err)
+		return
+	}
+
+	data := []byte(t.UTC().Format(time.RFC3339) + "\n")
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		logger.Error("failed to write temporary last-report-at file", "path", tmpPath, "error", err)
+		return
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		logger.Error("failed to rename last-report-at file", "from", tmpPath, "to", path, "error", err)
+		_ = os.Remove(tmpPath)
 	}
 }
 
@@ -166,6 +269,14 @@ func (r *SlackReporter) Flush(ctx context.Context) {
 			r.reported[f.DedupKey] = true
 		}
 	}
+
+	// Persist the report timestamp so it survives restarts.
+	// Future report-only checks use this to filter out stale findings.
+	// Subtract a 2-minute safety margin to avoid missing findings created
+	// between when the GitHub API was queried and when Flush runs. The
+	// in-memory DedupKey map filters out duplicates within the overlap window.
+	r.lastReportedAt = time.Now().Add(-2 * time.Minute)
+	persistLastReportedAt(r.stateFilePath, r.lastReportedAt, r.logger)
 
 	r.logger.Info("posted Slack report", "findings", len(newFindings))
 }

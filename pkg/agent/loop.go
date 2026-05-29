@@ -191,11 +191,19 @@ func (a *Agent) FlushSlackReport(ctx context.Context) {
 
 // RunReportOnlyChecks runs lightweight check methods for reactions NOT in the active
 // reactions list and returns findings. Only called when Slack reporting is enabled.
+// Uses LastReportedAt from the SlackReporter to filter out stale findings that
+// were already reported in a previous cycle.
 func (a *Agent) RunReportOnlyChecks(ctx context.Context) []SlackFinding {
 	var findings []SlackFinding
 
+	// Get the last reported timestamp to filter stale findings.
+	var lastReportedAt time.Time
+	if a.slack != nil {
+		lastReportedAt = a.slack.LastReportedAt()
+	}
+
 	if a.ShouldCheckReaction("ci") {
-		findings = append(findings, a.CheckCIStatus(ctx)...)
+		findings = append(findings, a.CheckCIStatus(ctx, lastReportedAt)...)
 	}
 
 	// Prefetch mergeable states once when both conflict and rebase checks are needed,
@@ -213,7 +221,7 @@ func (a *Agent) RunReportOnlyChecks(ctx context.Context) []SlackFinding {
 	}
 
 	if a.ShouldCheckReaction("reviews") {
-		findings = append(findings, a.CheckNewReviews(ctx)...)
+		findings = append(findings, a.CheckNewReviews(ctx, lastReportedAt)...)
 	}
 
 	return findings
@@ -559,7 +567,8 @@ func isUnstagedChangesError(stderr string) bool {
 
 // CheckCIStatus is a lightweight report-only check that fetches CI check runs
 // and returns findings for any failures. No agent invocation, no fixes.
-func (a *Agent) CheckCIStatus(ctx context.Context) []SlackFinding {
+// Only reports failures that completed after lastReportedAt to avoid stale reports.
+func (a *Agent) CheckCIStatus(ctx context.Context, lastReportedAt time.Time) []SlackFinding {
 	var findings []SlackFinding
 
 	for _, work := range a.state.ActiveIssues {
@@ -584,6 +593,10 @@ func (a *Agent) CheckCIStatus(ctx context.Context) []SlackFinding {
 				continue
 			}
 			if r.Status == "completed" && r.Conclusion == "failure" {
+				// Skip failures that completed before the last report to avoid stale reports
+				if !lastReportedAt.IsZero() && !r.CompletedAt.IsZero() && !r.CompletedAt.After(lastReportedAt) {
+					continue
+				}
 				link := r.HTMLURL
 				if link == "" {
 					link = fmt.Sprintf("https://github.com/%s/%s/commit/%s/checks", a.cfg.Owner, a.cfg.Repo, headSHA)
@@ -705,7 +718,8 @@ func (a *Agent) checkConflictsWithStates(_ context.Context, states map[int]strin
 
 // CheckNewReviews is a lightweight report-only check that counts new review comments
 // and returns findings when new comments exist.
-func (a *Agent) CheckNewReviews(ctx context.Context) []SlackFinding {
+// Only reports comments created after lastReportedAt to avoid stale reports.
+func (a *Agent) CheckNewReviews(ctx context.Context, lastReportedAt time.Time) []SlackFinding {
 	var findings []SlackFinding
 
 	for _, work := range a.state.ActiveIssues {
@@ -719,8 +733,8 @@ func (a *Agent) CheckNewReviews(ctx context.Context) []SlackFinding {
 			continue
 		}
 
-		// Filter out bot comments, replies, and non-whitelisted reviewers
-		// (same filtering as ProcessReviewComments to avoid noise)
+		// Filter out bot comments, replies, non-whitelisted reviewers, and
+		// comments created before the last report to avoid stale reports.
 		var humanComments []ReviewComment
 		for _, c := range comments {
 			if c.InReplyToID != 0 {
@@ -730,6 +744,10 @@ func (a *Agent) CheckNewReviews(ctx context.Context) []SlackFinding {
 				continue
 			}
 			if !a.isAllowedReviewer(c.User) {
+				continue
+			}
+			// Skip comments created before the last report
+			if !lastReportedAt.IsZero() && !c.CreatedAt.IsZero() && !c.CreatedAt.After(lastReportedAt) {
 				continue
 			}
 			humanComments = append(humanComments, c)
