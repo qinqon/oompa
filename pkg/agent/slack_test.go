@@ -279,6 +279,7 @@ func TestFormatSlackMessage_HasDividersBetweenProjects(t *testing.T) {
 }
 
 func TestSlackReporter_Dedup(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	var postCount int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		postCount++
@@ -310,6 +311,7 @@ func TestSlackReporter_Dedup(t *testing.T) {
 }
 
 func TestSlackReporter_DedupReset(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	var postCount int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		postCount++
@@ -604,6 +606,7 @@ func TestCheckRebaseNeeded_Clean(t *testing.T) {
 }
 
 func TestSlackReporter_EmptyDedupKey(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	var postCount int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		postCount++
@@ -646,6 +649,7 @@ func TestURLHelpers(t *testing.T) {
 }
 
 func TestSlackReporter_CollectAndFlush(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	var postCount int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		postCount++
@@ -693,6 +697,7 @@ func TestSlackReporter_CollectAndFlush(t *testing.T) {
 }
 
 func TestSlackReporter_CollectConcurrent(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	var postCount int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		postCount++
@@ -731,6 +736,7 @@ func TestSlackReporter_CollectConcurrent(t *testing.T) {
 }
 
 func TestSlackReporter_FlushDedup(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	var postCount int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		postCount++
@@ -871,6 +877,7 @@ func TestFormatSlackMessage_TruncatesAt50Blocks(t *testing.T) {
 }
 
 func TestSlackReporter_FlushDedup_WithinBatch(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	var mu sync.Mutex
 	var postCount int
 	var receivedBody string
@@ -924,6 +931,7 @@ func TestSlackReporter_FlushDedup_WithinBatch(t *testing.T) {
 }
 
 func TestSlackReporter_FlushDedup_DifferentFindingsSamePR(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	var mu sync.Mutex
 	var receivedBody string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -966,6 +974,7 @@ func TestSlackReporter_FlushDedup_DifferentFindingsSamePR(t *testing.T) {
 }
 
 func TestSlackReporter_FlushDedup_EmptyDedupKeyNotDeduped(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	var mu sync.Mutex
 	var receivedBody string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1005,7 +1014,33 @@ func TestSlackReporter_FlushDedup_EmptyDedupKeyNotDeduped(t *testing.T) {
 
 // --- LastReportedAt persistence tests ---
 
-func TestLoadLastReportedAt_FileExists(t *testing.T) {
+func TestLoadLastReportedAt_JSONFileExists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "last-report-at")
+	expected := time.Date(2026, 5, 29, 8, 38, 23, 0, time.UTC)
+	state := `{"lastReportedAt":"2026-05-29T08:38:23Z","reportedKeys":["rebase:100","conflict:200"]}`
+	if err := os.WriteFile(path, []byte(state+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	got, reported := loadLastReportedAt(path, logger)
+
+	if !got.Equal(expected) {
+		t.Errorf("expected %v, got %v", expected, got)
+	}
+	if len(reported) != 2 {
+		t.Fatalf("expected 2 dedup keys, got %d", len(reported))
+	}
+	if !reported["rebase:100"] {
+		t.Error("expected rebase:100 in reported map")
+	}
+	if !reported["conflict:200"] {
+		t.Error("expected conflict:200 in reported map")
+	}
+}
+
+func TestLoadLastReportedAt_PlainTextBackwardCompat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "last-report-at")
 	expected := time.Date(2026, 5, 29, 8, 38, 23, 0, time.UTC)
@@ -1014,10 +1049,13 @@ func TestLoadLastReportedAt_FileExists(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	got := loadLastReportedAt(path, logger)
+	got, reported := loadLastReportedAt(path, logger)
 
 	if !got.Equal(expected) {
 		t.Errorf("expected %v, got %v", expected, got)
+	}
+	if len(reported) != 0 {
+		t.Errorf("expected empty reported map for old format, got %d entries", len(reported))
 	}
 }
 
@@ -1027,11 +1065,14 @@ func TestLoadLastReportedAt_FileMissing(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	before := time.Now()
-	got := loadLastReportedAt(path, logger)
+	got, reported := loadLastReportedAt(path, logger)
 	after := time.Now()
 
 	if got.Before(before) || got.After(after) {
 		t.Errorf("expected time.Now() fallback, got %v (before=%v, after=%v)", got, before, after)
+	}
+	if len(reported) != 0 {
+		t.Errorf("expected empty reported map, got %d entries", len(reported))
 	}
 }
 
@@ -1044,11 +1085,14 @@ func TestLoadLastReportedAt_FileCorrupt(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	before := time.Now()
-	got := loadLastReportedAt(path, logger)
+	got, reported := loadLastReportedAt(path, logger)
 	after := time.Now()
 
 	if got.Before(before) || got.After(after) {
 		t.Errorf("expected time.Now() fallback for corrupt file, got %v", got)
+	}
+	if len(reported) != 0 {
+		t.Errorf("expected empty reported map, got %d entries", len(reported))
 	}
 }
 
@@ -1061,11 +1105,14 @@ func TestLoadLastReportedAt_FileEmpty(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	before := time.Now()
-	got := loadLastReportedAt(path, logger)
+	got, reported := loadLastReportedAt(path, logger)
 	after := time.Now()
 
 	if got.Before(before) || got.After(after) {
 		t.Errorf("expected time.Now() fallback for empty file, got %v", got)
+	}
+	if len(reported) != 0 {
+		t.Errorf("expected empty reported map, got %d entries", len(reported))
 	}
 }
 
@@ -1075,11 +1122,21 @@ func TestPersistLastReportedAt_WritesAndReads(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	ts := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
-	persistLastReportedAt(path, ts, logger)
+	reported := map[string]bool{"rebase:100": true, "conflict:200": true}
+	persistLastReportedAt(path, ts, reported, logger)
 
-	got := loadLastReportedAt(path, logger)
+	got, gotReported := loadLastReportedAt(path, logger)
 	if !got.Equal(ts) {
 		t.Errorf("expected %v after persist+load, got %v", ts, got)
+	}
+	if len(gotReported) != 2 {
+		t.Fatalf("expected 2 dedup keys after persist+load, got %d", len(gotReported))
+	}
+	if !gotReported["rebase:100"] {
+		t.Error("expected rebase:100 in loaded reported map")
+	}
+	if !gotReported["conflict:200"] {
+		t.Error("expected conflict:200 in loaded reported map")
 	}
 }
 
@@ -1089,37 +1146,34 @@ func TestPersistLastReportedAt_CreatesDirectory(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	ts := time.Now()
-	persistLastReportedAt(path, ts, logger)
+	persistLastReportedAt(path, ts, make(map[string]bool), logger)
 
 	// Verify directory was created
 	if _, err := os.Stat(filepath.Dir(path)); os.IsNotExist(err) {
 		t.Error("expected directory to be created")
 	}
 	// Verify file exists and is readable
-	got := loadLastReportedAt(path, logger)
+	got, _ := loadLastReportedAt(path, logger)
 	if got.IsZero() {
 		t.Error("expected non-zero timestamp after persist")
 	}
 }
 
-func TestDefaultLastReportAtPath_UniquePerWebhook(t *testing.T) {
+func TestDefaultLastReportAtPath_SameForAllWebhooks(t *testing.T) {
 	path1 := defaultLastReportAtPath("https://hooks.slack.com/services/T000/B000/xxx")
 	path2 := defaultLastReportAtPath("https://hooks.slack.com/services/T111/B111/yyy")
 	pathEmpty := defaultLastReportAtPath("")
 
-	if path1 == path2 {
-		t.Errorf("expected different paths for different webhook URLs, both got: %s", path1)
+	// All paths should be identical — hash was removed
+	if path1 != path2 {
+		t.Errorf("expected same path for different webhook URLs, got %s and %s", path1, path2)
 	}
-	if path1 == pathEmpty {
-		t.Errorf("expected different path for non-empty vs empty webhook URL")
+	if path1 != pathEmpty {
+		t.Errorf("expected same path for non-empty and empty webhook URLs, got %s and %s", path1, pathEmpty)
 	}
-	// Empty webhook should use the base filename without hash
-	if !strings.HasSuffix(pathEmpty, lastReportAtFile) {
-		t.Errorf("expected empty webhook path to end with %q, got: %s", lastReportAtFile, pathEmpty)
-	}
-	// Non-empty webhook should have a hash suffix
-	if strings.HasSuffix(path1, lastReportAtFile) {
-		t.Errorf("expected non-empty webhook path to have hash suffix, got: %s", path1)
+	// Path should end with the plain filename
+	if !strings.HasSuffix(path1, lastReportAtFile) {
+		t.Errorf("expected path to end with %q, got: %s", lastReportAtFile, path1)
 	}
 }
 
@@ -1158,9 +1212,13 @@ func TestSlackReporter_FlushPersistsLastReportedAt(t *testing.T) {
 
 	// Verify the file was written.
 	// RFC 3339 truncates to seconds, so the loaded timestamp may be up to 1s off.
-	got := loadLastReportedAt(stateFile, logger)
+	got, gotReported := loadLastReportedAt(stateFile, logger)
 	if got.Before(before.Add(-safetyMargin-1*time.Second)) || got.After(after.Add(-safetyMargin+1*time.Second)) {
 		t.Errorf("expected persisted timestamp to be ~now minus 2min, got %v (before=%v, after=%v)", got, before, after)
+	}
+	// Verify the dedup key was persisted
+	if !gotReported["test:1"] {
+		t.Error("expected dedup key 'test:1' in persisted state")
 	}
 }
 
@@ -1191,12 +1249,13 @@ func TestSlackReporter_LastReportedAtSurvivesRestart(t *testing.T) {
 	firstReportTime := reporter1.LastReportedAt()
 
 	// Second reporter: simulate restart by loading from the same file
+	lastReportedAt, reported := loadLastReportedAt(stateFile, logger)
 	reporter2 := &SlackReporter{
 		webhookURL:     ts.URL,
-		reported:       make(map[string]bool),
+		reported:       reported,
 		logger:         logger,
 		httpClient:     ts.Client(),
-		lastReportedAt: loadLastReportedAt(stateFile, logger),
+		lastReportedAt: lastReportedAt,
 		stateFilePath:  stateFile,
 	}
 
@@ -1348,6 +1407,210 @@ func TestCheckNewReviews_IncludesCommentsWithZeroCreatedAt(t *testing.T) {
 
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding (zero CreatedAt not filtered), got %d", len(findings))
+	}
+}
+
+func TestSlackReporter_DedupKeysSurviveRestart(t *testing.T) {
+	var postCount int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		postCount++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "last-report-at")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// First reporter: report rebase and conflict findings
+	reporter1 := &SlackReporter{
+		webhookURL:     ts.URL,
+		reported:       make(map[string]bool),
+		logger:         logger,
+		httpClient:     ts.Client(),
+		lastReportedAt: time.Now().Add(-1 * time.Hour),
+		stateFilePath:  stateFile,
+	}
+
+	reporter1.Collect([]SlackFinding{
+		{Owner: "org", Repo: "repo", PRNumber: 8365, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/8365", Category: "rebase", Message: "behind main", DedupKey: "rebase:8365"},
+		{Owner: "org", Repo: "repo", PRNumber: 8380, PRTitle: "Add feature", PRURL: "https://github.com/org/repo/pull/8380", Category: "conflict", Message: "merge conflicts", DedupKey: "conflict:8380"},
+	})
+	reporter1.Flush(context.Background())
+	if postCount != 1 {
+		t.Fatalf("expected 1 POST, got %d", postCount)
+	}
+
+	// Simulate restart: create new reporter from persisted state
+	lastReportedAt, reported := loadLastReportedAt(stateFile, logger)
+	reporter2 := &SlackReporter{
+		webhookURL:     ts.URL,
+		reported:       reported,
+		logger:         logger,
+		httpClient:     ts.Client(),
+		lastReportedAt: lastReportedAt,
+		stateFilePath:  stateFile,
+	}
+
+	// Same findings should be suppressed — dedup keys survived restart
+	reporter2.Collect([]SlackFinding{
+		{Owner: "org", Repo: "repo", PRNumber: 8365, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/8365", Category: "rebase", Message: "behind main", DedupKey: "rebase:8365"},
+		{Owner: "org", Repo: "repo", PRNumber: 8380, PRTitle: "Add feature", PRURL: "https://github.com/org/repo/pull/8380", Category: "conflict", Message: "merge conflicts", DedupKey: "conflict:8380"},
+	})
+	reporter2.Flush(context.Background())
+	if postCount != 1 {
+		t.Errorf("expected still 1 POST after restart (dedup keys survived), got %d", postCount)
+	}
+
+	// New finding should still be reported
+	reporter2.Collect([]SlackFinding{
+		{Owner: "org", Repo: "repo", PRNumber: 9000, PRTitle: "New PR", PRURL: "https://github.com/org/repo/pull/9000", Category: "rebase", Message: "behind main", DedupKey: "rebase:9000"},
+	})
+	reporter2.Flush(context.Background())
+	if postCount != 2 {
+		t.Errorf("expected 2 POSTs (new finding after restart), got %d", postCount)
+	}
+}
+
+func TestMigrateOldHashedFiles(t *testing.T) {
+	t.Run("current file exists — old files deleted", func(t *testing.T) {
+		dir := t.TempDir()
+		stateDir := filepath.Join(dir, "oompa")
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create old hashed files
+		oldFiles := []string{
+			"last-report-at-ff4b1805",
+			"last-report-at-abc12345",
+		}
+		for _, f := range oldFiles {
+			if err := os.WriteFile(filepath.Join(stateDir, f), []byte("2026-05-29T10:00:00Z\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Create the current (non-hashed) file — should NOT be removed
+		currentFile := filepath.Join(stateDir, "last-report-at")
+		if err := os.WriteFile(currentFile, []byte("2026-05-29T10:00:00Z\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		migrateOldHashedFiles(currentFile, logger)
+
+		// Old hashed files should be removed
+		for _, f := range oldFiles {
+			if _, err := os.Stat(filepath.Join(stateDir, f)); !os.IsNotExist(err) {
+				t.Errorf("expected old file %q to be removed", f)
+			}
+		}
+
+		// Current file should still exist
+		if _, err := os.Stat(currentFile); os.IsNotExist(err) {
+			t.Error("expected current file to survive migration")
+		}
+	})
+
+	t.Run("current file missing — first old file renamed to preserve state", func(t *testing.T) {
+		dir := t.TempDir()
+		stateDir := filepath.Join(dir, "oompa")
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create old hashed files with known content
+		oldContent := `{"lastReportedAt":"2026-05-29T08:00:00Z","reportedKeys":["rebase:100"]}` + "\n"
+		oldFiles := []string{
+			"last-report-at-abc12345",
+			"last-report-at-ff4b1805",
+		}
+		for _, f := range oldFiles {
+			if err := os.WriteFile(filepath.Join(stateDir, f), []byte(oldContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// Do NOT create the current file — simulate first run after upgrade
+		currentFile := filepath.Join(stateDir, "last-report-at")
+
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		migrateOldHashedFiles(currentFile, logger)
+
+		// Current file should now exist (renamed from the first old file)
+		data, err := os.ReadFile(currentFile)
+		if err != nil {
+			t.Fatalf("expected current file to exist after migration, got error: %v", err)
+		}
+		if string(data) != oldContent {
+			t.Errorf("expected migrated content %q, got %q", oldContent, string(data))
+		}
+
+		// All old hashed files should be gone
+		for _, f := range oldFiles {
+			if _, err := os.Stat(filepath.Join(stateDir, f)); !os.IsNotExist(err) {
+				t.Errorf("expected old file %q to be removed after migration", f)
+			}
+		}
+
+		// Verify the state is loadable and correct
+		ts, reported := loadLastReportedAt(currentFile, logger)
+		expected := time.Date(2026, 5, 29, 8, 0, 0, 0, time.UTC)
+		if !ts.Equal(expected) {
+			t.Errorf("expected timestamp %v, got %v", expected, ts)
+		}
+		if !reported["rebase:100"] {
+			t.Error("expected rebase:100 in reported map after migration")
+		}
+	})
+
+	t.Run("tmp files are ignored", func(t *testing.T) {
+		dir := t.TempDir()
+		stateDir := filepath.Join(dir, "oompa")
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create a .tmp file that looks like an old hashed file
+		tmpFile := filepath.Join(stateDir, "last-report-at-ff4b1805.tmp")
+		if err := os.WriteFile(tmpFile, []byte("temp"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		currentFile := filepath.Join(stateDir, "last-report-at")
+
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		migrateOldHashedFiles(currentFile, logger)
+
+		// .tmp file should NOT be touched (not renamed, not deleted)
+		if _, err := os.Stat(tmpFile); os.IsNotExist(err) {
+			t.Error("expected .tmp file to be left alone")
+		}
+		// Current file should NOT exist (nothing to migrate)
+		if _, err := os.Stat(currentFile); !os.IsNotExist(err) {
+			t.Error("expected current file to not exist when only .tmp files present")
+		}
+	})
+}
+
+func TestPersistLastReportedAt_PersistsAllKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "last-report-at")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Create a large set of keys — all should be persisted since the in-memory
+	// map is the bound (maxDedupEntries), not a separate persist cap.
+	reported := make(map[string]bool)
+	for i := range 700 {
+		reported[fmt.Sprintf("key:%d", i)] = true
+	}
+
+	ts := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
+	persistLastReportedAt(path, ts, reported, logger)
+
+	_, loaded := loadLastReportedAt(path, logger)
+	if len(loaded) != 700 {
+		t.Errorf("expected all 700 keys persisted, got %d", len(loaded))
 	}
 }
 
