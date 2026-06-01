@@ -27,6 +27,7 @@ Tells Claude to:
   - Declines invalid suggestions with specific rationale
   - Posts per-comment replies quoting the original feedback
   - Resolves addressed review threads via GraphQL
+- The skill MUST reply to every thread — there is no fallback mechanism
 - Run lint/test
 - Do NOT commit, push, or amend — the outer agent handles git operations
 - Skip step 7 (commit/push) from the skill workflow

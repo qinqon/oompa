@@ -6,41 +6,6 @@ import (
 	"time"
 )
 
-const fallbackReplyBody = "Reviewed — no code changes needed."
-
-// postFallbackReplies checks each review thread for a reply from the agent user
-// and posts a fallback reply for any threads that were left unreplied. This
-// ensures review threads are never left unresolved when the cursor advances.
-// Returns true if all replies were verified/posted successfully, false if any
-// GitHub API call failed (callers should not advance cursors on failure).
-func (a *Agent) postFallbackReplies(ctx context.Context, task reviewTask) bool {
-	if len(task.humanComments) == 0 {
-		return true
-	}
-
-	commentIDs := make([]int64, 0, len(task.humanComments))
-	for _, c := range task.humanComments {
-		commentIDs = append(commentIDs, c.ID)
-	}
-
-	repliedMap, err := a.gh.HasRepliesFromUser(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, commentIDs, a.cfg.GitHubUser)
-	if err != nil {
-		a.logger.Warn("failed to check for replies", "pr", task.work.PRNumber, "error", err)
-		return false
-	}
-
-	ok := true
-	for _, c := range task.humanComments {
-		if !repliedMap[c.ID] {
-			if err := a.gh.ReplyToPRComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber, c.ID, fallbackReplyBody); err != nil {
-				a.logger.Warn("failed to post fallback reply", "comment", c.ID, "error", err)
-				ok = false
-			}
-		}
-	}
-	return ok
-}
-
 // ProcessReviewComments checks for new review comments and review bodies, then runs Claude to address them.
 func (a *Agent) ProcessReviewComments(ctx context.Context) {
 	a.emit(Event{
@@ -248,22 +213,14 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 				Duration:  time.Since(agentStart).Seconds(),
 				Error:     err.Error(),
 			})
-			// Post fallback replies before advancing cursors so threads don't
-			// appear ignored on GitHub.
-			fallbackOK := a.postFallbackReplies(ctx, task)
-
 			// Advance cursors even on agent failure — the reviews were evaluated.
 			// Not advancing causes an infinite retry loop where the same reviews
 			// are re-fetched and re-processed every poll cycle ($0.50-1.00 each time).
-			// However, skip advancement if fallback replies failed — a transient
-			// GitHub failure should not permanently skip unreplied threads.
-			if fallbackOK {
-				if task.maxCommentID > task.work.LastCommentID {
-					task.work.LastCommentID = task.maxCommentID
-				}
-				if task.maxReviewID > task.work.LastReviewID {
-					task.work.LastReviewID = task.maxReviewID
-				}
+			if task.maxCommentID > task.work.LastCommentID {
+				task.work.LastCommentID = task.maxCommentID
+			}
+			if task.maxReviewID > task.work.LastReviewID {
+				task.work.LastReviewID = task.maxReviewID
 			}
 			task.work.ReviewNoOpCount++
 			return
@@ -328,23 +285,12 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
-		// Post fallback replies for any review threads the agent didn't
-		// reply to, so threads are never left unresolved on GitHub.
-		// Skip when changes were detected but push failed — the comments
-		// will be retried on the next poll cycle.
-		fallbackOK := true
-		if !changeDetected || pushed {
-			fallbackOK = a.postFallbackReplies(ctx, task)
-		}
-
 		// Advance cursors based on ALL fetched comment/review IDs (not just
 		// the human-filtered subset) to avoid re-fetching and re-filtering
 		// bot-posted or already-replied comments on every poll cycle.
 		// When changes were detected but push failed, skip cursor advancement
 		// so the comments are retried on the next poll cycle.
-		// Also skip if fallback replies failed — a transient GitHub failure
-		// should not permanently skip unreplied threads.
-		if (!changeDetected || pushed) && fallbackOK {
+		if !changeDetected || pushed {
 			if task.maxCommentID > task.work.LastCommentID {
 				task.work.LastCommentID = task.maxCommentID
 			}

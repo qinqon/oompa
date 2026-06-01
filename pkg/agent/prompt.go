@@ -86,6 +86,12 @@ Instructions:
    - Resolve addressed review threads via GraphQL
 2. Run "make lint" and "make test" to verify your changes.
 
+IMPORTANT: The skill MUST reply to EVERY review thread — no thread should be left without a response.
+For each thread, either:
+  - Describe the specific fix made (e.g., "Fixed. Removed the redundant check and switched to X.")
+  - Explain substantively why no changes are needed (with specific reasoning, not a generic dismissal)
+There is NO fallback — if the skill does not reply to a thread, it will remain unreplied on GitHub.
+
 CRITICAL: Do NOT commit, push, or amend — the outer agent handles git operations automatically.
 If you make code changes, leave them UNCOMMITTED. Do NOT run "git add", "git commit", or "git push".
 Do NOT run "git push" even if the skill tries to — skip step 7 (commit/push) from the skill workflow.`)

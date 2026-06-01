@@ -295,37 +295,6 @@ func (f *fakeGitHubClient) GetWorkflowJobLogs(_ context.Context, _, _ string, _ 
 	return "", nil
 }
 
-func (f *fakeGitHubClient) HasRepliesFromUser(_ context.Context, _, _ string, prNumber int, commentIDs []int64, username string) (map[int64]bool, error) {
-	f.state.mu.Lock()
-	defer f.state.mu.Unlock()
-
-	wanted := make(map[int64]bool, len(commentIDs))
-	for _, id := range commentIDs {
-		wanted[id] = true
-	}
-
-	result := make(map[int64]bool)
-
-	// Check structured PR comments
-	for _, c := range f.state.prComments[prNumber] {
-		if c.InReplyToID != 0 && wanted[c.InReplyToID] && c.User == username {
-			result[c.InReplyToID] = true
-		}
-	}
-
-	// Also check replies recorded by ReplyToPRComment in posted comments
-	for _, p := range f.state.postedComments {
-		for _, id := range commentIDs {
-			prefix := fmt.Sprintf("reply:%d:", id)
-			if strings.HasPrefix(p, prefix) {
-				result[id] = true
-			}
-		}
-	}
-
-	return result, nil
-}
-
 func (f *fakeGitHubClient) CountCommitsSince(_ context.Context, _, _ string, _ time.Time) (int, error) {
 	return 0, nil // always quiet in integration tests
 }
