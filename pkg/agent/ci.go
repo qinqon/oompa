@@ -236,7 +236,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			Action:    fmt.Sprintf("Investigating CI failure: %s", task.failures[0].Name),
 			PRNumbers: []int{task.work.PRNumber},
 		})
-		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff, task.commits, a.cfg.SignedOffBy, a.cfg.SkipFix)
+		prompt := buildCIFixPrompt(*task.work, task.failures, task.diff, task.commits, a.cfg.SkipFix)
 		result, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		// Track cumulative cost even on failure — failed invocations still consume
 		// tokens and incur costs, so the MaxPRSessionCost guard must count them.

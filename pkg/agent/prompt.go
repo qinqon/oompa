@@ -5,12 +5,16 @@ import (
 	"strings"
 )
 
-func buildImplementationPrompt(issue Issue, signedOffBy string) string {
-	signoff := ""
-	if signedOffBy != "" {
-		signoff = fmt.Sprintf(`
-4. Add "Signed-off-by: %s" as a trailer in every commit message
-   (do NOT use git commit -s, write it directly in the message)`, signedOffBy)
+func buildImplementationPrompt(issue Issue, signedOffBy, assistedBy string) string {
+	trailerInstructions := ""
+	if signedOffBy != "" || assistedBy != "" {
+		trailerInstructions = "\n4. Add the following trailers in every commit message\n   (do NOT use git commit -s, write them directly in the message):"
+		if signedOffBy != "" {
+			trailerInstructions += fmt.Sprintf("\n   Signed-off-by: %s", signedOffBy)
+		}
+		if assistedBy != "" {
+			trailerInstructions += fmt.Sprintf("\n   Assisted-by: %s", assistedBy)
+		}
 	}
 
 	return fmt.Sprintf(`You are resolving GitHub issue #%d.
@@ -35,7 +39,7 @@ Instructions:
    If there is no PR template, skip this step.
 
 Do NOT push, create PRs, or amend — the agent handles that automatically.`,
-		issue.Number, issue.Title, issue.Body, signoff, issue.Number)
+		issue.Number, issue.Title, issue.Body, trailerInstructions, issue.Number)
 }
 
 func buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, reviews []PRReview, owner, repo string) string {
@@ -89,7 +93,7 @@ Do NOT run "git push" even if the skill tries to — skip step 7 (commit/push) f
 	return prompt.String()
 }
 
-func buildCIFixPrompt(work IssueWork, failures []CheckRun, diff string, commits []Commit, signedOffBy string, skipFix bool) string {
+func buildCIFixPrompt(work IssueWork, failures []CheckRun, diff string, commits []Commit, skipFix bool) string {
 	var prompt strings.Builder
 	fmt.Fprintf(&prompt, `CI is failing on PR #%d for issue #%d: %s
 
@@ -208,11 +212,6 @@ cause your work to be discarded.`)
      be discarded.
    `)
 
-		signoff := ""
-		if signedOffBy != "" {
-			signoff = fmt.Sprintf("\n   - Add \"Signed-off-by: %s\" as a trailer in every commit message (do NOT use git commit -s, write it directly in the message)", signedOffBy)
-		}
-
 		if len(commits) > 1 {
 			prompt.WriteString(`   - IMPORTANT: This PR has multiple commits. You MUST identify which specific commit introduced the breaking change
    - After fixing the code, amend your fix into the commit that introduced the issue:
@@ -220,12 +219,12 @@ cause your work to be discarded.`)
      git commit --amend --no-edit
    - If the breaking commit is NOT the HEAD commit, use fixup instead:
      git add <fixed-files>
-     git commit --fixup <SHA-of-commit-that-introduced-issue>` + signoff + `
+     git commit --fixup <SHA-of-commit-that-introduced-issue>
 `)
 		} else {
 			prompt.WriteString(`   - After fixing the code, amend your fix into the commit:
      git add <fixed-files>
-     git commit --amend --no-edit` + signoff + `
+     git commit --amend --no-edit
 `)
 		}
 
@@ -241,12 +240,7 @@ cause your work to be discarded.`)
 	return prompt.String()
 }
 
-func buildConflictResolutionPrompt(work IssueWork, originDefaultBranch, signedOffBy string) string {
-	signoff := ""
-	if signedOffBy != "" {
-		signoff = fmt.Sprintf("\n6. Add \"Signed-off-by: %s\" as a trailer in every commit message (do NOT use git commit -s, write it directly in the message)", signedOffBy)
-	}
-
+func buildConflictResolutionPrompt(work IssueWork, originDefaultBranch string) string {
 	return fmt.Sprintf(`PR #%d for issue #%d (%s) has merge conflicts with the main branch.
 
 Instructions:
@@ -263,10 +257,10 @@ Instructions:
    - CRITICAL: Do NOT run "git rebase --abort"
    - CRITICAL: Do NOT create new standalone commits on top (no "git commit")
    - The rebase must complete successfully with the original commit structure preserved
-5. Run "make lint" and "make test" to verify the resolved code still works%s
+5. Run "make lint" and "make test" to verify the resolved code still works
 
 Do NOT push — the agent handles that automatically.`,
-		work.PRNumber, work.IssueNumber, work.IssueTitle, originDefaultBranch, signoff)
+		work.PRNumber, work.IssueNumber, work.IssueTitle, originDefaultBranch)
 }
 
 func buildPeriodicCITriagePrompt(jobName, runID, buildLog, owner, repo string) string {

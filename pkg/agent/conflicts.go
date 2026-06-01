@@ -285,7 +285,7 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 		}
 		commitCountBefore := len(commitsBefore)
 
-		prompt := buildConflictResolutionPrompt(*task.work, a.originDefaultBranch(), a.cfg.SignedOffBy)
+		prompt := buildConflictResolutionPrompt(*task.work, a.originDefaultBranch())
 		_, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		if err != nil {
 			a.logger.Error("agent failed to resolve conflicts", "pr", task.work.PRNumber, "error", err)

@@ -186,7 +186,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			State:    "working",
 			Action:   fmt.Sprintf("Agent implementing issue #%d", task.issue.Number),
 		})
-		prompt := buildImplementationPrompt(task.issue, a.cfg.SignedOffBy)
+		prompt := buildImplementationPrompt(task.issue, a.cfg.SignedOffBy, a.cfg.AssistedBy)
 		_, err := a.codeAgent.Run(ctx, a.runner, task.worktreePath, prompt, a.logger, false)
 		if err != nil {
 			a.logger.Error("agent failed", "issue", task.issue.Number, "error", err)

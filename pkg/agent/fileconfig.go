@@ -363,6 +363,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			GitAuthorName:   globalCfg.GitAuthorName,
 			GitAuthorEmail:  globalCfg.GitAuthorEmail,
 			SignedOffBy:     globalCfg.SignedOffBy,
+			AssistedBy:     globalCfg.AssistedBy,
 			Reviewers:          projReviewers,
 			Version:            globalCfg.Version,
 			MaxReviewNoOps:     globalCfg.MaxReviewNoOps,

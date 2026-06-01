@@ -74,6 +74,7 @@ To set up a GitHub App: create one in your org settings (`https://github.com/org
 | `--log-level` | `OOMPA_LOG_LEVEL` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 | `--log-file` | `OOMPA_LOG_FILE` | stderr | Write logs to a file instead of stderr |
 | `--signed-off-by` | `OOMPA_SIGNED_OFF_BY` | auto-detected | `Signed-off-by` line for commits |
+| `--assisted-by` | `OOMPA_ASSISTED_BY` | auto-detected | `Assisted-by` trailer for AI-assisted commits (auto-detected from `--agent`) |
 | `--reviewers` | `OOMPA_REVIEWERS` | all | Comma-separated allowlist of reviewers to respond to |
 | `--fork` | `OOMPA_FORK` | -- | Fork repo as `owner/repo` for pushing branches |
 | `--watch-prs` | `OOMPA_WATCH_PRS` | -- | Comma-separated PR numbers to monitor (bypasses issue discovery) |

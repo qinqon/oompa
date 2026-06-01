@@ -28,17 +28,18 @@ func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumbe
 
 	body := fmt.Sprintf("Fixes #%d\n\n", issueNumber)
 	if rawBody != "" {
-		body += stripSignedOffBy(rawBody) + "\n\n"
+		body += stripTrailers(rawBody) + "\n\n"
 	}
 	body += a.botComment()
 	return body
 }
 
-// stripSignedOffBy removes "Signed-off-by: ..." trailer lines from a string.
-func stripSignedOffBy(s string) string {
+// stripTrailers removes "Signed-off-by: ..." and "Assisted-by: ..." trailer lines from a string.
+func stripTrailers(s string) string {
 	var kept []string
 	for line := range strings.SplitSeq(s, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "Signed-off-by:") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "Signed-off-by:") || strings.HasPrefix(trimmed, "Assisted-by:") {
 			continue
 		}
 		kept = append(kept, line)
@@ -124,14 +125,21 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 	a.runner.Run(ctx, worktreePath, "git", "restore", "--staged", ".pr-body.md") //nolint:errcheck // best-effort
 
 	// Create a single commit with a meaningful message.
-	// Strip any Signed-off-by trailers Claude may have added to individual commits
-	// before building the body, then append exactly one canonical trailer at the end.
+	// Strip any Signed-off-by/Assisted-by trailers Claude may have added to individual
+	// commits before building the body, then append exactly one canonical set of trailers.
 	commitMsg := fmt.Sprintf("Fix #%d: %s", issueNumber, issueTitle)
 	if commitMessages != "" {
-		commitMsg += "\n\n" + stripSignedOffBy(commitMessages)
+		commitMsg += "\n\n" + stripTrailers(commitMessages)
 	}
+	var trailers []string
 	if a.cfg.SignedOffBy != "" {
-		commitMsg += fmt.Sprintf("\n\nSigned-off-by: %s", a.cfg.SignedOffBy)
+		trailers = append(trailers, fmt.Sprintf("Signed-off-by: %s", a.cfg.SignedOffBy))
+	}
+	if a.cfg.AssistedBy != "" {
+		trailers = append(trailers, fmt.Sprintf("Assisted-by: %s", a.cfg.AssistedBy))
+	}
+	if len(trailers) > 0 {
+		commitMsg += "\n\n" + strings.Join(trailers, "\n")
 	}
 
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "-m", commitMsg); err != nil {

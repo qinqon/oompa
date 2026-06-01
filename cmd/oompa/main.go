@@ -43,6 +43,7 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 	flag.BoolVar(&cfg.OneShot, "one-shot", false, "Run one cycle and exit")
 	flag.BoolVar(&cfg.SkipFix, "skip-fix", envOrDefault("OOMPA_SKIP_FIX", "") == "true", "Investigate CI failures and comment but do not fix or push code")
 	flag.StringVar(&cfg.SignedOffBy, "signed-off-by", os.Getenv("OOMPA_SIGNED_OFF_BY"), "Signed-off-by value for commits (e.g. \"Name <email>\")")
+	flag.StringVar(&cfg.AssistedBy, "assisted-by", os.Getenv("OOMPA_ASSISTED_BY"), "Assisted-by trailer value for commits (e.g. \"Claude <noreply@anthropic.com>\"); auto-detected from --agent when empty")
 
 	var reviewers string
 	flag.StringVar(&reviewers, "reviewers", os.Getenv("OOMPA_REVIEWERS"), "Comma-separated whitelist of users/bots whose reviews to address (empty = all)")
@@ -483,6 +484,11 @@ func buildAgentForConfig(cfg agent.Config, ghClient *agent.GoGitHubClient, token
 	}
 
 	codeAgent := selectCodeAgent(cfg, logger)
+
+	// Auto-detect Assisted-by trailer from agent backend when not explicitly set.
+	if cfg.AssistedBy == "" {
+		cfg.AssistedBy = agent.DefaultAssistedBy(cfg.Agent)
+	}
 
 	var agentGH agent.GitHubClient = ghClient
 	if cfg.DryRun {
