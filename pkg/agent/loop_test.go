@@ -41,12 +41,6 @@ type mockGitHubClient struct {
 
 	listIssuesCalled bool // tracks whether ListLabeledIssues was called
 	listIssuesErr    error
-	replyErr         error // error to return from ReplyToPRComment
-
-	// repliedCommentIDs simulates comments that already have a reply from the
-	// agent user (used by HasReplyFromUser).
-	repliedCommentIDs map[int64]bool
-	hasReplyErr       error // error to return from HasReplyFromUser
 }
 
 func (m *mockGitHubClient) ListLabeledIssues(_ context.Context, _, _, _ string) ([]Issue, error) {
@@ -138,24 +132,8 @@ func (m *mockGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, 
 }
 
 func (m *mockGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, _ int, commentID int64, body string) error {
-	if m.replyErr != nil {
-		return m.replyErr
-	}
 	m.addedComments = append(m.addedComments, fmt.Sprintf("reply:%d:%s", commentID, body))
 	return nil
-}
-
-func (m *mockGitHubClient) HasRepliesFromUser(_ context.Context, _, _ string, _ int, commentIDs []int64, _ string) (map[int64]bool, error) {
-	if m.hasReplyErr != nil {
-		return nil, m.hasReplyErr
-	}
-	result := make(map[int64]bool)
-	for _, id := range commentIDs {
-		if m.repliedCommentIDs != nil && m.repliedCommentIDs[id] {
-			result[id] = true
-		}
-	}
-	return result, nil
 }
 
 func (m *mockGitHubClient) GetPRMergeable(_ context.Context, _, _ string, _ int) (string, error) {
@@ -613,15 +591,12 @@ func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
 		t.Errorf("expected lastCommentID 60, got %d", agent.state.ActiveIssues[IssueKey("owner", "repo", 42)].LastCommentID)
 	}
 
-	// Fallback reply should be posted for unreplied threads before cursor advances.
-	foundReply := false
+	// Oompa does NOT post its own replies — the skill handles all per-comment
+	// communication. Verify no reply comments were posted by the agent.
 	for _, comment := range gh.addedComments {
-		if strings.HasPrefix(comment, "reply:60:") {
-			foundReply = true
+		if strings.HasPrefix(comment, "reply:") {
+			t.Errorf("expected no agent-posted replies (skill owns replies), got: %s", comment)
 		}
-	}
-	if !foundReply {
-		t.Error("expected fallback reply to be posted for unreplied comment 60")
 	}
 }
 
@@ -682,152 +657,15 @@ func TestProcessReviewComments_CursorAdvancesUnconditionally(t *testing.T) {
 	agent.ProcessReviewComments(context.Background())
 
 	// Cursor should always advance after a successful agent run.
-	// Fallback replies are posted for any unreplied threads before advancing.
 	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
 	if work.LastCommentID != 60 {
 		t.Errorf("expected LastCommentID to advance to 60, got %d", work.LastCommentID)
 	}
 }
 
-func TestProcessReviewComments_FallbackRepliesForUnrepliedThreads(t *testing.T) {
-	// When the agent finds no changes needed and the skill doesn't post replies,
-	// oompa should post fallback replies so threads aren't left unresolved.
-	result := streamResultJSON(AgentResult{Result: "No changes needed"})
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
-			{ID: 61, User: "reviewer", Body: "Also fix that", Path: "util.go", Line: 5},
-		},
-	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
-
-	agent.ProcessReviewComments(context.Background())
-
-	// Both comments should get fallback replies
-	reply60 := false
-	reply61 := false
-	for _, comment := range gh.addedComments {
-		if strings.HasPrefix(comment, "reply:60:") {
-			reply60 = true
-		}
-		if strings.HasPrefix(comment, "reply:61:") {
-			reply61 = true
-		}
-	}
-	if !reply60 {
-		t.Error("expected fallback reply for comment 60")
-	}
-	if !reply61 {
-		t.Error("expected fallback reply for comment 61")
-	}
-
-	// Cursor should advance after replies are posted
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastCommentID != 61 {
-		t.Errorf("expected LastCommentID to advance to 61, got %d", work.LastCommentID)
-	}
-}
-
-func TestProcessReviewComments_NoDuplicateFallbackReplies(t *testing.T) {
-	// When the skill already posted replies, no duplicate fallback replies should be posted.
-	result := streamResultJSON(AgentResult{Result: "Addressed the feedback"})
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
-			{ID: 61, User: "reviewer", Body: "Also fix that", Path: "util.go", Line: 5},
-		},
-		// Simulate that both comments already have replies from the agent
-		repliedCommentIDs: map[int64]bool{60: true, 61: true},
-	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
-
-	agent.ProcessReviewComments(context.Background())
-
-	// No fallback replies should be posted (skill already handled them)
-	for _, comment := range gh.addedComments {
-		if strings.HasPrefix(comment, "reply:") {
-			t.Errorf("expected no fallback replies (skill already replied), got: %s", comment)
-		}
-	}
-
-	// Cursor should still advance
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastCommentID != 61 {
-		t.Errorf("expected LastCommentID to advance to 61, got %d", work.LastCommentID)
-	}
-}
-
-func TestProcessReviewComments_MixedRepliesOnlyFallbackForUnreplied(t *testing.T) {
-	// When the skill replied to some threads but not others,
-	// only unreplied threads get fallback replies.
-	result := streamResultJSON(AgentResult{Result: "Partially addressed"})
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
-			{ID: 61, User: "reviewer", Body: "Also fix that", Path: "util.go", Line: 5},
-		},
-		// Simulate that only comment 60 has a reply
-		repliedCommentIDs: map[int64]bool{60: true},
-	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
-
-	agent.ProcessReviewComments(context.Background())
-
-	// Only comment 61 should get a fallback reply
-	reply60 := false
-	reply61 := false
-	for _, comment := range gh.addedComments {
-		if strings.HasPrefix(comment, "reply:60:") {
-			reply60 = true
-		}
-		if strings.HasPrefix(comment, "reply:61:") {
-			reply61 = true
-		}
-	}
-	if reply60 {
-		t.Error("expected no fallback reply for comment 60 (already replied)")
-	}
-	if !reply61 {
-		t.Error("expected fallback reply for unreplied comment 61")
-	}
-}
-
-func TestProcessReviewComments_AgentErrorPostsFallbackReplies(t *testing.T) {
-	// When the agent errors out, fallback replies should still be posted
-	// before cursor advances.
+func TestProcessReviewComments_AgentErrorStillAdvancesCursor(t *testing.T) {
+	// When the agent errors out, cursor should still advance to avoid
+	// infinite retry loops ($0.50-1.00 each time).
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
@@ -851,61 +689,17 @@ func TestProcessReviewComments_AgentErrorPostsFallbackReplies(t *testing.T) {
 
 	agent.ProcessReviewComments(context.Background())
 
-	// Fallback reply should be posted even when agent fails
-	foundReply := false
+	// Oompa does NOT post its own replies — the skill handles all per-comment communication.
 	for _, comment := range gh.addedComments {
-		if strings.HasPrefix(comment, "reply:60:") {
-			foundReply = true
+		if strings.HasPrefix(comment, "reply:") {
+			t.Errorf("expected no agent-posted replies (skill owns replies), got: %s", comment)
 		}
-	}
-	if !foundReply {
-		t.Error("expected fallback reply to be posted for unreplied comment 60 even on agent error")
 	}
 
 	// Cursor should still advance (to avoid infinite retry loops)
 	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
 	if work.LastCommentID != 60 {
 		t.Errorf("expected LastCommentID to advance to 60, got %d", work.LastCommentID)
-	}
-}
-
-func TestProcessReviewComments_PushFailureSkipsFallbackReplies(t *testing.T) {
-	// When changes were detected but push failed, fallback replies should NOT
-	// be posted (the comments will be retried on the next poll cycle).
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
-		},
-	}
-	runner := &mockCommandRunner{stdout: []byte("dirty"), err: fmt.Errorf("git failed")}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.codeAgent = &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
-	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
-
-	agent.ProcessReviewComments(context.Background())
-
-	// No fallback replies when push fails (will retry on next cycle)
-	for _, comment := range gh.addedComments {
-		if strings.HasPrefix(comment, "reply:") {
-			t.Errorf("expected no fallback replies when push failed, got: %s", comment)
-		}
-	}
-
-	// Cursor should NOT advance
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastCommentID != 50 {
-		t.Errorf("expected LastCommentID to stay at 50, got %d", work.LastCommentID)
 	}
 }
 

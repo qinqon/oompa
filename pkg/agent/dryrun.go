@@ -147,10 +147,6 @@ func (d *DryRunGitHubClient) GetWorkflowJobLogs(ctx context.Context, owner, repo
 	return d.inner.GetWorkflowJobLogs(ctx, owner, repo, jobID)
 }
 
-func (d *DryRunGitHubClient) HasRepliesFromUser(ctx context.Context, owner, repo string, prNumber int, commentIDs []int64, username string) (map[int64]bool, error) {
-	return d.inner.HasRepliesFromUser(ctx, owner, repo, prNumber, commentIDs, username)
-}
-
 func (d *DryRunGitHubClient) CountCommitsSince(ctx context.Context, owner, repo string, since time.Time) (int, error) {
 	return d.inner.CountCommitsSince(ctx, owner, repo, since)
 }

@@ -55,7 +55,7 @@ All interfaces mocked:
 - `TestProcessNewIssues_HappyPath` -- creates worktree, runs claude, agent pushes and creates PR, updates state
 - `TestProcessNewIssues_ClaudeFailure` -- adds `ai-failed` label, comments on issue
 - `TestProcessReviewComments_NoNewComments` -- no action taken
-- `TestProcessReviewComments_AddressesHumanComments` -- runs agent call, updates lastCommentID, verifies no hardcoded replies
+- `TestProcessReviewComments_AddressesHumanComments` -- runs agent call, updates lastCommentID, verifies no agent-posted replies (skill owns replies)
 - `TestProcessNewIssues_RechecksForPR` -- re-checks for PR when prNumber is 0
 - `TestProcessReviewComments_SkipsNonWhitelistedUsers` -- skips comments from users not in whitelist
 - `TestProcessReviewComments_AllowsAllWhenWhitelistEmpty` -- allows all when whitelist is empty
