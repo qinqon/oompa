@@ -101,6 +101,11 @@ func (m *mockGitHubClient) AddPRCommentReaction(_ context.Context, _, _ string, 
 	return nil
 }
 
+func (m *mockGitHubClient) AddIssueCommentReaction(_ context.Context, _, _ string, commentID int64, reaction string) error {
+	m.addedReactions = append(m.addedReactions, fmt.Sprintf("issue:%d:%s", commentID, reaction))
+	return nil
+}
+
 func (m *mockGitHubClient) GetCheckRuns(_ context.Context, _, _, _ string) ([]CheckRun, error) {
 	return m.checkRuns, nil
 }
@@ -5147,6 +5152,308 @@ func TestBuildTriageMatchPrompt(t *testing.T) {
 	for _, want := range checks {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+func TestProcessReviewComments_OompaCommandProcessed(t *testing.T) {
+	// A PR conversation comment starting with /oompa should be treated as a directive.
+	result := streamResultJSON(AgentResult{Result: "Done"})
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 70, User: "reviewer", Body: "/oompa fix the commit message"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Should have invoked the agent
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	if claudeCalls != 1 {
+		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
+	}
+
+	// Cursor should advance
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastIssueCommentID != 70 {
+		t.Errorf("expected LastIssueCommentID 70, got %d", work.LastIssueCommentID)
+	}
+
+	// Should have added :eyes: reaction using issue comment API
+	if !slices.Contains(gh.addedReactions, "issue:70:eyes") {
+		t.Errorf("expected issue comment :eyes: reaction, got %v", gh.addedReactions)
+	}
+}
+
+func TestProcessReviewComments_IgnoresNonOompaComments(t *testing.T) {
+	// PR conversation comments without /oompa prefix should be ignored.
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 70, User: "reviewer", Body: "This looks good to me"},
+			{ID: 71, User: "reviewer", Body: "I think we should refactor this"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Should NOT invoke the agent
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			t.Error("should not invoke claude for comments without /oompa prefix")
+		}
+	}
+
+	// Cursor should still advance past filtered comments
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastIssueCommentID != 71 {
+		t.Errorf("expected LastIssueCommentID to advance to 71, got %d", work.LastIssueCommentID)
+	}
+}
+
+func TestProcessReviewComments_OompaCommandSkipsNonWhitelisted(t *testing.T) {
+	// /oompa commands from non-whitelisted users should be ignored.
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 70, User: "random-user", Body: "/oompa fix the commit message"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.Reviewers = []string{"trusted-reviewer"}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			t.Error("should not invoke claude for non-whitelisted user's /oompa command")
+		}
+	}
+}
+
+func TestProcessReviewComments_OompaCommandIncludedInPrompt(t *testing.T) {
+	// The /oompa directive should appear in the prompt with the /oompa prefix stripped.
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 70, User: "reviewer", Body: "/oompa add Signed-off-by trailers"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+	}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = codeAgent
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	if len(codeAgent.prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d", len(codeAgent.prompts))
+	}
+
+	prompt := codeAgent.prompts[0]
+
+	// Should contain the directive text
+	if !strings.Contains(prompt, "add Signed-off-by trailers") {
+		t.Error("prompt should contain the directive text")
+	}
+
+	// Should contain the section header
+	if !strings.Contains(prompt, "PR conversation directives") {
+		t.Error("prompt should contain PR conversation directives section")
+	}
+
+	// Should NOT contain the /oompa prefix in the directive
+	if strings.Contains(prompt, "/oompa add") {
+		t.Error("prompt should strip the /oompa prefix from directives")
+	}
+}
+
+func TestProcessReviewComments_OompaCommandWithReviewComments(t *testing.T) {
+	// Both inline review comments and /oompa PR comments should be processed together.
+	result := streamResultJSON(AgentResult{Result: "Done"})
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Fix the typo", Path: "main.go", Line: 10},
+		},
+		issueComments: []ReviewComment{
+			{ID: 70, User: "reviewer", Body: "/oompa rebase on main"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Should have invoked the agent once (both types combined into one task)
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	if claudeCalls != 1 {
+		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
+	}
+
+	// Both cursors should advance
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastCommentID != 60 {
+		t.Errorf("expected LastCommentID 60, got %d", work.LastCommentID)
+	}
+	if work.LastIssueCommentID != 70 {
+		t.Errorf("expected LastIssueCommentID 70, got %d", work.LastIssueCommentID)
+	}
+
+	// Should have reactions for both comment types
+	if !slices.Contains(gh.addedReactions, "60:eyes") {
+		t.Error("expected :eyes: reaction on review comment")
+	}
+	if !slices.Contains(gh.addedReactions, "issue:70:eyes") {
+		t.Error("expected :eyes: reaction on issue comment")
+	}
+}
+
+func TestProcessReviewComments_OompaCommandCursorAdvancesOnAgentError(t *testing.T) {
+	// When the agent errors, the issue comment cursor should still advance.
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 70, User: "reviewer", Body: "/oompa fix the commit message"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastIssueCommentID != 70 {
+		t.Errorf("expected LastIssueCommentID to advance to 70 on agent error, got %d", work.LastIssueCommentID)
+	}
+}
+
+func TestProcessReviewComments_OompaCommandIgnoresBarePrefix(t *testing.T) {
+	// A bare "/oompa" comment with no directive text should be ignored.
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 70, User: "reviewer", Body: "/oompa"},
+			{ID: 71, User: "reviewer", Body: "/oompa   "},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Should NOT invoke the agent for bare /oompa with no directive
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			t.Error("should not invoke claude for bare /oompa comment with no directive")
+		}
+	}
+
+	// Cursor should still advance past filtered comments
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastIssueCommentID != 71 {
+		t.Errorf("expected LastIssueCommentID to advance to 71, got %d", work.LastIssueCommentID)
+	}
+}
+
+func TestProcessReviewComments_OompaCommandIgnoresBotComments(t *testing.T) {
+	// Bot-posted comments with /oompa prefix should be ignored.
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 70, User: "some-bot", Body: "/oompa do something " + botMarker},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			t.Error("should not invoke claude for bot-posted /oompa comment")
 		}
 	}
 }

@@ -22,6 +22,7 @@ type GitHubClient interface {
 	RemoveLabel(ctx context.Context, owner, repo string, issueNumber int, label string) error
 	ListPRsByHead(ctx context.Context, owner, repo, headOwner, branch string) ([]PR, error)
 	AddPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error
+	AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error
 	GetCheckRuns(ctx context.Context, owner, repo, ref string) ([]CheckRun, error)
 	GetCheckRunLog(ctx context.Context, owner, repo string, checkRunID int64) (string, error)
 	GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error)
@@ -256,6 +257,14 @@ func (g *GoGitHubClient) AddPRCommentReaction(ctx context.Context, owner, repo s
 	_, _, err := g.client.Reactions.CreatePullRequestCommentReaction(ctx, owner, repo, commentID, reaction)
 	if err != nil {
 		return fmt.Errorf("adding reaction: %w", err)
+	}
+	return nil
+}
+
+func (g *GoGitHubClient) AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error {
+	_, _, err := g.client.Reactions.CreateIssueCommentReaction(ctx, owner, repo, commentID, reaction)
+	if err != nil {
+		return fmt.Errorf("adding issue comment reaction: %w", err)
 	}
 	return nil
 }

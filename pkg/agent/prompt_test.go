@@ -88,7 +88,7 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		},
 	}
 
-	prompt := buildReviewResponsePrompt(work, comments, nil, "owner", "repo")
+	prompt := buildReviewResponsePrompt(work, comments, nil, nil, "owner", "repo")
 
 	checks := []string{
 		"reviewer1",
@@ -118,6 +118,43 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+}
+
+func TestBuildReviewResponsePrompt_WithPRComments(t *testing.T) {
+	work := IssueWork{
+		IssueNumber: 42,
+		IssueTitle:  "Fix nil pointer in handler",
+		PRNumber:    100,
+	}
+
+	prComments := []ReviewComment{
+		{ID: 10, User: "reviewer1", Body: "/oompa fix the commit message"},
+		{ID: 11, User: "reviewer2", Body: "/oompa add Signed-off-by trailers"},
+	}
+
+	prompt := buildReviewResponsePrompt(work, nil, nil, prComments, "owner", "repo")
+
+	checks := []string{
+		"PR conversation directives",
+		"Directive by reviewer1",
+		"fix the commit message",
+		"Directive by reviewer2",
+		"add Signed-off-by trailers",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+
+	// The /oompa prefix should be stripped from directives
+	if strings.Contains(prompt, "/oompa fix") {
+		t.Error("prompt should strip /oompa prefix from directives")
+	}
+	if strings.Contains(prompt, "/oompa add") {
+		t.Error("prompt should strip /oompa prefix from directives")
 	}
 }
 

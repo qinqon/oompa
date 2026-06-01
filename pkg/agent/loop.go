@@ -23,6 +23,11 @@ const (
 	StatusPROpen       = "pr-open"
 	StatusFailed       = "failed"
 
+	// oompaCommandPrefix is the prefix that PR conversation comments must start
+	// with to be treated as a directive to the agent. Comments without this prefix
+	// are ignored to avoid reacting to regular human discussion on the PR.
+	oompaCommandPrefix = "/oompa"
+
 	// Labels
 	labelAIFailed = "ai-failed"
 )
@@ -124,11 +129,13 @@ type newIssueTask struct {
 }
 
 type reviewTask struct {
-	work          *IssueWork
-	humanComments []ReviewComment
-	humanReviews  []PRReview
-	maxCommentID  int64 // max ID across ALL fetched comments (including filtered ones)
-	maxReviewID   int64 // max ID across ALL fetched reviews (including filtered ones)
+	work               *IssueWork
+	humanComments      []ReviewComment
+	humanReviews       []PRReview
+	prComments         []ReviewComment // PR conversation comments matching /oompa prefix
+	maxCommentID       int64           // max ID across ALL fetched review comments (including filtered ones)
+	maxReviewID        int64           // max ID across ALL fetched reviews (including filtered ones)
+	maxIssueCommentID  int64           // max ID across ALL fetched PR conversation comments (including filtered ones)
 }
 
 type ciTask struct {

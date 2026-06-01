@@ -50,8 +50,9 @@ type IssueWork struct {
 	WorktreePath     string          `json:"worktreePath"`
 	BranchName       string          `json:"branchName"`
 	PRNumber         int             `json:"prNumber"`
-	LastCommentID    int64           `json:"lastCommentID"`
-	LastReviewID     int64           `json:"lastReviewID"`
+	LastCommentID      int64           `json:"lastCommentID"`
+	LastReviewID       int64           `json:"lastReviewID"`
+	LastIssueCommentID int64           `json:"lastIssueCommentID,omitempty"` // cursor for PR conversation comments (Issues API)
 	Status           string          `json:"status"` // implementing, pr-open, failed, done
 	CIFixAttempts    int             `json:"ciFixAttempts"`
 	LastCIStatus     string          `json:"lastCIStatus"`              // "", "pending", "success", "failure"

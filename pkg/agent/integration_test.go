@@ -184,6 +184,13 @@ func (f *fakeGitHubClient) AddPRCommentReaction(_ context.Context, _, _ string, 
 	return nil
 }
 
+func (f *fakeGitHubClient) AddIssueCommentReaction(_ context.Context, _, _ string, commentID int64, reaction string) error {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	f.state.reactions = append(f.state.reactions, fmt.Sprintf("issue:%d:%s", commentID, reaction))
+	return nil
+}
+
 func (f *fakeGitHubClient) GetCheckRuns(_ context.Context, _, _, ref string) ([]CheckRun, error) {
 	f.state.mu.Lock()
 	defer f.state.mu.Unlock()

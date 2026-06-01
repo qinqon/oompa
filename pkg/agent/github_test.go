@@ -841,3 +841,23 @@ func TestCountCommitsSince_APIError(t *testing.T) {
 		t.Fatal("expected error for API failure")
 	}
 }
+
+func TestAddIssueCommentReaction(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/issues/comments/42/reactions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      1,
+			"content": "eyes",
+		})
+	})
+
+	gh := setupTestClient(t, mux)
+	err := gh.AddIssueCommentReaction(context.Background(), "owner", "repo", 42, "eyes")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
