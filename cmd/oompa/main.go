@@ -577,6 +577,21 @@ func main() {
 		emitter = eventServer
 	}
 
+	// Require the compound-engineering plugin to be installed when using the opencode backend.
+	// Fail fast at startup rather than running for weeks without skills.
+	// Only applies to opencode — claudecode has its own skill/tool system.
+	if cfg.Agent == "opencode" {
+		pluginVersion, err := agent.RequirePluginInstalled()
+		if err != nil {
+			logger.Error("compound-engineering plugin not installed — opencode requires @opencode-ai/plugin in ~/.config/opencode/",
+				"error", err,
+				"fix", "cd ~/.config/opencode && npm install @opencode-ai/plugin@latest",
+			)
+			os.Exit(1) //nolint:gocritic // exitAfterDefer: intentional early exit in CLI startup
+		}
+		logger.Info("compound-engineering plugin found", "version", pluginVersion)
+	}
+
 	if configPath != "" {
 		// Multi-project mode
 		runMultiProject(cfg, configPath, ghClient, tokenFunc, useAppAuth, exitOnNewVersionOwner, exitOnNewVersionRepo, commitSHA, logger, emitter)
@@ -609,17 +624,38 @@ func runSingleRepo(cfg agent.Config, ghClient *agent.GoGitHubClient, tokenFunc f
 		"dry-run", cfg.DryRun,
 	)
 
-	a := buildAgentForConfig(cfg, ghClient, tokenFunc, useAppAuth, logger)
+	// Create a shared Slack reporter for both the agent and the plugin checker.
+	var slack *agent.SlackReporter
+	if cfg.SlackWebhookURL != "" {
+		slack = agent.NewSlackReporter(cfg.SlackWebhookURL, cfg.Version, logger)
+	}
+
+	a := buildAgentForConfig(cfg, ghClient, tokenFunc, useAppAuth, logger, slack)
 	if emitter != nil {
 		a.SetEmitter(emitter)
 	}
 
+	// Start daily plugin version checker (best-effort, only when Slack is configured)
+	checkerDone := agent.StartPluginVersionChecker(ctx, slack, logger)
+
 	runLoop(ctx, a, logger)
-	a.FlushSlackReport(ctx)
 
 	if cfg.OneShot {
+		// Wait for the initial plugin check to complete before flushing and exiting,
+		// so the version notification is included in the Slack report.
+		if checkerDone != nil {
+			const pluginCheckTimeout = 5 * time.Second
+			select {
+			case <-checkerDone:
+			case <-time.After(pluginCheckTimeout):
+				logger.Debug("plugin version checker initial check timed out")
+			}
+		}
+		a.FlushSlackReport(ctx)
 		return
 	}
+
+	a.FlushSlackReport(ctx)
 
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
@@ -731,6 +767,20 @@ func runMultiProject(globalCfg agent.Config, configPath string, ghClient *agent.
 				}
 			}
 		}()
+	}
+
+	// Start daily plugin version checker (best-effort, only when Slack is configured)
+	checkerDone := agent.StartPluginVersionChecker(ctx, sharedSlack, logger)
+
+	// In OneShot mode, wait for the initial plugin check to complete so the
+	// version notification is included in the Slack report before exit.
+	if globalCfg.OneShot && checkerDone != nil {
+		const pluginCheckTimeout = 5 * time.Second
+		select {
+		case <-checkerDone:
+		case <-time.After(pluginCheckTimeout):
+			logger.Debug("plugin version checker initial check timed out")
+		}
 	}
 
 	var wg sync.WaitGroup
