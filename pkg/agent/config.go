@@ -1,6 +1,9 @@
 package agent
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Config holds all agent configuration.
 type Config struct {
@@ -14,6 +17,7 @@ type Config struct {
 	DryRun        bool
 	OneShot       bool
 	SignedOffBy   string
+	AssistedBy    string   // Assisted-by trailer value for commits (e.g. "Claude <noreply@anthropic.com>")
 	GitHubUser      string   // authenticated GitHub username (for reaction checks)
 	GitHubToken     string   // GitHub token (passed to Claude for gh CLI access)
 	GitHubHeadOwner string   // owner for PR head filtering (fork owner for PAT, repo owner for App)
@@ -45,4 +49,19 @@ type Config struct {
 	GitHubAppID             int64
 	GitHubAppPrivateKey     []byte
 	GitHubAppInstallationID int64
+}
+
+// DefaultAssistedBy returns the default Assisted-by trailer value for the given agent backend.
+func DefaultAssistedBy(agentBackend string) string {
+	if agentBackend == "" {
+		return ""
+	}
+	switch agentBackend {
+	case "claudecode":
+		return "Claude <noreply@anthropic.com>"
+	case "opencode":
+		return "Claude <noreply@anthropic.com>"
+	default:
+		return fmt.Sprintf("%s <noreply@anthropic.com>", agentBackend)
+	}
 }
