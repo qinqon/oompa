@@ -51,6 +51,7 @@ type IssueWork struct {
 	BranchName       string          `json:"branchName"`
 	PRNumber         int             `json:"prNumber"`
 	LastCommentID    int64           `json:"lastCommentID"`
+	LastPRCommentID  int64           `json:"lastPRCommentID,omitempty"` // cursor for PR conversation-tab comments (/oompa directives)
 	LastReviewID     int64           `json:"lastReviewID"`
 	Status           string          `json:"status"` // implementing, pr-open, failed, done
 	CIFixAttempts    int             `json:"ciFixAttempts"`

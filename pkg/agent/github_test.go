@@ -743,6 +743,50 @@ func TestGetCheckRuns_UsesPerPage100(t *testing.T) {
 	}
 }
 
+func TestAddIssueCommentReaction(t *testing.T) {
+	var receivedReaction string
+	var receivedPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/issues/comments/42/reactions", func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		var req struct {
+			Content string `json:"content"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		receivedReaction = req.Content
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      1,
+			"content": req.Content,
+		})
+	})
+
+	gh := setupTestClient(t, mux)
+	err := gh.AddIssueCommentReaction(context.Background(), "owner", "repo", 42, "eyes")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedReaction != "eyes" {
+		t.Errorf("expected reaction 'eyes', got %q", receivedReaction)
+	}
+	if receivedPath != "/api/v3/repos/owner/repo/issues/comments/42/reactions" {
+		t.Errorf("unexpected API path: %s", receivedPath)
+	}
+}
+
+func TestAddIssueCommentReaction_APIError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/issues/comments/42/reactions", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	gh := setupTestClient(t, mux)
+	err := gh.AddIssueCommentReaction(context.Background(), "owner", "repo", 42, "eyes")
+	if err == nil {
+		t.Fatal("expected error for API failure")
+	}
+}
+
 func TestCountCommitsSince(t *testing.T) {
 	mux := http.NewServeMux()
 	var receivedSince string

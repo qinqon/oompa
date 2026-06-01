@@ -43,6 +43,7 @@ type GitHubClient interface {
 	ListWorkflowJobs(ctx context.Context, owner, repo string, runID int64) ([]WorkflowJob, error)
 	GetWorkflowJobLogs(ctx context.Context, owner, repo string, jobID int64) (string, error)
 	CountCommitsSince(ctx context.Context, owner, repo string, since time.Time) (int, error)
+	AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error
 }
 
 // GoGitHubClient implements GitHubClient using go-github.
@@ -669,6 +670,14 @@ func (g *GoGitHubClient) CountCommitsSince(ctx context.Context, owner, repo stri
 		opts.Page = resp.NextPage
 	}
 	return total, nil
+}
+
+func (g *GoGitHubClient) AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error {
+	_, _, err := g.client.Reactions.CreateIssueCommentReaction(ctx, owner, repo, commentID, reaction)
+	if err != nil {
+		return fmt.Errorf("adding issue comment reaction: %w", err)
+	}
+	return nil
 }
 
 // GetWorkflowJobLogs fetches the logs for a specific workflow job.

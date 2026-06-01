@@ -65,6 +65,11 @@ func (d *DryRunGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, pr
 	return nil
 }
 
+func (d *DryRunGitHubClient) AddIssueCommentReaction(_ context.Context, _, _ string, commentID int64, reaction string) error {
+	d.logger.Info("[dry-run] would add issue comment reaction", "comment", commentID, "reaction", reaction)
+	return nil
+}
+
 // Read operations — pass through
 
 func (d *DryRunGitHubClient) ListLabeledIssues(ctx context.Context, owner, repo, label string) ([]Issue, error) {

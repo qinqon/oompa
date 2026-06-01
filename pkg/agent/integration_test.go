@@ -299,6 +299,13 @@ func (f *fakeGitHubClient) CountCommitsSince(_ context.Context, _, _ string, _ t
 	return 0, nil // always quiet in integration tests
 }
 
+func (f *fakeGitHubClient) AddIssueCommentReaction(_ context.Context, _, _ string, commentID int64, reaction string) error {
+	f.state.mu.Lock()
+	defer f.state.mu.Unlock()
+	f.state.reactions = append(f.state.reactions, fmt.Sprintf("issue:%d:%s", commentID, reaction))
+	return nil
+}
+
 // initBareRepo creates a bare repo and a working clone for the agent to use.
 // Returns (cloneDir, cleanup).
 func initBareRepo(t *testing.T) string {

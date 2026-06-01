@@ -221,6 +221,11 @@ func (m *mockGitHubClient) CountCommitsSince(_ context.Context, _, _ string, _ t
 	return m.recentCommits, m.countCommitsErr
 }
 
+func (m *mockGitHubClient) AddIssueCommentReaction(_ context.Context, _, _ string, commentID int64, reaction string) error {
+	m.addedReactions = append(m.addedReactions, fmt.Sprintf("issue:%d:%s", commentID, reaction))
+	return nil
+}
+
 // mockWorktreeManager implements WorktreeManager for testing.
 type mockWorktreeManager struct {
 	createdBranches []string
@@ -5148,5 +5153,308 @@ func TestBuildTriageMatchPrompt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+}
+
+func TestProcessPRComments_IgnoresNonOompaComments(t *testing.T) {
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 100, User: "reviewer", Body: "Looks good to me"},
+			{ID: 101, User: "reviewer", Body: "Nice work on this PR"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessPRComments(context.Background())
+
+	// No claude calls — comments don't start with /oompa
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke agent for non-/oompa comments")
+	}
+
+	// Cursor should still advance past the non-matching comments
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastPRCommentID != 101 {
+		t.Errorf("expected LastPRCommentID to advance to 101, got %d", work.LastPRCommentID)
+	}
+}
+
+func TestProcessPRComments_ProcessesOompaDirective(t *testing.T) {
+	result := streamResultJSON(AgentResult{Result: "Done"})
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 100, User: "reviewer", Body: "/oompa fix the commit message to follow conventional commit format"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessPRComments(context.Background())
+
+	// Should have invoked the agent
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	if claudeCalls != 1 {
+		t.Fatalf("expected 1 claude call for /oompa directive, got %d", claudeCalls)
+	}
+
+	// Cursor should advance
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastPRCommentID != 100 {
+		t.Errorf("expected LastPRCommentID to advance to 100, got %d", work.LastPRCommentID)
+	}
+
+	// :eyes: reaction should have been added
+	foundReaction := false
+	for _, r := range gh.addedReactions {
+		if r == "issue:100:eyes" {
+			foundReaction = true
+		}
+	}
+	if !foundReaction {
+		t.Errorf("expected :eyes: reaction on comment 100, got reactions: %v", gh.addedReactions)
+	}
+}
+
+func TestProcessPRComments_SkipsNonWhitelistedUsers(t *testing.T) {
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 100, User: "random-user", Body: "/oompa do something"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.Reviewers = []string{"trusted-reviewer"}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessPRComments(context.Background())
+
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke agent for non-whitelisted user")
+	}
+}
+
+func TestProcessPRComments_SkipsBotComments(t *testing.T) {
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 100, User: "reviewer", Body: "/oompa fix this <!-- oompa-bot -->"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessPRComments(context.Background())
+
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke agent for bot-posted comments")
+	}
+}
+
+func TestProcessPRComments_MixedComments(t *testing.T) {
+	result := streamResultJSON(AgentResult{Result: "Done"})
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 100, User: "reviewer", Body: "Looks good"},
+			{ID: 101, User: "reviewer", Body: "/oompa add Signed-off-by trailers"},
+			{ID: 102, User: "reviewer", Body: "Nice cleanup"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessPRComments(context.Background())
+
+	// Only the /oompa comment should trigger the agent
+	claudeCalls := 0
+	for _, c := range runner.calls {
+		if c.Name == "claude" {
+			claudeCalls++
+		}
+	}
+	if claudeCalls != 1 {
+		t.Fatalf("expected 1 claude call for /oompa directive, got %d", claudeCalls)
+	}
+
+	// Cursor should advance past all comments (including non-matching ones)
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastPRCommentID != 102 {
+		t.Errorf("expected LastPRCommentID to advance to 102, got %d", work.LastPRCommentID)
+	}
+}
+
+func TestProcessPRComments_AgentFailureAdvancesCursor(t *testing.T) {
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 100, User: "reviewer", Body: "/oompa fix the commit message"},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessPRComments(context.Background())
+
+	// Cursor must advance even on agent failure to prevent infinite loops
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastPRCommentID != 100 {
+		t.Errorf("expected LastPRCommentID to advance to 100 on agent failure, got %d", work.LastPRCommentID)
+	}
+}
+
+func TestProcessPRComments_NoComments(t *testing.T) {
+	gh := &mockGitHubClient{}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber: 42,
+		PRNumber:    100,
+		Status:      "pr-open",
+	}
+
+	agent.ProcessPRComments(context.Background())
+
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke agent when no comments")
+	}
+}
+
+func TestProcessPRComments_PushFailureDoesNotAdvanceCursor(t *testing.T) {
+	// Regression test: when push fails, the cursor must NOT advance so the
+	// directive is retried on the next poll cycle. Previously, the :eyes:
+	// reaction check caused the comment to be skipped on retry, which
+	// incorrectly advanced the cursor without retrying.
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 100, User: "reviewer", Body: "/oompa fix the commit message"},
+		},
+	}
+	// Runner returns non-empty stdout (triggers changeDetected) and an error (causes push to fail)
+	runner := &mockCommandRunner{stdout: []byte("dirty"), err: fmt.Errorf("git failed")}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessPRComments(context.Background())
+
+	// Cursor should NOT advance when changes were detected but push failed.
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work.LastPRCommentID != 0 {
+		t.Errorf("expected LastPRCommentID to stay at 0 when push failed, got %d", work.LastPRCommentID)
+	}
+
+	// :eyes: reaction should NOT be added when push failed (reaction is deferred
+	// until successful completion to avoid blocking retries).
+	for _, r := range gh.addedReactions {
+		if r == "issue:100:eyes" {
+			t.Error("expected no :eyes: reaction when push failed")
+		}
+	}
+}
+
+func TestProcessPRComments_PromptStripsOompaPrefix(t *testing.T) {
+	result := streamResultJSON(AgentResult{Result: "Done"})
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 100, User: "reviewer", Body: "/oompa rebase on main"},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: "/tmp/worktree",
+	}
+
+	agent.ProcessPRComments(context.Background())
+
+	// Verify the agent received the prompt with the directive stripped of /oompa prefix
+	codeAgent := agent.codeAgent.(*sequentialMockCodeAgent)
+	if len(codeAgent.prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d", len(codeAgent.prompts))
+	}
+	prompt := codeAgent.prompts[0]
+	if !strings.Contains(prompt, "rebase on main") {
+		t.Errorf("expected prompt to contain 'rebase on main', got: %s", prompt)
+	}
+	// The /oompa prefix should be stripped from the directive in the prompt
+	if strings.Contains(prompt, "/oompa rebase") {
+		t.Error("expected /oompa prefix to be stripped from the directive in the prompt")
 	}
 }

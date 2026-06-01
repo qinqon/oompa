@@ -52,7 +52,7 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 	flag.StringVar(&watchPRs, "watch-prs", os.Getenv("OOMPA_WATCH_PRS"), "Comma-separated PR numbers to monitor directly (bypasses issue discovery)")
 
 	var reactions string
-	flag.StringVar(&reactions, "reactions", os.Getenv("OOMPA_REACTIONS"), "Comma-separated list of reactions to run: reviews, ci, conflicts, rebase (empty = all)")
+	flag.StringVar(&reactions, "reactions", os.Getenv("OOMPA_REACTIONS"), "Comma-separated list of reactions to run: reviews, ci, conflicts, rebase, pr-comments (empty = all)")
 
 	var skipComments string
 	flag.StringVar(&skipComments, "skip-comment", os.Getenv("OOMPA_SKIP_COMMENTS"), "Comma-separated list of comment categories to suppress: ci-unrelated, ci-infrastructure, ci-related, conflict, rebase, flaky, issue-in-progress")
@@ -220,14 +220,14 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 	}
 
 	if reactions != "" {
-		validReactions := map[string]bool{"reviews": true, "ci": true, "conflicts": true, "rebase": true}
+		validReactions := map[string]bool{"reviews": true, "ci": true, "conflicts": true, "rebase": true, "pr-comments": true}
 		for r := range strings.SplitSeq(reactions, ",") {
 			r = strings.TrimSpace(r)
 			if r == "" {
 				continue
 			}
 			if !validReactions[r] {
-				fmt.Fprintf(os.Stderr, "invalid reaction type %q: valid values are reviews, ci, conflicts, rebase\n", r)
+				fmt.Fprintf(os.Stderr, "invalid reaction type %q: valid values are reviews, ci, conflicts, rebase, pr-comments\n", r)
 				os.Exit(1)
 			}
 			cfg.Reactions = append(cfg.Reactions, r)
@@ -864,6 +864,9 @@ func runLoop(ctx context.Context, a *agent.Agent, logger *slog.Logger) {
 
 	if a.ShouldRunReaction("reviews") {
 		a.ProcessReviewComments(ctx)
+	}
+	if a.ShouldRunReaction("pr-comments") {
+		a.ProcessPRComments(ctx)
 	}
 	if a.ShouldRunReaction("conflicts") {
 		a.ProcessConflicts(ctx)

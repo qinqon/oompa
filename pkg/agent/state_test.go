@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"testing"
 )
@@ -52,6 +53,31 @@ func TestBuildStateFromGitHub_RecoversPRState(t *testing.T) {
 	}
 	if work.LastCommentID != 0 {
 		t.Errorf("expected lastCommentID 0 (reactions used instead), got %d", work.LastCommentID)
+	}
+}
+
+func TestBuildStateFromGitHub_RecoversLastPRCommentID(t *testing.T) {
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 42, Title: "Fix bug", Labels: []string{"good-for-ai"}}},
+		prs:    []PR{{Number: 100, State: "open", Head: "ai/issue-42"}},
+		issueComments: []ReviewComment{
+			{ID: 10, User: "alice", Body: "looks good"},
+			{ID: 20, User: "bob", Body: "/oompa fix the commit message"},
+			{ID: 30, User: "charlie", Body: "nice work"},
+		},
+	}
+	cfg := Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"}
+
+	state := BuildStateFromGitHub(context.Background(), gh, cfg, "/tmp/clone", slog.Default())
+
+	work, ok := state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if !ok {
+		t.Fatal("expected issue 42 in state")
+	}
+	// LastPRCommentID should be initialized to the max comment ID (30)
+	// so historical /oompa comments aren't replayed on restart.
+	if work.LastPRCommentID != 30 {
+		t.Errorf("expected LastPRCommentID 30, got %d", work.LastPRCommentID)
 	}
 }
 
@@ -179,6 +205,61 @@ func TestState_IsRunInvestigated(t *testing.T) {
 	// Same job, different run should not be investigated
 	if s.IsRunInvestigated("test-job", "run-456") {
 		t.Error("expected different run to not be investigated")
+	}
+}
+
+func TestIssueWork_LastPRCommentID_JSONRoundTrip(t *testing.T) {
+	original := IssueWork{
+		IssueNumber:     42,
+		IssueTitle:      "Fix bug",
+		PRNumber:        100,
+		LastCommentID:   50,
+		LastPRCommentID: 75,
+		LastReviewID:    200,
+		Status:          "pr-open",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("failed to marshal IssueWork: %v", err)
+	}
+
+	var restored IssueWork
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("failed to unmarshal IssueWork: %v", err)
+	}
+
+	if restored.LastPRCommentID != original.LastPRCommentID {
+		t.Errorf("expected LastPRCommentID %d, got %d", original.LastPRCommentID, restored.LastPRCommentID)
+	}
+	// Verify other cursor fields also round-trip correctly
+	if restored.LastCommentID != original.LastCommentID {
+		t.Errorf("expected LastCommentID %d, got %d", original.LastCommentID, restored.LastCommentID)
+	}
+	if restored.LastReviewID != original.LastReviewID {
+		t.Errorf("expected LastReviewID %d, got %d", original.LastReviewID, restored.LastReviewID)
+	}
+}
+
+func TestIssueWork_LastPRCommentID_OmitsZero(t *testing.T) {
+	// LastPRCommentID uses omitempty — verify zero value is omitted from JSON
+	work := IssueWork{
+		IssueNumber:     42,
+		LastPRCommentID: 0,
+	}
+
+	data, err := json.Marshal(work)
+	if err != nil {
+		t.Fatalf("failed to marshal IssueWork: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("failed to unmarshal to map: %v", err)
+	}
+
+	if _, exists := raw["lastPRCommentID"]; exists {
+		t.Error("expected lastPRCommentID to be omitted when zero (omitempty)")
 	}
 }
 

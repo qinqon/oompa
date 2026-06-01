@@ -261,6 +261,67 @@ func TestBuildPeriodicCITriagePrompt(t *testing.T) {
 	}
 }
 
+func TestBuildPRCommentDirectivePrompt(t *testing.T) {
+	work := IssueWork{
+		IssueNumber: 42,
+		IssueTitle:  "Fix nil pointer in handler",
+		PRNumber:    100,
+	}
+
+	directives := []ReviewComment{
+		{
+			ID:   1,
+			User: "reviewer1",
+			Body: "/oompa fix the commit message to follow conventional commit format",
+		},
+		{
+			ID:   2,
+			User: "reviewer2",
+			Body: "/oompa add Signed-off-by trailers",
+		},
+	}
+
+	prompt := buildPRCommentDirectivePrompt(work, directives, "owner", "repo")
+
+	checks := []string{
+		"PR #100",
+		"issue #42",
+		"Fix nil pointer in handler",
+		"owner/repo",
+		"PR comment directives",
+		"reviewer1",
+		"reviewer2",
+		"comment ID: 1",
+		"comment ID: 2",
+		// Directives should have /oompa prefix stripped
+		"fix the commit message to follow conventional commit format",
+		"add Signed-off-by trailers",
+		"<user-provided-content>",
+		"</user-provided-content>",
+		"untrusted user input",
+		"Do NOT commit",
+		"leave them UNCOMMITTED",
+		"CLAUDE.md",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+
+	// The raw /oompa prefix should NOT appear in the directive text
+	// (it should be stripped before being included in the prompt)
+	idx := strings.Index(prompt, "PR comment directives")
+	if idx == -1 {
+		t.Fatal("prompt missing 'PR comment directives' section")
+	}
+	directiveSection := prompt[idx:]
+	if strings.Contains(directiveSection, "/oompa fix") || strings.Contains(directiveSection, "/oompa add") {
+		t.Error("expected /oompa prefix to be stripped from directives in prompt")
+	}
+}
+
 func TestBuildFlakyMatchPrompt_RootCauseInstructions(t *testing.T) {
 	existingIssues := []Issue{
 		{Number: 50, Title: "Flaky CI: Build-PR", Body: "koji 502 error"},

@@ -348,7 +348,7 @@ func (a *Agent) HasWatchedPRs() bool {
 // ShouldRunReaction returns true if the given reaction type should be executed.
 // If cfg.Reactions is nil (not configured), all reactions are enabled (backward compatible).
 // If cfg.Reactions is an empty non-nil slice (explicitly set to []), no reactions are enabled.
-// Valid reaction names: "reviews", "ci", "conflicts", "rebase".
+// Valid reaction names: "reviews", "ci", "conflicts", "rebase", "pr-comments".
 func (a *Agent) ShouldRunReaction(reaction string) bool {
 	if a.cfg.Reactions == nil {
 		return true
