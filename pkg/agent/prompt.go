@@ -42,7 +42,7 @@ Do NOT push, create PRs, or amend — the agent handles that automatically.`,
 		issue.Number, issue.Title, issue.Body, trailerInstructions, issue.Number)
 }
 
-func buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, reviews []PRReview, owner, repo string) string {
+func buildReviewResponsePrompt(work IssueWork, comments []ReviewComment, reviews []PRReview, prComments []ReviewComment, owner, repo string) string {
 	var prompt strings.Builder
 	fmt.Fprintf(&prompt, `You are addressing review feedback on PR #%d for issue #%d: %s
 Repository: %s/%s
@@ -68,6 +68,16 @@ Repository: %s/%s
 				}
 			}
 			fmt.Fprintf(&prompt, " ---\n%s\n", c.Body)
+		}
+	}
+
+	if len(prComments) > 0 {
+		prompt.WriteString("\nPR conversation directives (from /oompa commands):\n")
+		for _, c := range prComments {
+			body := strings.TrimSpace(c.Body)
+			// Strip the prefix to present just the instruction
+			directive := strings.TrimSpace(strings.TrimPrefix(body, oompaCommandPrefix))
+			fmt.Fprintf(&prompt, "\n--- Directive by %s ---\n%s\n", c.User, directive)
 		}
 	}
 

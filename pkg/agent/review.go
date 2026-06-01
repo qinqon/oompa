@@ -116,7 +116,39 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			humanReviews = append(humanReviews, r)
 		}
 
-		if len(humanComments) == 0 && len(humanReviews) == 0 {
+		// Fetch PR conversation comments (Issues API) and filter for /oompa prefix.
+		// These are regular comments on the PR conversation tab, not inline code review comments.
+		issueComments, err := a.gh.GetIssueComments(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, work.LastIssueCommentID)
+		if err != nil {
+			a.logger.Error("failed to get PR issue comments", "pr", work.PRNumber, "error", err)
+			continue
+		}
+
+		// Track the max issue comment ID across ALL fetched comments (including filtered ones).
+		var maxIssueCommentID int64
+		for _, c := range issueComments {
+			if c.ID > maxIssueCommentID {
+				maxIssueCommentID = c.ID
+			}
+		}
+
+		// Filter PR conversation comments: only /oompa-prefixed, whitelisted, non-bot.
+		var prComments []ReviewComment
+		for _, c := range issueComments {
+			if strings.Contains(c.Body, botMarker) {
+				continue
+			}
+			if !a.isAllowedReviewer(c.User) {
+				continue
+			}
+			fields := strings.Fields(c.Body)
+			if len(fields) < 2 || fields[0] != oompaCommandPrefix {
+				continue
+			}
+			prComments = append(prComments, c)
+		}
+
+		if len(humanComments) == 0 && len(humanReviews) == 0 && len(prComments) == 0 {
 			// No actionable comments/reviews, but still advance cursors past
 			// filtered items to avoid re-fetching them on every poll cycle.
 			if maxCommentID > work.LastCommentID {
@@ -124,6 +156,9 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 			if maxReviewID > work.LastReviewID {
 				work.LastReviewID = maxReviewID
+			}
+			if maxIssueCommentID > work.LastIssueCommentID {
+				work.LastIssueCommentID = maxIssueCommentID
 			}
 			continue
 		}
@@ -142,6 +177,9 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			if maxReviewID > work.LastReviewID {
 				work.LastReviewID = maxReviewID
 			}
+			if maxIssueCommentID > work.LastIssueCommentID {
+				work.LastIssueCommentID = maxIssueCommentID
+			}
 			a.logger.Warn("skipping stale reviews (no-op retry limit reached)",
 				"pr", work.PRNumber,
 				"noOpCount", work.ReviewNoOpCount,
@@ -154,7 +192,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			continue
 		}
 
-		a.logger.Info("addressing review feedback", "pr", work.PRNumber, "comments", len(humanComments), "reviews", len(humanReviews))
+		a.logger.Info("addressing review feedback", "pr", work.PRNumber, "comments", len(humanComments), "reviews", len(humanReviews), "prComments", len(prComments))
 
 		if err := a.ensureWorktreeReady(ctx, work); err != nil {
 			a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
@@ -167,13 +205,20 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 				a.logger.Warn("failed to add reaction", "comment", c.ID, "error", err)
 			}
 		}
+		for _, c := range prComments {
+			if err := a.gh.AddIssueCommentReaction(ctx, a.cfg.Owner, a.cfg.Repo, c.ID, "eyes"); err != nil {
+				a.logger.Warn("failed to add issue comment reaction", "comment", c.ID, "error", err)
+			}
+		}
 
 		tasks = append(tasks, reviewTask{
-			work:          work,
-			humanComments: humanComments,
-			humanReviews:  humanReviews,
-			maxCommentID:  maxCommentID,
-			maxReviewID:   maxReviewID,
+			work:              work,
+			humanComments:     humanComments,
+			humanReviews:      humanReviews,
+			prComments:        prComments,
+			maxCommentID:      maxCommentID,
+			maxReviewID:       maxReviewID,
+			maxIssueCommentID: maxIssueCommentID,
 		})
 	}
 
@@ -196,7 +241,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		}
 		headSHABefore := strings.TrimSpace(string(headBefore))
 
-		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, a.cfg.Owner, a.cfg.Repo)
+		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, task.prComments, a.cfg.Owner, a.cfg.Repo)
 		agentResult, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		// Track cumulative cost even on failure — failed invocations still consume
 		// tokens and incur costs, so the MaxPRSessionCost guard must count them.
@@ -221,6 +266,9 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 			if task.maxReviewID > task.work.LastReviewID {
 				task.work.LastReviewID = task.maxReviewID
+			}
+			if task.maxIssueCommentID > task.work.LastIssueCommentID {
+				task.work.LastIssueCommentID = task.maxIssueCommentID
 			}
 			task.work.ReviewNoOpCount++
 			return
@@ -296,6 +344,9 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 			if task.maxReviewID > task.work.LastReviewID {
 				task.work.LastReviewID = task.maxReviewID
+			}
+			if task.maxIssueCommentID > task.work.LastIssueCommentID {
+				task.work.LastIssueCommentID = task.maxIssueCommentID
 			}
 		}
 
