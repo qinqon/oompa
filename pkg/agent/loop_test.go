@@ -3469,6 +3469,196 @@ func TestProcessTriageJobs_LookbackSkipsAlreadyInvestigated(t *testing.T) {
 	}
 }
 
+func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob(t *testing.T) {
+	// When multiple failed runs of the same job are investigated in the same
+	// triage cycle, the second run should match the issue created by the first
+	// and post a run-link comment instead of creating a duplicate issue.
+	now := time.Now()
+	gh := &mockGitHubClient{
+		workflowRuns: []WorkflowRun{
+			{ID: 300, Status: "completed", Conclusion: "failure", CreatedAt: now.Add(-1 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/300"},
+			{ID: 200, Status: "completed", Conclusion: "failure", CreatedAt: now.Add(-2 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/200"},
+		},
+		searchResults:   []Issue{}, // GitHub search returns nothing (eventual consistency lag)
+		nextIssueNumber: 10,
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+		TriageJobs:        []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
+		TriageLookback:    24 * time.Hour,
+	}
+
+	// Both runs produce the same failure signature, so titles match exactly.
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "## Summary\nCompile error in main.go"}},
+			{result: AgentResult{Result: "## Summary\nCompile error in main.go"}},
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a.ProcessTriageJobs(context.Background())
+
+	// Should create exactly 1 issue (first run) and post a run-link comment (second run)
+	if len(gh.createdIssues) != 1 {
+		t.Errorf("expected 1 issue created (dedup same job), got %d", len(gh.createdIssues))
+	}
+
+	// The run-link comment for the second run should reference the issue created by the first
+	runLinkFound := false
+	for _, comment := range gh.addedComments {
+		if strings.Contains(comment, "Same failure observed") {
+			runLinkFound = true
+		}
+	}
+	if !runLinkFound {
+		t.Error("expected a run-link comment for the deduplicated second run")
+	}
+
+	// Both runs should be marked as investigated
+	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+		t.Error("expected run 300 to be marked as investigated")
+	}
+	if !state.IsRunInvestigated("owner/repo/ci.yml", "200") {
+		t.Error("expected run 200 to be marked as investigated")
+	}
+}
+
+func TestProcessTriageJobs_DeduplicatesDifferentJobsSameRootCause(t *testing.T) {
+	// When different jobs fail for the same root cause in the same triage cycle,
+	// the second job should match the issue created by the first via LLM matching
+	// and post a run-link comment instead of creating a duplicate issue.
+	now := time.Now()
+
+	// Two different GitHub Actions workflows, each with one failed run
+	gh := &mockGitHubClient{
+		workflowRuns: []WorkflowRun{
+			{ID: 100, Status: "completed", Conclusion: "failure", CreatedAt: now.Add(-1 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/100"},
+		},
+		searchResults:   []Issue{}, // GitHub search returns nothing
+		nextIssueNumber: 10,
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+		TriageJobs: []string{
+			"https://github.com/owner/repo/actions/workflows/unit.yml",
+			"https://github.com/owner/repo/actions/workflows/e2e.yml",
+		},
+	}
+
+	// First job: analysis + no match (NONE) → creates issue
+	// Second job: analysis + LLM match → deduplicates
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "## Summary\nDependency X broke API"}},           // first job analysis
+			{result: AgentResult{Result: "## Summary\nDependency X broke API in e2e test"}}, // second job analysis
+			{result: AgentResult{Result: "MATCH #10"}},                                      // second job matches issue #10
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a.ProcessTriageJobs(context.Background())
+
+	// Should create exactly 1 issue (first job) and post a run-link (second job)
+	if len(gh.createdIssues) != 1 {
+		t.Errorf("expected 1 issue created (dedup across jobs), got %d", len(gh.createdIssues))
+	}
+
+	// The issue created by the first job should be #10
+	if len(gh.createdIssues) > 0 && gh.createdIssues[0].Number != 10 {
+		t.Errorf("expected first issue number 10, got %d", gh.createdIssues[0].Number)
+	}
+
+	// The second job should have posted a run-link comment
+	runLinkFound := false
+	for _, comment := range gh.addedComments {
+		if strings.Contains(comment, "Same failure observed") {
+			runLinkFound = true
+		}
+	}
+	if !runLinkFound {
+		t.Error("expected a run-link comment for the deduplicated second job")
+	}
+
+	// Both runs should be investigated
+	if !state.IsRunInvestigated("owner/repo/unit.yml", "100") {
+		t.Error("expected unit.yml run to be marked as investigated")
+	}
+	if !state.IsRunInvestigated("owner/repo/e2e.yml", "100") {
+		t.Error("expected e2e.yml run to be marked as investigated")
+	}
+}
+
+func TestMergeIssues(t *testing.T) {
+	tests := []struct {
+		name    string
+		primary []Issue
+		extras  []Issue
+		want    int // expected length
+	}{
+		{
+			name:    "empty extras",
+			primary: []Issue{{Number: 1}},
+			extras:  nil,
+			want:    1,
+		},
+		{
+			name:    "no overlap",
+			primary: []Issue{{Number: 1}},
+			extras:  []Issue{{Number: 2}},
+			want:    2,
+		},
+		{
+			name:    "with overlap",
+			primary: []Issue{{Number: 1}, {Number: 2}},
+			extras:  []Issue{{Number: 2}, {Number: 3}},
+			want:    3,
+		},
+		{
+			name:    "both empty",
+			primary: nil,
+			extras:  nil,
+			want:    0,
+		},
+		{
+			name:    "empty primary with extras",
+			primary: nil,
+			extras:  []Issue{{Number: 5}},
+			want:    1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeIssues(tt.primary, tt.extras)
+			if len(got) != tt.want {
+				t.Errorf("mergeIssues() returned %d issues, want %d", len(got), tt.want)
+			}
+
+			// Verify no duplicates
+			seen := make(map[int]bool)
+			for _, issue := range got {
+				if seen[issue.Number] {
+					t.Errorf("duplicate issue #%d in merged result", issue.Number)
+				}
+				seen[issue.Number] = true
+			}
+		})
+	}
+}
+
 func TestProcessCIFailures_DetectsCommitStatusFailures(t *testing.T) {
 	claudeResult := streamResultJSON(AgentResult{Result: "RELATED Fixed CI"})
 	gh := &mockGitHubClient{

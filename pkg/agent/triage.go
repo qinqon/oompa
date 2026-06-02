@@ -87,14 +87,24 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 		}
 	}
 
-	// Investigate collected failed runs in parallel
+	// Track issues created during this triage cycle so that subsequent
+	// investigations can find them without relying on GitHub search
+	// indexing (which is eventually consistent). This prevents duplicate
+	// issues when multiple runs of the same job or different jobs fail
+	// for the same root cause within the same triage cycle.
+	var cycleIssues []Issue
+
+	// Investigate collected failed runs sequentially
 	runSequential(ctx, tasks, func(ctx context.Context, task triageRunTask) {
-		a.investigateTriageRun(ctx, task.ciSource, task.run)
+		a.investigateTriageRun(ctx, task.ciSource, task.run, &cycleIssues)
 	})
 }
 
 // investigateTriageRun handles the investigation of a single failed CI run.
-func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, run JobRun) {
+// cycleIssues accumulates issues created during the current triage cycle so
+// that subsequent investigations can match against them without relying on
+// GitHub's eventually-consistent search index.
+func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, run JobRun, cycleIssues *[]Issue) {
 	// Fetch build log
 	buildLog, err := ciSource.FetchLog(ctx, run.ID)
 	if err != nil {
@@ -158,12 +168,24 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 			title = fmt.Sprintf("CI Failure: %s", ciSource.JobName())
 		}
 
-		// Search for existing issues about this job to avoid duplicates
-		searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open in:title %q", a.cfg.Owner, a.cfg.Repo, ciSource.JobName())
+		// Search for existing triage issues to avoid duplicates.
+		// Search broadly (not scoped to this job's name) so that issues
+		// created for other jobs in the same triage cycle can be found
+		// when the root cause is shared (e.g. all jobs failing on the
+		// same PR). Constrained by the flaky label and a 30-day window
+		// to keep result sets small and limit LLM token costs.
+		cutoffDate := time.Now().AddDate(0, 0, -30).Format("2006-01-02")
+		searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:%q in:title \"CI Failure:\" created:>%s",
+			a.cfg.Owner, a.cfg.Repo, a.cfg.FlakyLabel, cutoffDate)
 		existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
 		if err != nil {
 			a.logger.Warn("failed to search for existing issues", "error", err)
 		}
+
+		// Merge in issues created during this triage cycle that may not
+		// yet be indexed by GitHub's search API. Deduplicate by number
+		// to avoid presenting the same issue twice to the LLM matcher.
+		existingIssues = mergeIssues(existingIssues, *cycleIssues)
 
 		matchedIssue := a.matchExistingTriageIssue(ctx, ciSource.JobName(), title, analysis, existingIssues, worktreePath)
 
@@ -187,6 +209,13 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 				a.logger.Error("failed to create issue", "error", err)
 			} else {
 				a.logger.Info("created issue for CI failure", "job", ciSource.JobName(), "issue", issueNumber)
+				// Track newly created issue for same-cycle dedup
+				*cycleIssues = append(*cycleIssues, Issue{
+					Number: issueNumber,
+					Title:  title,
+					Body:   body,
+					Labels: []string{a.cfg.FlakyLabel},
+				})
 			}
 		}
 	}
@@ -250,6 +279,27 @@ func (a *Agent) addTriageRunLinkComment(ctx context.Context, jobName string, run
 	if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, issueNum, comment); err != nil {
 		a.logger.Error("failed to post run link comment on triage issue", "issue", issueNum, "error", err)
 	}
+}
+
+// mergeIssues combines two issue slices, deduplicating by issue number.
+// Issues from the primary slice take precedence over extras.
+func mergeIssues(primary, extras []Issue) []Issue {
+	if len(extras) == 0 {
+		return primary
+	}
+	seen := make(map[int]bool, len(primary))
+	for _, issue := range primary {
+		seen[issue.Number] = true
+	}
+	merged := make([]Issue, 0, len(primary)+len(extras))
+	merged = append(merged, primary...)
+	for _, issue := range extras {
+		if !seen[issue.Number] {
+			merged = append(merged, issue)
+			seen[issue.Number] = true
+		}
+	}
+	return merged
 }
 
 // extractFailureSignature extracts a short failure identifier from the agent's
