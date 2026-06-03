@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -94,9 +95,24 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 	// for the same root cause within the same triage cycle.
 	var cycleIssues []Issue
 
+	// Collect the unique names of all jobs failing in this triage cycle.
+	// This metadata is passed to the LLM matcher so it can recognize
+	// correlated failures across different jobs (e.g. many jobs failing
+	// in the same cycle suggests a shared root cause like an
+	// infrastructure outage or a bad PR).
+	// Deduplicate: multiple runs of the same job should not inflate the
+	// concurrent failure count.
+	var cycleFailedJobs []string
+	for _, task := range tasks {
+		jobName := task.ciSource.JobName()
+		if !slices.Contains(cycleFailedJobs, jobName) {
+			cycleFailedJobs = append(cycleFailedJobs, jobName)
+		}
+	}
+
 	// Investigate collected failed runs sequentially
 	runSequential(ctx, tasks, func(ctx context.Context, task triageRunTask) {
-		a.investigateTriageRun(ctx, task.ciSource, task.run, &cycleIssues)
+		a.investigateTriageRun(ctx, task.ciSource, task.run, &cycleIssues, cycleFailedJobs)
 	})
 }
 
@@ -104,7 +120,9 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 // cycleIssues accumulates issues created during the current triage cycle so
 // that subsequent investigations can match against them without relying on
 // GitHub's eventually-consistent search index.
-func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, run JobRun, cycleIssues *[]Issue) {
+// cycleFailedJobs lists all job names that failed in the same triage cycle,
+// providing the LLM matcher with cross-job correlation context.
+func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, run JobRun, cycleIssues *[]Issue, cycleFailedJobs []string) {
 	// Fetch build log
 	buildLog, err := ciSource.FetchLog(ctx, run.ID)
 	if err != nil {
@@ -187,7 +205,7 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 		// to avoid presenting the same issue twice to the LLM matcher.
 		existingIssues = mergeIssues(existingIssues, *cycleIssues)
 
-		matchedIssue := a.matchExistingTriageIssue(ctx, ciSource.JobName(), title, analysis, existingIssues, worktreePath)
+		matchedIssue := a.matchExistingTriageIssue(ctx, ciSource.JobName(), title, analysis, existingIssues, worktreePath, cycleFailedJobs)
 
 		if matchedIssue > 0 {
 			a.logger.Info("found matching issue for this failure, adding run link", "job", ciSource.JobName(), "issue", matchedIssue)
@@ -235,7 +253,10 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 // Strategy (mirrors matchExistingFlakyIssue in ci.go):
 //  1. Fast path: exact title match skips LLM matching entirely.
 //  2. Slow path: LLM-based root-cause matching when no exact title match exists.
-func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, analysis string, existingIssues []Issue, worktreePath string) int {
+//
+// cycleFailedJobs provides the names of all jobs that failed in the same triage
+// cycle, giving the LLM matcher context about correlated failures.
+func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, analysis string, existingIssues []Issue, worktreePath string, cycleFailedJobs []string) int {
 	if len(existingIssues) == 0 {
 		return 0
 	}
@@ -249,7 +270,7 @@ func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, an
 	}
 
 	// Slow path: LLM-based root-cause matching
-	matchPrompt := buildTriageMatchPrompt(jobName, analysis, existingIssues)
+	matchPrompt := buildTriageMatchPrompt(jobName, analysis, existingIssues, cycleFailedJobs)
 	matchResult, matchErr := a.codeAgent.Run(ctx, a.runner, worktreePath, matchPrompt, a.logger, false)
 	if matchErr != nil {
 		a.logger.Warn("failed to run agent for triage issue matching", "error", matchErr)
