@@ -42,13 +42,14 @@ type FakePR struct {
 
 // fakePRJSON is the JSON representation returned by the API.
 type fakePRJSON struct {
-	Number int            `json:"number"`
-	Title  string         `json:"title"`
-	Body   string         `json:"body"`
-	State  string         `json:"state"`
-	Merged bool           `json:"merged"`
-	Head   map[string]any `json:"head"`
-	Base   map[string]any `json:"base"`
+	Number         int            `json:"number"`
+	Title          string         `json:"title"`
+	Body           string         `json:"body"`
+	State          string         `json:"state"`
+	Merged         bool           `json:"merged"`
+	Head           map[string]any `json:"head"`
+	Base           map[string]any `json:"base"`
+	MergeableState string         `json:"mergeable_state,omitempty"`
 }
 
 // CreatePRCall records the arguments of a CreatePR API call.
@@ -65,6 +66,40 @@ type AssignCall struct {
 	Assignees   []string
 }
 
+// FakeReviewComment represents an inline review comment on a PR.
+type FakeReviewComment struct {
+	ID          int64          `json:"id"`
+	InReplyToID int64          `json:"in_reply_to_id,omitempty"`
+	Body        string         `json:"body"`
+	Path        string         `json:"path"`
+	Line        int            `json:"line"`
+	User        map[string]any `json:"user"`
+}
+
+// FakeCheckRun represents a GitHub check run.
+type FakeCheckRun struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	Output     struct {
+		Title   string `json:"title"`
+		Summary string `json:"summary"`
+		Text    string `json:"text"`
+	} `json:"output"`
+	HTMLURL     string `json:"html_url"`
+	CompletedAt string `json:"completed_at,omitempty"`
+}
+
+// FakeReview represents a GitHub PR review.
+type FakeReview struct {
+	ID          int64          `json:"id"`
+	User        map[string]any `json:"user"`
+	State       string         `json:"state"`
+	Body        string         `json:"body"`
+	SubmittedAt string         `json:"submitted_at"`
+}
+
 // FakeGitHub is a stateful in-memory GitHub API mock backed by httptest.
 type FakeGitHub struct {
 	mu     sync.Mutex
@@ -72,28 +107,70 @@ type FakeGitHub struct {
 	server *httptest.Server
 
 	// State
-	issues        map[int]*FakeIssue     // issue number -> issue
-	comments      map[int][]*FakeComment // issue number -> comments
-	prs           map[int]*FakePR        // PR number -> PR
-	nextCommentID int64
-	nextPRNumber  int
+	issues          map[int]*FakeIssue           // issue number -> issue
+	comments        map[int][]*FakeComment       // issue number -> comments
+	prs             map[int]*FakePR              // PR number -> PR
+	reviewComments  map[int][]*FakeReviewComment // PR number -> inline review comments
+	checkRuns       map[string][]*FakeCheckRun   // SHA -> check runs
+	reviews         map[int][]*FakeReview        // PR number -> reviews
+	prHeadSHAs      map[int]string               // PR number -> HEAD SHA override
+	prMergeStates   map[int]string               // PR number -> mergeable_state
+	commitStatuses  map[string][]map[string]any  // SHA -> commit statuses
+	reactions       map[int64][]map[string]any   // commentID -> reactions
+	nextCommentID   int64
+	nextPRNumber    int
+	nextReviewComID int64
+	nextIssueNumber int
 
 	// Recorders for assertions
-	CreatePRCalls []CreatePRCall
-	AssignCalls   []AssignCall
-	UnassignCalls []AssignCall
-	CommentCalls  []FakeComment // all comments posted via API
+	CreatePRCalls    []CreatePRCall
+	CreateIssueCalls []CreateIssueCall
+	AssignCalls      []AssignCall
+	UnassignCalls    []AssignCall
+	CommentCalls     []FakeComment     // all comments posted via API
+	ReviewReplyCalls []ReviewReplyCall // replies to PR review threads
+	ReactionCalls    []ReactionCall    // reactions added
+	SearchIssueCalls []string          // search queries
+}
+
+// CreateIssueCall records the arguments of a CreateIssue API call.
+type CreateIssueCall struct {
+	Title  string
+	Body   string
+	Labels []string
+}
+
+// ReviewReplyCall records a reply to a PR review comment.
+type ReviewReplyCall struct {
+	PRNumber  int
+	CommentID int64
+	Body      string
+}
+
+// ReactionCall records a reaction added.
+type ReactionCall struct {
+	CommentID int64
+	Reaction  string
 }
 
 // NewFakeGitHub creates a new stateful fake GitHub server.
 func NewFakeGitHub(t *testing.T, owner, repo string) *FakeGitHub {
 	fg := &FakeGitHub{
-		t:             t,
-		issues:        make(map[int]*FakeIssue),
-		comments:      make(map[int][]*FakeComment),
-		prs:           make(map[int]*FakePR),
-		nextCommentID: 1,
-		nextPRNumber:  100,
+		t:               t,
+		issues:          make(map[int]*FakeIssue),
+		comments:        make(map[int][]*FakeComment),
+		prs:             make(map[int]*FakePR),
+		reviewComments:  make(map[int][]*FakeReviewComment),
+		checkRuns:       make(map[string][]*FakeCheckRun),
+		reviews:         make(map[int][]*FakeReview),
+		prHeadSHAs:      make(map[int]string),
+		prMergeStates:   make(map[int]string),
+		commitStatuses:  make(map[string][]map[string]any),
+		reactions:       make(map[int64][]map[string]any),
+		nextCommentID:   1,
+		nextPRNumber:    100,
+		nextReviewComID: 1,
+		nextIssueNumber: 900,
 	}
 
 	prefix := fmt.Sprintf("/api/v3/repos/%s/%s", owner, repo)
@@ -102,9 +179,7 @@ func NewFakeGitHub(t *testing.T, owner, repo string) *FakeGitHub {
 	// GET /repos/{o}/{r}/issues - list issues with label filtering
 	mux.HandleFunc(prefix+"/issues", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
-			// Create issue (not needed for smoke test, but handle gracefully)
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{"number": 999})
+			fg.handleCreateIssue(w, r)
 			return
 		}
 		fg.mu.Lock()
@@ -187,9 +262,8 @@ func NewFakeGitHub(t *testing.T, owner, repo string) *FakeGitHub {
 		fg.handleListPRs(w, r)
 	})
 
-	// Handle /repos/{o}/{r}/pulls/{n} for individual PR operations
+	// Handle /repos/{o}/{r}/pulls/{n} and sub-resources
 	mux.HandleFunc(prefix+"/pulls/", func(w http.ResponseWriter, r *http.Request) {
-		// GET /repos/{o}/{r}/pulls/{n} - get single PR
 		path := strings.TrimPrefix(r.URL.Path, prefix+"/pulls/")
 		parts := strings.SplitN(path, "/", 2)
 		prNum, err := strconv.Atoi(parts[0])
@@ -197,13 +271,195 @@ func NewFakeGitHub(t *testing.T, owner, repo string) *FakeGitHub {
 			http.Error(w, "bad PR number", http.StatusBadRequest)
 			return
 		}
-		fg.mu.Lock()
-		defer fg.mu.Unlock()
-		if pr, ok := fg.prs[prNum]; ok {
-			_ = json.NewEncoder(w).Encode(fg.prToJSON(pr))
-		} else {
+
+		if len(parts) < 2 {
+			// GET /repos/{o}/{r}/pulls/{n} - get single PR
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			if pr, ok := fg.prs[prNum]; ok {
+				_ = json.NewEncoder(w).Encode(fg.prToJSON(pr))
+			} else {
+				http.NotFound(w, r)
+			}
+			return
+		}
+
+		subResource := parts[1]
+		switch subResource {
+		case "comments":
+			fg.handlePRReviewComments(w, r, prNum)
+		case "reviews":
+			fg.handlePRReviews(w, r, prNum)
+		case "commits":
+			fg.handlePRCommits(w, r, prNum)
+		default:
+			log.Printf("[FakeGitHub] unhandled PR sub-resource: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
 		}
+	})
+
+	// GET /repos/{o}/{r}/commits - list commits (for CountCommitsSince)
+	mux.HandleFunc(prefix+"/commits", func(w http.ResponseWriter, r *http.Request) {
+		// Return empty list (no recent commits = quiet main branch)
+		fg.mu.Lock()
+		defer fg.mu.Unlock()
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	// GET /repos/{o}/{r}/commits/{sha}/check-runs or /commits/{sha}/status or /commits/{sha}
+	mux.HandleFunc(prefix+"/commits/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, prefix+"/commits/")
+		parts := strings.SplitN(path, "/", 2)
+		sha := parts[0]
+		if len(parts) >= 2 && parts[1] == "check-runs" {
+			fg.handleCheckRuns(w, r, sha)
+			return
+		}
+		if len(parts) >= 2 && parts[1] == "status" {
+			fg.handleCommitStatuses(w, r, sha)
+			return
+		}
+		// GET /repos/{o}/{r}/commits/{sha} - single commit
+		fg.mu.Lock()
+		defer fg.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"sha": sha,
+			"commit": map[string]any{
+				"committer": map[string]any{
+					"date": "2025-01-01T00:00:00Z",
+				},
+			},
+		})
+	})
+
+	// GET /repos/{o}/{r}/compare/{base}...{head}
+	mux.HandleFunc(prefix+"/compare/", func(w http.ResponseWriter, r *http.Request) {
+		fg.mu.Lock()
+		defer fg.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ahead_by":  0,
+			"behind_by": 0,
+			"status":    "identical",
+		})
+	})
+
+	// GET /api/v3/search/issues
+	mux.HandleFunc("/api/v3/search/issues", func(w http.ResponseWriter, r *http.Request) {
+		fg.mu.Lock()
+		defer fg.mu.Unlock()
+		query := r.URL.Query().Get("q")
+		fg.SearchIssueCalls = append(fg.SearchIssueCalls, query)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 0,
+			"items":       []any{},
+		})
+	})
+
+	// Handle reactions on PR comments: /repos/{o}/{r}/pulls/comments/{id}/reactions
+	mux.HandleFunc(prefix+"/pulls/comments/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, prefix+"/pulls/comments/")
+		parts := strings.SplitN(path, "/", 2)
+		commentID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			http.Error(w, "bad comment ID", http.StatusBadRequest)
+			return
+		}
+		// GET or POST .../reactions
+		if len(parts) >= 2 && parts[1] == "reactions" {
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			if r.Method == "POST" {
+				var body struct {
+					Content string `json:"content"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "bad body", http.StatusBadRequest)
+					return
+				}
+				fg.ReactionCalls = append(fg.ReactionCalls, ReactionCall{
+					CommentID: commentID,
+					Reaction:  body.Content,
+				})
+				fg.reactions[commentID] = append(fg.reactions[commentID], map[string]any{
+					"id":      int64(len(fg.reactions[commentID]) + 1),
+					"content": body.Content,
+					"user":    map[string]any{"login": "oompa-bot"},
+				})
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id":      1,
+					"content": body.Content,
+				})
+				return
+			}
+			// GET reactions - return persisted reactions for this comment
+			_ = json.NewEncoder(w).Encode(fg.reactions[commentID])
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	// Handle reactions on issue comments: /repos/{o}/{r}/issues/comments/{id}/reactions
+	mux.HandleFunc(prefix+"/issues/comments/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, prefix+"/issues/comments/")
+		parts := strings.SplitN(path, "/", 2)
+		commentID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			http.Error(w, "bad comment ID", http.StatusBadRequest)
+			return
+		}
+		if len(parts) >= 2 && parts[1] == "reactions" {
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			if r.Method == "POST" {
+				var body struct {
+					Content string `json:"content"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "bad body", http.StatusBadRequest)
+					return
+				}
+				fg.ReactionCalls = append(fg.ReactionCalls, ReactionCall{
+					CommentID: commentID,
+					Reaction:  body.Content,
+				})
+				fg.reactions[commentID] = append(fg.reactions[commentID], map[string]any{
+					"id":      int64(len(fg.reactions[commentID]) + 1),
+					"content": body.Content,
+					"user":    map[string]any{"login": "oompa-bot"},
+				})
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id":      1,
+					"content": body.Content,
+				})
+				return
+			}
+			// GET reactions - return persisted reactions for this comment
+			_ = json.NewEncoder(w).Encode(fg.reactions[commentID])
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	// Handle check-runs/{id} for log fetching
+	mux.HandleFunc(prefix+"/check-runs/", func(w http.ResponseWriter, r *http.Request) {
+		// Return empty log for check run log requests
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(""))
+	})
+
+	// Handle actions/jobs/{id}/logs for GetCheckRunLog
+	// go-github expects a 302 redirect to the actual log content.
+	mux.HandleFunc(prefix+"/actions/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		// Return 302 redirect to a dummy log URL
+		http.Redirect(w, r, fg.server.URL+"/fake-logs", http.StatusFound)
+	})
+
+	// Serve fake log content for redirected log requests
+	mux.HandleFunc("/fake-logs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("(no logs available)"))
 	})
 
 	// Default 404 handler for unmatched routes under /api/v3/
@@ -241,10 +497,13 @@ func (fg *FakeGitHub) handleIssueComments(w http.ResponseWriter, r *http.Request
 	fg.mu.Lock()
 	defer fg.mu.Unlock()
 
-	// Return 404 if the issue doesn't exist, matching real GitHub API behavior.
+	// Return 404 if neither an issue nor a PR exists for this number.
+	// In GitHub's API, PRs are also issues and share the same comment endpoint.
 	if _, ok := fg.issues[issueNum]; !ok {
-		http.NotFound(w, r)
-		return
+		if _, ok := fg.prs[issueNum]; !ok {
+			http.NotFound(w, r)
+			return
+		}
 	}
 
 	switch r.Method {
@@ -407,8 +666,261 @@ func (fg *FakeGitHub) handleCreatePR(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(fg.prToJSON(pr))
 }
 
+// SeedPR adds a PR to the fake server's state.
+func (fg *FakeGitHub) SeedPR(pr FakePR) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	if pr.State == "" {
+		pr.State = "open"
+	}
+	fg.prs[pr.Number] = &pr
+}
+
+// SeedReviewComment adds an inline review comment to a PR.
+func (fg *FakeGitHub) SeedReviewComment(prNumber int, comment FakeReviewComment) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	if comment.ID == 0 {
+		comment.ID = fg.nextReviewComID
+		fg.nextReviewComID++
+	} else if comment.ID >= fg.nextReviewComID {
+		fg.nextReviewComID = comment.ID + 1
+	}
+	if comment.User == nil {
+		comment.User = map[string]any{"login": "reviewer"}
+	}
+	fg.reviewComments[prNumber] = append(fg.reviewComments[prNumber], &comment)
+}
+
+// SeedCheckRun adds a check run for a commit SHA.
+func (fg *FakeGitHub) SeedCheckRun(sha string, cr FakeCheckRun) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	fg.checkRuns[sha] = append(fg.checkRuns[sha], &cr)
+}
+
+// SeedReview adds a PR review.
+func (fg *FakeGitHub) SeedReview(prNumber int, review FakeReview) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	fg.reviews[prNumber] = append(fg.reviews[prNumber], &review)
+}
+
+// SetPRHeadSHA overrides the HEAD SHA for a PR.
+func (fg *FakeGitHub) SetPRHeadSHA(prNumber int, sha string) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	fg.prHeadSHAs[prNumber] = sha
+}
+
+// SetPRMergeState sets the mergeable_state for a PR.
+func (fg *FakeGitHub) SetPRMergeState(prNumber int, state string) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	fg.prMergeStates[prNumber] = state
+}
+
+// SeedIssueComment adds a comment to an issue.
+func (fg *FakeGitHub) SeedIssueComment(issueNumber int, comment FakeComment) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	if comment.ID == 0 {
+		comment.ID = fg.nextCommentID
+		fg.nextCommentID++
+	} else if comment.ID >= fg.nextCommentID {
+		fg.nextCommentID = comment.ID + 1
+	}
+	if comment.User == nil {
+		comment.User = map[string]any{"login": "reviewer"}
+	}
+	fg.comments[issueNumber] = append(fg.comments[issueNumber], &comment)
+}
+
+func (fg *FakeGitHub) handlePRReviewComments(w http.ResponseWriter, r *http.Request, prNum int) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+
+	switch r.Method {
+	case "POST":
+		// Reply to a review comment
+		var body struct {
+			Body      string `json:"body"`
+			InReplyTo int64  `json:"in_reply_to"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		reply := &FakeReviewComment{
+			ID:          fg.nextReviewComID,
+			InReplyToID: body.InReplyTo,
+			Body:        body.Body,
+			User:        map[string]any{"login": "oompa-bot"},
+		}
+		fg.nextReviewComID++
+		fg.reviewComments[prNum] = append(fg.reviewComments[prNum], reply)
+		fg.ReviewReplyCalls = append(fg.ReviewReplyCalls, ReviewReplyCall{
+			PRNumber:  prNum,
+			CommentID: body.InReplyTo,
+			Body:      body.Body,
+		})
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(reply)
+	case "GET":
+		// Return review comments with pagination support.
+		comments := fg.reviewComments[prNum]
+		if comments == nil {
+			comments = []*FakeReviewComment{}
+		}
+		q := r.URL.Query()
+		page, _ := strconv.Atoi(q.Get("page"))
+		perPage, _ := strconv.Atoi(q.Get("per_page"))
+		if page < 1 {
+			page = 1
+		}
+		if perPage <= 0 {
+			perPage = 30
+		}
+		start := min((page-1)*perPage, len(comments))
+		end := min(start+perPage, len(comments))
+		// Set Link header for next page if more results exist
+		if end < len(comments) {
+			nextURL := fmt.Sprintf("<%s?page=%d&per_page=%d>; rel=\"next\"",
+				r.URL.Path, page+1, perPage)
+			w.Header().Set("Link", nextURL)
+		}
+		_ = json.NewEncoder(w).Encode(comments[start:end])
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (fg *FakeGitHub) handlePRReviews(w http.ResponseWriter, r *http.Request, prNum int) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+
+	switch r.Method {
+	case "POST":
+		// Submit a review (not needed for e2e, but return success)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 1})
+	case "GET":
+		reviews := fg.reviews[prNum]
+		if reviews == nil {
+			reviews = []*FakeReview{}
+		}
+		_ = json.NewEncoder(w).Encode(reviews)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (fg *FakeGitHub) handlePRCommits(w http.ResponseWriter, _ *http.Request, prNum int) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+
+	sha := "fake-sha-" + strconv.Itoa(prNum)
+	if override, ok := fg.prHeadSHAs[prNum]; ok {
+		sha = override
+	}
+	_ = json.NewEncoder(w).Encode([]map[string]any{
+		{
+			"sha": sha,
+			"commit": map[string]any{
+				"message": "initial commit",
+			},
+		},
+	})
+}
+
+func (fg *FakeGitHub) handleCheckRuns(w http.ResponseWriter, _ *http.Request, sha string) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+
+	runs := fg.checkRuns[sha]
+	if runs == nil {
+		runs = []*FakeCheckRun{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"total_count": len(runs),
+		"check_runs":  runs,
+	})
+}
+
+func (fg *FakeGitHub) handleCommitStatuses(w http.ResponseWriter, _ *http.Request, sha string) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+
+	statuses := fg.commitStatuses[sha]
+	if statuses == nil {
+		statuses = []map[string]any{}
+	}
+	// Return "success" when no statuses are seeded to avoid masking future bugs
+	// if production code ever checks the combined state field.
+	combinedState := "success"
+	if len(statuses) > 0 {
+		combinedState = "failure"
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"state":    combinedState,
+		"statuses": statuses,
+	})
+}
+
+func (fg *FakeGitHub) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+
+	var body struct {
+		Title  string   `json:"title"`
+		Body   string   `json:"body"`
+		Labels []string `json:"labels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+
+	issueNum := fg.nextIssueNumber
+	fg.nextIssueNumber++
+
+	// Persist the new issue into fake state so subsequent list/get flows see it.
+	labels := make([]map[string]any, 0, len(body.Labels))
+	for _, l := range body.Labels {
+		labels = append(labels, map[string]any{"name": l})
+	}
+	fg.issues[issueNum] = &FakeIssue{
+		Number: issueNum,
+		Title:  body.Title,
+		Body:   body.Body,
+		State:  "open",
+		Labels: labels,
+	}
+
+	fg.CreateIssueCalls = append(fg.CreateIssueCalls, CreateIssueCall{
+		Title:  body.Title,
+		Body:   body.Body,
+		Labels: body.Labels,
+	})
+
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"number": issueNum,
+		"title":  body.Title,
+		"body":   body.Body,
+	})
+}
+
 // prToJSON converts a FakePR to the JSON structure go-github expects.
 func (fg *FakeGitHub) prToJSON(pr *FakePR) fakePRJSON {
+	sha := "fake-sha-" + strconv.Itoa(pr.Number)
+	if override, ok := fg.prHeadSHAs[pr.Number]; ok {
+		sha = override
+	}
+	mergeableState := "clean"
+	if ms, ok := fg.prMergeStates[pr.Number]; ok {
+		mergeableState = ms
+	}
 	return fakePRJSON{
 		Number: pr.Number,
 		Title:  pr.Title,
@@ -417,10 +929,11 @@ func (fg *FakeGitHub) prToJSON(pr *FakePR) fakePRJSON {
 		Merged: false,
 		Head: map[string]any{
 			"ref": pr.Head,
-			"sha": "fake-sha-" + strconv.Itoa(pr.Number),
+			"sha": sha,
 		},
 		Base: map[string]any{
 			"ref": pr.Base,
 		},
+		MergeableState: mergeableState,
 	}
 }
