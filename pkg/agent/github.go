@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -52,11 +54,20 @@ type GoGitHubClient struct {
 }
 
 // NewGoGitHubClient creates a new client authenticated with the given token.
+// If OOMPA_GITHUB_API_URL is set, the client uses it as the GitHub Enterprise
+// base URL (for testing with a fake GitHub server).
 func NewGoGitHubClient(token string) *GoGitHubClient {
 	httpClient := &http.Client{Transport: NewCachingTransport(http.DefaultTransport)}
-	return &GoGitHubClient{
-		client: github.NewClient(httpClient).WithAuthToken(token),
+	client := github.NewClient(httpClient).WithAuthToken(token)
+	if base := os.Getenv("OOMPA_GITHUB_API_URL"); base != "" {
+		enterpriseClient, err := client.WithEnterpriseURLs(base, base)
+		if err != nil {
+			slog.Warn("invalid OOMPA_GITHUB_API_URL, falling back to api.github.com", "url", base, "error", err)
+		} else {
+			client = enterpriseClient
+		}
 	}
+	return &GoGitHubClient{client: client}
 }
 
 // NewGoGitHubClientFromHTTPClient creates a new client using a custom HTTP client

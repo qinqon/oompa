@@ -842,6 +842,32 @@ func TestCountCommitsSince_APIError(t *testing.T) {
 	}
 }
 
+func TestNewGoGitHubClient_EnvOverridesBaseURL(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
+		issues := []*github.Issue{
+			{Number: new(1), Title: new("test")},
+		}
+		_ = json.NewEncoder(w).Encode(issues)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	t.Setenv("OOMPA_GITHUB_API_URL", server.URL+"/")
+	gh := NewGoGitHubClient("test-token")
+
+	issues, err := gh.ListLabeledIssues(context.Background(), "owner", "repo", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(issues))
+	}
+	if issues[0].Number != 1 {
+		t.Errorf("expected issue 1, got %d", issues[0].Number)
+	}
+}
+
 func TestAddIssueCommentReaction(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/issues/comments/42/reactions", func(w http.ResponseWriter, r *http.Request) {
