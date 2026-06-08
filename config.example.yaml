@@ -19,6 +19,7 @@ exit-on-new-version: qinqon/oompa
 projects:
   - repo: ovn-kubernetes/ovn-kubernetes
     # Project-level defaults — inherited by all roles
+    agent-model: google-vertex-anthropic/claude-sonnet-4-20250514  # cheaper for report-only
     create-flaky-issues: true
     flaky-label: kind/ci-flake
     prs:
@@ -27,6 +28,7 @@ projects:
         # inherits create-flaky-issues: true from project
 
   - repo: openperouter/openperouter
+    agent-model: google-vertex-anthropic/claude-sonnet-4-20250514  # cheaper for report-only
     prs:
       - watch: [313, 304]
         reactions: [ci, conflicts, rebase]
@@ -52,6 +54,7 @@ projects:
         reactions: [ci, conflicts, rebase]
 
   - repo: qinqon/oompa
+    # inherits global agent-model (Opus)
     issues:
       - label: good-for-ai
         # Role-level reviewers override project-level (and global)
