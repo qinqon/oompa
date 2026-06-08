@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1109,6 +1110,110 @@ func TestBuildRoleEntries_RebaseIntervalDefault(t *testing.T) {
 	// Default should be 4h
 	if entries[0].Config.RebaseInterval != 4*time.Hour {
 		t.Errorf("expected RebaseInterval 4h (default), got %v", entries[0].Config.RebaseInterval)
+	}
+}
+
+func TestBuildRoleEntries_AgentModelTwoTierInheritance(t *testing.T) {
+	fc := &FileConfig{
+		Agent:      "opencode",
+		AgentModel: "global-model",
+		Projects: []ProjectConfig{
+			{
+				Repo:       "org/with-override",
+				AgentModel: "project-model", // Override global
+				PRs:        []PRsRoleConfig{{Watch: []int{1}}},
+				Issues:     []IssuesRoleConfig{{Label: "ai"}},
+				Triage:     []TriageRoleConfig{{Jobs: []string{"https://ci.example.com/job"}}},
+			},
+			{
+				Repo: "org/inherits-global",
+				// No agent-model — inherits global
+				PRs: []PRsRoleConfig{{Watch: []int{2}}},
+			},
+		},
+	}
+
+	entries := BuildRoleEntries(fc, "/tmp/work", Config{Agent: "claudecode", AgentModel: "cli-model"})
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(entries))
+	}
+	// First project: all roles get project-level model
+	if entries[0].Config.AgentModel != "project-model" {
+		t.Errorf("PRs: expected 'project-model', got %q", entries[0].Config.AgentModel)
+	}
+	if entries[1].Config.AgentModel != "project-model" {
+		t.Errorf("Issues: expected 'project-model', got %q", entries[1].Config.AgentModel)
+	}
+	if entries[2].Config.AgentModel != "project-model" {
+		t.Errorf("Triage: expected 'project-model', got %q", entries[2].Config.AgentModel)
+	}
+	// Second project: inherits global (file-level overrides CLI-level)
+	if entries[3].Config.AgentModel != "global-model" {
+		t.Errorf("Inherited: expected 'global-model', got %q", entries[3].Config.AgentModel)
+	}
+}
+
+func TestLoadFileConfig_ProjectAgentModelValid(t *testing.T) {
+	yaml := `
+agent: opencode
+agent-model: google-vertex-anthropic/claude-opus-4-6@default
+projects:
+  - repo: owner/repo
+    agent-model: google-vertex-anthropic/claude-sonnet-4-20250514
+    prs:
+      - watch: [1]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
+
+	fc, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fc.Projects[0].AgentModel != "google-vertex-anthropic/claude-sonnet-4-20250514" {
+		t.Errorf("expected project agent-model, got %q", fc.Projects[0].AgentModel)
+	}
+}
+
+func TestLoadFileConfig_ProjectAgentModelWithoutOpenCode(t *testing.T) {
+	yaml := `
+agent: claudecode
+projects:
+  - repo: owner/repo
+    agent-model: some-model
+    prs:
+      - watch: [1]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
+
+	_, err := LoadFileConfig(path)
+	if err == nil {
+		t.Fatal("expected error for project agent-model with claudecode")
+	}
+}
+
+func TestLoadFileConfig_ProjectAgentModelWithoutAgentSet(t *testing.T) {
+	yaml := `
+projects:
+  - repo: owner/repo
+    agent-model: some-model
+    prs:
+      - watch: [1]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
+
+	_, err := LoadFileConfig(path)
+	if err == nil {
+		t.Fatal("expected error for project agent-model without explicit agent")
+	}
+	// Error message should guide user to set agent at global level
+	if !strings.Contains(err.Error(), "global level") {
+		t.Errorf("expected error to mention 'global level', got %q", err.Error())
 	}
 }
 

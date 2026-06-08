@@ -25,8 +25,9 @@ type FileConfig struct {
 
 // ProjectConfig represents a single project in the YAML config.
 type ProjectConfig struct {
-	Repo string `yaml:"repo"` // "owner/repo"
-	Fork string `yaml:"fork"` // "owner/repo" for fork
+	Repo       string `yaml:"repo"`        // "owner/repo"
+	Fork       string `yaml:"fork"`        // "owner/repo" for fork
+	AgentModel string `yaml:"agent-model"` // model override for this project (empty = inherit global)
 
 	// Project-level defaults (inherited by roles unless overridden)
 	CreateFlakyIssues *bool    `yaml:"create-flaky-issues"`
@@ -166,6 +167,16 @@ func validateFileConfig(cfg *FileConfig) error {
 			forkParts := strings.SplitN(p.Fork, "/", 2)
 			if len(forkParts) != 2 || forkParts[0] == "" || forkParts[1] == "" {
 				return fmt.Errorf("project %d: fork must be owner/repo, got %q", i, p.Fork)
+			}
+		}
+
+		// Validate project-level agent-model: requires agent: opencode
+		if p.AgentModel != "" {
+			if cfg.Agent == "" {
+				return fmt.Errorf("project %d (%s): agent-model requires agent to be explicitly set to opencode at the global level", i, p.Repo)
+			}
+			if cfg.Agent != "opencode" {
+				return fmt.Errorf("project %d (%s): agent-model can only be used with agent: opencode", i, p.Repo)
 			}
 		}
 
@@ -342,6 +353,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 		projOnlyAssigned := boolOr(p.OnlyAssigned, false)
 		projReviewers := stringsOr(p.Reviewers, globalCfg.Reviewers)
 		projRebaseInterval := parseDurationOr(p.RebaseInterval, 4*time.Hour)
+		projAgentModel := stringOr(p.AgentModel, agentModel)
 
 		// Base config for this project (shared fields)
 		baseCfg := Config{
@@ -353,7 +365,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			DryRun:       fc.DryRun || globalCfg.DryRun,
 			OneShot:      fc.OneShot || globalCfg.OneShot,
 			Agent:        agent,
-			AgentModel:   agentModel,
+			AgentModel:   projAgentModel,
 			ForkOwner:    projForkOwner,
 			ForkRepo:     projForkRepo,
 			// These are inherited from the global config (set by main from auth)
