@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -107,6 +108,15 @@ func (a *Agent) gitSquashInto(ctx context.Context, worktreePath, targetSHA strin
 	return nil
 }
 
+// conventionalCommitRe matches issue titles that start with a conventional commit prefix.
+// Supports standard prefixes with optional scope and breaking change indicator.
+var conventionalCommitRe = regexp.MustCompile(`^(feat|fix|build|refactor|docs|chore|test|ci|perf|style|revert)(\([^)]+\))?!?:`)
+
+// isConventionalCommitTitle returns true if the title starts with a conventional commit prefix.
+func isConventionalCommitTitle(title string) bool {
+	return conventionalCommitRe.MatchString(title)
+}
+
 // gitSquashCommits squashes all commits since the origin default branch into a single commit.
 func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issueNumber int, issueTitle string) error {
 	// Get all commit messages since origin default branch
@@ -127,7 +137,16 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 	// Create a single commit with a meaningful message.
 	// Strip any Signed-off-by/Assisted-by trailers Claude may have added to individual
 	// commits before building the body, then append exactly one canonical set of trailers.
-	commitMsg := fmt.Sprintf("Fix #%d: %s", issueNumber, issueTitle)
+	//
+	// When the issue title already starts with a conventional commit prefix (e.g. "feat:",
+	// "build:", "refactor(scope):"), use the title as-is for the subject and move the issue
+	// reference to the body. Otherwise, use the legacy "Fix #N: <title>" format.
+	var commitMsg string
+	if isConventionalCommitTitle(issueTitle) {
+		commitMsg = fmt.Sprintf("%s\n\nFixes #%d", issueTitle, issueNumber)
+	} else {
+		commitMsg = fmt.Sprintf("Fix #%d: %s", issueNumber, issueTitle)
+	}
 	if commitMessages != "" {
 		commitMsg += "\n\n" + stripTrailers(commitMessages)
 	}
