@@ -3140,6 +3140,131 @@ func TestProcessNewIssues_SquashesCommits(t *testing.T) {
 	}
 }
 
+func TestIsConventionalCommitTitle(t *testing.T) {
+	tests := []struct {
+		name     string
+		title    string
+		expected bool
+	}{
+		// Conventional commit prefixes — should match
+		{"feat prefix", "feat: add new feature", true},
+		{"fix prefix", "fix: resolve crash on startup", true},
+		{"build prefix", "build: consolidate multi-arch container build scripts", true},
+		{"refactor prefix", "refactor: simplify handler logic", true},
+		{"docs prefix", "docs: update README", true},
+		{"chore prefix", "chore: bump dependencies", true},
+		{"test prefix", "test: add unit tests for parser", true},
+		{"ci prefix", "ci: fix GitHub Actions workflow", true},
+		{"perf prefix", "perf: optimize database queries", true},
+		{"style prefix", "style: fix formatting", true},
+		{"revert prefix", "revert: undo previous change", true},
+
+		// With scope
+		{"feat with scope", "feat(api): add pagination support", true},
+		{"fix with scope", "fix(auth): handle expired tokens", true},
+		{"refactor with scope", "refactor(build): consolidate scripts", true},
+
+		// With breaking change indicator
+		{"breaking without scope", "feat!: remove deprecated API", true},
+		{"breaking with scope", "feat(api)!: change response format", true},
+
+		// Non-conventional titles — should NOT match
+		{"capitalized word", "Fix the bug", false},
+		{"lowercase no prefix", "implement feature X", false},
+		{"sentence case", "Update README with new instructions", false},
+		{"issue ref prefix", "Fix #42: something", false},
+		{"invalid prefix word", "feature: this is not a valid prefix", false},
+		{"uppercase prefix", "FEAT: uppercase doesn't match", false},
+		{"missing colon", "feat - missing colon", false},
+		{"no space after colon", "feat:missing space is fine", true},
+		{"empty string", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isConventionalCommitTitle(tt.title)
+			if got != tt.expected {
+				t.Errorf("isConventionalCommitTitle(%q) = %v, want %v", tt.title, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestProcessNewIssues_SquashesCommits_ConventionalCommitTitle(t *testing.T) {
+	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 1532, Title: "build: consolidate multi-arch container build scripts", Body: "Consolidate build scripts"}},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.SignedOffBy = "Test User <test@example.com>"
+	agent.ProcessNewIssues(context.Background())
+
+	// Verify the commit message uses the conventional commit title as-is
+	// and puts "Fixes #N" in the body instead of "Fix #N: <title>"
+	for _, c := range runner.calls {
+		if c.Name != "git" || len(c.Args) < 3 || c.Args[0] != "commit" || c.Args[1] != "-m" {
+			continue
+		}
+		commitMsg := c.Args[2]
+		// The subject line should be the issue title as-is
+		lines := strings.SplitN(commitMsg, "\n", 2)
+		if lines[0] != "build: consolidate multi-arch container build scripts" {
+			t.Errorf("expected subject line to be the conventional commit title, got: %q", lines[0])
+		}
+		// Should NOT contain "Fix #1532:" prefix
+		if strings.Contains(commitMsg, "Fix #1532:") {
+			t.Errorf("commit message should not contain 'Fix #1532:' for conventional commit titles, got: %s", commitMsg)
+		}
+		// Should contain "Fixes #1532" in the body
+		if !strings.Contains(commitMsg, "Fixes #1532") {
+			t.Errorf("expected commit body to contain 'Fixes #1532', got: %s", commitMsg)
+		}
+		// Should still have trailers
+		if !strings.Contains(commitMsg, "Signed-off-by") {
+			t.Errorf("expected commit message to contain 'Signed-off-by', got: %s", commitMsg)
+		}
+		return
+	}
+	t.Error("expected git commit -m to be called")
+}
+
+func TestProcessNewIssues_SquashesCommits_NonConventionalTitle(t *testing.T) {
+	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 42, Title: "implement feature X", Body: "broken"}},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.cfg.SignedOffBy = "Test User <test@example.com>"
+	agent.ProcessNewIssues(context.Background())
+
+	// Verify the commit message uses the legacy "Fix #N: <title>" format
+	for _, c := range runner.calls {
+		if c.Name != "git" || len(c.Args) < 3 || c.Args[0] != "commit" || c.Args[1] != "-m" {
+			continue
+		}
+		commitMsg := c.Args[2]
+		if !strings.Contains(commitMsg, "Fix #42: implement feature X") {
+			t.Errorf("expected commit message to contain 'Fix #42: implement feature X', got: %s", commitMsg)
+		}
+		// Should NOT contain standalone "Fixes #42" in body (that's for conventional commits)
+		lines := strings.SplitN(commitMsg, "\n", 2)
+		if lines[0] != "Fix #42: implement feature X" {
+			t.Errorf("expected subject line to be 'Fix #42: implement feature X', got: %q", lines[0])
+		}
+		if !strings.Contains(commitMsg, "Signed-off-by") {
+			t.Errorf("expected commit message to contain 'Signed-off-by', got: %s", commitMsg)
+		}
+		return
+	}
+	t.Error("expected git commit -m to be called")
+}
+
 func TestProcessTriageJobs_NoJobsConfigured(t *testing.T) {
 	gh := &mockGitHubClient{}
 	runner := &mockCommandRunner{}
