@@ -140,8 +140,8 @@ func (d *DryRunGitHubClient) GetCommitStatuses(ctx context.Context, owner, repo,
 	return d.inner.GetCommitStatuses(ctx, owner, repo, ref)
 }
 
-func (d *DryRunGitHubClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowID, status string, limit int) ([]WorkflowRun, error) {
-	return d.inner.ListWorkflowRuns(ctx, owner, repo, workflowID, status, limit)
+func (d *DryRunGitHubClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowID, status string, limit int, since time.Time) ([]WorkflowRun, error) {
+	return d.inner.ListWorkflowRuns(ctx, owner, repo, workflowID, status, limit, since)
 }
 
 func (d *DryRunGitHubClient) ListWorkflowJobs(ctx context.Context, owner, repo string, runID int64) ([]WorkflowJob, error) {

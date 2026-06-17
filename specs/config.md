@@ -74,6 +74,51 @@ projects:
 
 **Validation**: Non-positive values (zero or negative) are rejected at config load time.
 
+## YAML File Config: Triage `workflow` + `lanes`
+
+The `workflow` + `lanes` fields enable **lane-level matrix job filtering** for GitHub Actions
+workflows. Instead of triaging entire workflow runs, oompa monitors specific matrix lanes
+within a high-volume workflow and reports failures per-lane.
+
+**Fields:**
+- `workflow`: GHA workflow file name relative to the project repo (e.g., `test.yml`).
+- `lanes`: Glob patterns matched against job names within each workflow run.
+  Supports trailing `*` wildcard (e.g., `"e2e (kv-live-migration, noHA, local,*"`).
+
+**Validation:**
+- A triage entry must have either `jobs` or (`workflow` + `lanes`), not both, not neither.
+- `workflow` without `lanes` is invalid.
+- `lanes` without `workflow` is invalid.
+
+**Example:**
+
+```yaml
+projects:
+  - repo: ovn-kubernetes/ovn-kubernetes
+    flaky-label: kind/ci-flake
+    triage:
+      - workflow: test.yml
+        lanes:
+          - "e2e (kv-live-migration, noHA, local,*"
+          - "e2e (kv-live-migration, noHA, shared,*"
+        schedule: "09:00 Europe/Madrid"
+        lookback: 24h
+    prs:
+      - watch: [6466]
+        reactions: []
+```
+
+**Behavior:**
+- For each workflow run, oompa calls `ListWorkflowJobs` to check individual lane outcomes.
+- Runs with `conclusion=success` are skipped (no `/jobs` API call needed).
+- A `JobRun` is emitted only when a matching lane has `conclusion=failure`.
+- `FetchLog` fetches only the matching lane's log (not all 42+ jobs).
+- State dedup keys are per-lane (e.g., `runID:laneName`), not per-workflow.
+
+**Slack integration:** When a lane failure is classified, a `SlackFinding` is emitted with
+category `"flake"` and dedup key `triage:{jobName}:{runID}`. This integrates with the
+existing `SlackReporter` for dedup and flush.
+
 ## Required External Setup
 
 - Google Cloud ADC configured (`gcloud auth application-default login` or service account key)

@@ -19,22 +19,45 @@ type triageRunTask struct {
 
 // ProcessTriageJobs monitors periodic CI jobs for failures and investigates them.
 func (a *Agent) ProcessTriageJobs(ctx context.Context) {
-	if len(a.cfg.TriageJobs) == 0 {
+	if len(a.cfg.TriageJobs) == 0 && a.cfg.TriageWorkflow == "" {
 		return
 	}
 
 	var tasks []triageRunTask
 
+	// Build the list of CI sources to check
+	var ciSources []CIJobSource
+
+	// URL-based sources (existing: Prow/GCS/cross-repo GHA)
 	for _, jobURL := range a.cfg.TriageJobs {
 		a.logger.Debug("processing triage job", "url", jobURL)
 
-		// Parse the CI job URL to determine the backend
 		ciSource, err := ParseCIJobURL(jobURL, a.gh)
 		if err != nil {
 			a.logger.Error("failed to parse CI job URL", "url", jobURL, "error", err)
 			continue
 		}
+		if ghaSource, ok := ciSource.(*GitHubActionsJobSource); ok {
+			ghaSource.lookback = a.cfg.TriageLookback
+		}
+		ciSources = append(ciSources, ciSource)
+	}
 
+	// Workflow + lanes source (new: lane-level GHA triage)
+	if a.cfg.TriageWorkflow != "" && len(a.cfg.TriageLanePatterns) > 0 {
+		ciSources = append(ciSources, &GitHubActionsJobSource{
+			owner:        a.cfg.Owner,
+			repo:         a.cfg.Repo,
+			workflow:     a.cfg.TriageWorkflow,
+			jobName:      fmt.Sprintf("%s/%s/%s", a.cfg.Owner, a.cfg.Repo, a.cfg.TriageWorkflow),
+			gh:           a.gh,
+			lanePatterns: a.cfg.TriageLanePatterns,
+			matchedJobs:  make(map[string]int64),
+			lookback:     a.cfg.TriageLookback,
+		})
+	}
+
+	for _, ciSource := range ciSources {
 		// Fetch more runs when scanning a time window
 		limit := 5
 		if a.cfg.TriageLookback > 0 {
@@ -114,6 +137,13 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 	runSequential(ctx, tasks, func(ctx context.Context, task triageRunTask) {
 		a.investigateTriageRun(ctx, task.ciSource, task.run, &cycleIssues, cycleFailedJobs)
 	})
+
+	// Flush Slack findings collected during this triage cycle.
+	// Triage runs on its own schedule goroutine, separate from the poll loop
+	// that normally calls Flush(). Without this, triage findings would stay
+	// buffered until the next poll-loop flush (which may never run for
+	// triage-only configurations).
+	a.FlushSlackReport(ctx)
 }
 
 // investigateTriageRun handles the investigation of a single failed CI run.
@@ -236,6 +266,32 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 				})
 			}
 		}
+	}
+
+	// Emit Slack finding for triage results
+	if a.SlackEnabled() {
+		failureSig := extractFailureSignature(analysis)
+
+		// Vary wording: "lane" for matrix job sources with lane patterns,
+		// "triage job" for standalone CI jobs (including workflow-level GHA)
+		label := "triage job"
+		if gha, ok := ciSource.(*GitHubActionsJobSource); ok && len(gha.lanePatterns) > 0 {
+			label = "lane"
+		}
+
+		var msg string
+		if failureSig != "" {
+			msg = fmt.Sprintf(":red_circle: %s *%s* failed in run <%s|%s>: %s", label, run.JobName, run.LogURL, run.ID, failureSig)
+		} else {
+			msg = fmt.Sprintf(":red_circle: %s *%s* failed in run <%s|%s>", label, run.JobName, run.LogURL, run.ID)
+		}
+		a.CollectSlackFindings([]SlackFinding{{
+			Owner:    a.cfg.Owner,
+			Repo:     a.cfg.Repo,
+			Category: "triage",
+			Message:  msg,
+			DedupKey: fmt.Sprintf("triage:%s:%s", run.JobName, run.ID),
+		}})
 	}
 
 	// Mark the run as investigated

@@ -107,6 +107,7 @@ type WorkflowRun struct {
 
 // WorkflowJob represents a GitHub Actions workflow job.
 type WorkflowJob struct {
-	ID   int64
-	Name string
+	ID         int64
+	Name       string
+	Conclusion string // success, failure, cancelled, skipped, etc.
 }

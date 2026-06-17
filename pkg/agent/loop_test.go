@@ -210,7 +210,7 @@ func (m *mockGitHubClient) SearchIssues(_ context.Context, _ string) ([]Issue, e
 	return m.searchResults, nil
 }
 
-func (m *mockGitHubClient) ListWorkflowRuns(_ context.Context, _, _, _, _ string, _ int) ([]WorkflowRun, error) {
+func (m *mockGitHubClient) ListWorkflowRuns(_ context.Context, _, _, _, _ string, _ int, _ time.Time) ([]WorkflowRun, error) {
 	return m.workflowRuns, nil
 }
 

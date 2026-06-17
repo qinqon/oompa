@@ -95,7 +95,10 @@ func TestLoadFileConfig_ValidationErrors(t *testing.T) {
 		{"invalid_repo", "projects:\n  - repo: invalid\n    prs:\n      - watch: [1]\n"},
 		{"no_roles", "projects:\n  - repo: owner/repo\n"},
 		{"prs_without_watch", "projects:\n  - repo: owner/repo\n    prs:\n      - reactions: [ci]\n"},
-		{"triage_without_jobs", "projects:\n  - repo: owner/repo\n    triage:\n      - schedule: \"09:00 Europe/Madrid\"\n"},
+		{"triage_without_jobs_or_workflow", "projects:\n  - repo: owner/repo\n    triage:\n      - schedule: \"09:00 Europe/Madrid\"\n"},
+		{"triage_workflow_without_lanes", "projects:\n  - repo: owner/repo\n    triage:\n      - workflow: test.yml\n"},
+		{"triage_lanes_without_workflow", "projects:\n  - repo: owner/repo\n    triage:\n      - lanes: [\"e2e*\"]\n"},
+		{"triage_jobs_and_workflow", "projects:\n  - repo: owner/repo\n    triage:\n      - jobs: [\"https://ci.example.com/job1\"]\n        workflow: test.yml\n        lanes: [\"e2e*\"]\n"},
 		{"invalid_reaction", "projects:\n  - repo: owner/repo\n    prs:\n      - watch: [1]\n        reactions: [invalid]\n"},
 		{"invalid_agent", "agent: badagent\nprojects:\n  - repo: owner/repo\n    issues:\n      - label: test\n"},
 	}
@@ -1233,5 +1236,116 @@ func TestParseDurationOr(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("parseDurationOr(%q, %v) = %v, want %v", tt.input, tt.fallback, got, tt.want)
 		}
+	}
+}
+
+func TestLoadFileConfig_TriageWorkflowLanes(t *testing.T) {
+	yamlStr := `
+projects:
+  - repo: ovn-kubernetes/ovn-kubernetes
+    flaky-label: kind/ci-flake
+    triage:
+      - workflow: test.yml
+        lanes:
+          - "e2e (kv-live-migration, noHA, local,*"
+          - "e2e (kv-live-migration, noHA, shared,*"
+        schedule: "09:00 Europe/Madrid"
+        lookback: 24h
+    prs:
+      - watch: [6466]
+        reactions: []
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlStr), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fc, err := LoadFileConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(fc.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(fc.Projects))
+	}
+	p := fc.Projects[0]
+	if len(p.Triage) != 1 {
+		t.Fatalf("expected 1 triage entry, got %d", len(p.Triage))
+	}
+	tr := p.Triage[0]
+	if tr.Workflow != "test.yml" {
+		t.Errorf("expected workflow 'test.yml', got %q", tr.Workflow)
+	}
+	if len(tr.Lanes) != 2 {
+		t.Fatalf("expected 2 lanes, got %d", len(tr.Lanes))
+	}
+	if tr.Lanes[0] != "e2e (kv-live-migration, noHA, local,*" {
+		t.Errorf("unexpected lane[0] %q", tr.Lanes[0])
+	}
+	if tr.Schedule != "09:00 Europe/Madrid" {
+		t.Errorf("unexpected schedule %q", tr.Schedule)
+	}
+	if tr.Lookback != "24h" {
+		t.Errorf("unexpected lookback %q", tr.Lookback)
+	}
+}
+
+func TestBuildRoleEntries_TriageWorkflowLanes(t *testing.T) {
+	fc := &FileConfig{
+		Projects: []ProjectConfig{
+			{
+				Repo:       "ovn-kubernetes/ovn-kubernetes",
+				FlakyLabel: "kind/ci-flake",
+				Triage: []TriageRoleConfig{
+					{
+						Workflow: "test.yml",
+						Lanes:    []string{"e2e (kv-live-migration,*"},
+						Lookback: "24h",
+						Schedule: "09:00 Europe/Madrid",
+					},
+				},
+				PRs: []PRsRoleConfig{
+					{Watch: []int{6466}, Reactions: []string{}},
+				},
+			},
+		},
+	}
+
+	entries := BuildRoleEntries(fc, "/tmp/work", Config{Agent: "claudecode"})
+
+	// Should produce 2 entries: 1 triage + 1 prs
+	var triageEntries []RoleEntry
+	for _, e := range entries {
+		if e.Role == "triage" {
+			triageEntries = append(triageEntries, e)
+		}
+	}
+	if len(triageEntries) != 1 {
+		t.Fatalf("expected 1 triage entry, got %d", len(triageEntries))
+	}
+
+	te := triageEntries[0]
+	if te.Config.TriageWorkflow != "test.yml" {
+		t.Errorf("expected TriageWorkflow 'test.yml', got %q", te.Config.TriageWorkflow)
+	}
+	if len(te.Config.TriageLanePatterns) != 1 || te.Config.TriageLanePatterns[0] != "e2e (kv-live-migration,*" {
+		t.Errorf("unexpected TriageLanePatterns %v", te.Config.TriageLanePatterns)
+	}
+	if te.Config.TriageLookback != 24*time.Hour {
+		t.Errorf("expected TriageLookback 24h, got %v", te.Config.TriageLookback)
+	}
+	if te.Config.FlakyLabel != "kind/ci-flake" {
+		t.Errorf("expected FlakyLabel 'kind/ci-flake', got %q", te.Config.FlakyLabel)
+	}
+	if te.Schedule != "09:00 Europe/Madrid" {
+		t.Errorf("expected Schedule '09:00 Europe/Madrid', got %q", te.Schedule)
+	}
+	if te.Config.Owner != "ovn-kubernetes" || te.Config.Repo != "ovn-kubernetes" {
+		t.Errorf("expected owner/repo ovn-kubernetes/ovn-kubernetes, got %s/%s", te.Config.Owner, te.Config.Repo)
+	}
+	// TriageJobs should be empty (workflow+lanes mode, not jobs mode)
+	if len(te.Config.TriageJobs) != 0 {
+		t.Errorf("expected empty TriageJobs, got %v", te.Config.TriageJobs)
 	}
 }

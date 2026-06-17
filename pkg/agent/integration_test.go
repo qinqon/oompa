@@ -290,7 +290,7 @@ func (f *fakeGitHubClient) SearchIssues(_ context.Context, _ string) ([]Issue, e
 	return nil, nil
 }
 
-func (f *fakeGitHubClient) ListWorkflowRuns(_ context.Context, _, _, _, _ string, _ int) ([]WorkflowRun, error) {
+func (f *fakeGitHubClient) ListWorkflowRuns(_ context.Context, _, _, _, _ string, _ int, _ time.Time) ([]WorkflowRun, error) {
 	return nil, nil
 }
 

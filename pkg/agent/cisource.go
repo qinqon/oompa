@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -670,20 +671,37 @@ func (g *GCSDirectoryJobSource) FetchLog(ctx context.Context, runID string) (str
 
 // GitHubActionsJobSource implements CIJobSource for GitHub Actions workflows.
 type GitHubActionsJobSource struct {
-	owner    string
-	repo     string
-	workflow string
-	jobName  string
-	gh       GitHubClient
+	owner        string
+	repo         string
+	workflow     string
+	jobName      string
+	gh           GitHubClient
+	lanePatterns []string         // optional: glob patterns for matrix job names (lane-level filtering)
+	matchedJobs  map[string]int64 // runID → matched job ID (populated by ListRecentRuns for lane-level log fetch)
+	lookback     time.Duration    // optional: lookback window for filtering runs
 }
 
 func (g *GitHubActionsJobSource) JobName() string {
 	return g.jobName
 }
 
+// sinceTime returns the earliest time to include when listing workflow runs.
+// Returns zero time (no filter) when lookback is not configured.
+func (g *GitHubActionsJobSource) sinceTime() time.Time {
+	if g.lookback <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(-g.lookback)
+}
+
 func (g *GitHubActionsJobSource) ListRecentRuns(ctx context.Context, limit int) ([]JobRun, error) {
-	// List recent workflow runs filtered by failure status
-	runs, err := g.gh.ListWorkflowRuns(ctx, g.owner, g.repo, g.workflow, "failure", limit)
+	// Lane-level mode: filter by individual job outcomes within each run
+	if len(g.lanePatterns) > 0 {
+		return g.listRecentRunsLaneLevel(ctx, limit)
+	}
+
+	// Workflow-level mode (existing behavior): list runs filtered by failure status
+	runs, err := g.gh.ListWorkflowRuns(ctx, g.owner, g.repo, g.workflow, "failure", limit, g.sinceTime())
 	if err != nil {
 		return nil, fmt.Errorf("listing workflow runs: %w", err)
 	}
@@ -711,8 +729,91 @@ func (g *GitHubActionsJobSource) ListRecentRuns(ctx context.Context, limit int) 
 	return jobRuns, nil
 }
 
+// listRecentRunsLaneLevel implements lane-level triage for matrix workflows.
+// For each run, it checks individual job outcomes against lanePatterns and emits
+// a JobRun only when a matching lane has conclusion=failure.
+func (g *GitHubActionsJobSource) listRecentRunsLaneLevel(ctx context.Context, limit int) ([]JobRun, error) {
+	// Initialize matched jobs map for FetchLog
+	g.matchedJobs = make(map[string]int64)
+
+	// List all completed runs (not filtered by conclusion) so we can inspect
+	// individual lane outcomes. Use "completed" status to skip in-progress runs.
+	runs, err := g.gh.ListWorkflowRuns(ctx, g.owner, g.repo, g.workflow, "completed", limit*3, g.sinceTime())
+	if err != nil {
+		return nil, fmt.Errorf("listing workflow runs: %w", err)
+	}
+
+	var jobRuns []JobRun
+	for _, run := range runs {
+		// Skip successful runs entirely (cost optimization — no need to fetch jobs)
+		if run.Conclusion == "success" {
+			continue
+		}
+
+		// Fetch jobs for this run to check lane-level outcomes
+		jobs, err := g.gh.ListWorkflowJobs(ctx, g.owner, g.repo, run.ID)
+		if err != nil {
+			slog.Warn("failed to list workflow jobs, skipping run", "workflow", g.workflow, "runID", run.ID, "error", err)
+			continue
+		}
+
+		// Check each job against lane patterns
+		for _, job := range jobs {
+			if job.Conclusion != "failure" {
+				continue
+			}
+
+			matched, laneName := matchLanePattern(job.Name, g.lanePatterns)
+			if !matched {
+				continue
+			}
+
+			// Use a ref-safe lane-scoped run ID (runID:jobID) so state dedup is
+			// per-lane and the ID is valid for git branch names (no spaces/parens).
+			// The human-readable lane name is in JobRun.JobName.
+			laneRunID := fmt.Sprintf("%d:%d", run.ID, job.ID)
+
+			// Track the matched job ID for FetchLog
+			g.matchedJobs[laneRunID] = job.ID
+
+			jobRuns = append(jobRuns, JobRun{
+				ID:        laneRunID,
+				JobName:   laneName,
+				Status:    "failure",
+				Timestamp: run.CreatedAt,
+				LogURL:    run.HTMLURL,
+			})
+		}
+
+		if len(jobRuns) >= limit {
+			break
+		}
+	}
+
+	// Trim to limit
+	if len(jobRuns) > limit {
+		jobRuns = jobRuns[:limit]
+	}
+
+	return jobRuns, nil
+}
+
 func (g *GitHubActionsJobSource) FetchLog(ctx context.Context, runID string) (string, error) {
-	// Parse runID as int64
+	// Lane-level mode: fetch only the matched lane's log
+	if len(g.lanePatterns) > 0 {
+		jobID, ok := g.matchedJobs[runID]
+		if !ok {
+			return "", fmt.Errorf("unknown lane run ID %q (not resolved during ListRecentRuns)", runID)
+		}
+
+		log, err := g.gh.GetWorkflowJobLogs(ctx, g.owner, g.repo, jobID)
+		if err != nil {
+			return "", fmt.Errorf("fetching lane job log: %w", err)
+		}
+		return log, nil
+	}
+
+	// Workflow-level mode: parse runID as int64 and fetch all jobs
 	var workflowRunID int64
 	if _, err := fmt.Sscanf(runID, "%d", &workflowRunID); err != nil {
 		return "", fmt.Errorf("invalid run ID: %s", runID)
@@ -742,4 +843,21 @@ func (g *GitHubActionsJobSource) FetchLog(ctx context.Context, runID string) (st
 	}
 
 	return allLogs.String(), nil
+}
+
+// matchLanePattern checks if a job name matches any of the lane glob patterns.
+// Returns true and the matched job name if found. Patterns support trailing '*'
+// wildcard (e.g. "e2e (kv-live-migration, noHA, local,*" matches any job name
+// starting with that prefix).
+func matchLanePattern(jobName string, patterns []string) (matched bool, laneName string) {
+	for _, pattern := range patterns {
+		if before, ok := strings.CutSuffix(pattern, "*"); ok {
+			if strings.HasPrefix(jobName, before) {
+				return true, jobName
+			}
+		} else if jobName == pattern {
+			return true, jobName
+		}
+	}
+	return false, ""
 }

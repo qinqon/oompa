@@ -31,8 +31,10 @@ type Config struct {
 	CreateFlakyIssues bool     // when true, create issues for unrelated CI failures (opt-in)
 	FlakyLabel        string   // label applied to flaky CI issues (default: "flaky-test")
 	OnlyAssigned      bool     // when true, only process issues assigned to the agent user
-	TriageJobs        []string       // CI job URLs to monitor for periodic job triage
-	TriageLookback    time.Duration  // time window to check for failed triage runs (0 = latest only)
+	TriageJobs          []string       // CI job URLs to monitor for periodic job triage
+	TriageWorkflow      string         // GHA workflow file for lane-level triage (relative to repo)
+	TriageLanePatterns  []string       // glob patterns for matrix job names (lane-level filtering)
+	TriageLookback      time.Duration  // time window to check for failed triage runs (0 = latest only)
 	Role              string   // role identifier: "prs", "issues", "triage" (set by BuildRoleEntries)
 	Agent             string   // coding agent backend: "claudecode" or "opencode"
 	AgentModel        string   // model override for OpenCode (empty = default)
