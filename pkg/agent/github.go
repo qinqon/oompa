@@ -42,7 +42,7 @@ type GitHubClient interface {
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels []string) (int, error)
 	SearchIssues(ctx context.Context, query string) ([]Issue, error)
 	GetCommitStatuses(ctx context.Context, owner, repo, ref string) ([]CheckRun, error)
-	ListWorkflowRuns(ctx context.Context, owner, repo, workflowID string, status string, limit int) ([]WorkflowRun, error)
+	ListWorkflowRuns(ctx context.Context, owner, repo, workflowID string, status string, limit int, since time.Time) ([]WorkflowRun, error)
 	ListWorkflowJobs(ctx context.Context, owner, repo string, runID int64) ([]WorkflowJob, error)
 	GetWorkflowJobLogs(ctx context.Context, owner, repo string, jobID int64) (string, error)
 	CountCommitsSince(ctx context.Context, owner, repo string, since time.Time) (int, error)
@@ -615,28 +615,51 @@ func (g *GoGitHubClient) GetLatestReleaseSHA(ctx context.Context, owner, repo st
 }
 
 // ListWorkflowRuns lists recent workflow runs filtered by status.
-func (g *GoGitHubClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowID, status string, limit int) ([]WorkflowRun, error) {
+// When since is non-zero, the GitHub API's created filter is used for
+// server-side date filtering (e.g. ">=2026-06-15T09:00:00Z"). Results are
+// paginated when the window exceeds one page.
+func (g *GoGitHubClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowID, status string, limit int, since time.Time) ([]WorkflowRun, error) {
+	perPage := min(limit, 100)
+
 	opts := &github.ListWorkflowRunsOptions{
 		Status: status,
 		ListOptions: github.ListOptions{
-			PerPage: limit,
+			PerPage: perPage,
 		},
 	}
 
-	runs, _, err := g.client.Actions.ListWorkflowRunsByFileName(ctx, owner, repo, workflowID, opts)
-	if err != nil {
-		return nil, fmt.Errorf("listing workflow runs: %w", err)
+	// Apply server-side date filter when a lookback window is specified.
+	if !since.IsZero() {
+		opts.Created = ">=" + since.UTC().Format(time.RFC3339)
 	}
 
 	var workflowRuns []WorkflowRun
-	for _, run := range runs.WorkflowRuns {
-		workflowRuns = append(workflowRuns, WorkflowRun{
-			ID:         run.GetID(),
-			Status:     run.GetStatus(),
-			Conclusion: run.GetConclusion(),
-			CreatedAt:  run.GetCreatedAt().Time,
-			HTMLURL:    run.GetHTMLURL(),
-		})
+	for {
+		runs, resp, err := g.client.Actions.ListWorkflowRunsByFileName(ctx, owner, repo, workflowID, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing workflow runs: %w", err)
+		}
+
+		for _, run := range runs.WorkflowRuns {
+			workflowRuns = append(workflowRuns, WorkflowRun{
+				ID:         run.GetID(),
+				Status:     run.GetStatus(),
+				Conclusion: run.GetConclusion(),
+				CreatedAt:  run.GetCreatedAt().Time,
+				HTMLURL:    run.GetHTMLURL(),
+			})
+		}
+
+		// Stop if we have enough results or no more pages
+		if len(workflowRuns) >= limit || resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	// Trim to limit
+	if len(workflowRuns) > limit {
+		workflowRuns = workflowRuns[:limit]
 	}
 
 	return workflowRuns, nil
@@ -654,8 +677,9 @@ func (g *GoGitHubClient) ListWorkflowJobs(ctx context.Context, owner, repo strin
 	var workflowJobs []WorkflowJob
 	for _, job := range jobs.Jobs {
 		workflowJobs = append(workflowJobs, WorkflowJob{
-			ID:   job.GetID(),
-			Name: job.GetName(),
+			ID:         job.GetID(),
+			Name:       job.GetName(),
+			Conclusion: job.GetConclusion(),
 		})
 	}
 

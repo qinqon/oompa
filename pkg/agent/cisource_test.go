@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseGCSJobURL(t *testing.T) {
@@ -540,6 +541,297 @@ func TestGCSDirectoryJobSource_FetchLog(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for unknown run ID, got nil")
 	}
+}
+
+func TestMatchLanePattern(t *testing.T) {
+	tests := []struct {
+		name       string
+		jobName    string
+		patterns   []string
+		wantMatch  bool
+		wantLane   string
+	}{
+		{
+			name:      "wildcard match prefix",
+			jobName:   "e2e (kv-live-migration, noHA, local, dualstack, noSnatGW, 1br, ic-single-node-zones, 3, enable-network-segmentation)",
+			patterns:  []string{"e2e (kv-live-migration, noHA, local,*"},
+			wantMatch: true,
+			wantLane:  "e2e (kv-live-migration, noHA, local, dualstack, noSnatGW, 1br, ic-single-node-zones, 3, enable-network-segmentation)",
+		},
+		{
+			name:      "exact match",
+			jobName:   "build",
+			patterns:  []string{"build"},
+			wantMatch: true,
+			wantLane:  "build",
+		},
+		{
+			name:      "no match",
+			jobName:   "e2e (kv-live-migration, noHA, shared, dualstack)",
+			patterns:  []string{"e2e (kv-live-migration, noHA, local,*"},
+			wantMatch: false,
+		},
+		{
+			name:      "multiple patterns second matches",
+			jobName:   "e2e (kv-live-migration, noHA, shared, dualstack)",
+			patterns:  []string{"e2e (kv-live-migration, noHA, local,*", "e2e (kv-live-migration, noHA, shared,*"},
+			wantMatch: true,
+			wantLane:  "e2e (kv-live-migration, noHA, shared, dualstack)",
+		},
+		{
+			name:      "empty patterns",
+			jobName:   "anything",
+			patterns:  []string{},
+			wantMatch: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			matched, lane := matchLanePattern(tc.jobName, tc.patterns)
+			if matched != tc.wantMatch {
+				t.Errorf("matched = %v, want %v", matched, tc.wantMatch)
+			}
+			if matched && lane != tc.wantLane {
+				t.Errorf("lane = %q, want %q", lane, tc.wantLane)
+			}
+		})
+	}
+}
+
+func TestGitHubActionsJobSource_LaneLevel_ListRecentRuns(t *testing.T) {
+	mock := &laneTestMockGH{
+		workflowRuns: []WorkflowRun{
+			{ID: 100, Status: "completed", Conclusion: "failure", HTMLURL: "https://github.com/o/r/actions/runs/100"},
+			{ID: 101, Status: "completed", Conclusion: "success", HTMLURL: "https://github.com/o/r/actions/runs/101"},
+			{ID: 102, Status: "completed", Conclusion: "failure", HTMLURL: "https://github.com/o/r/actions/runs/102"},
+		},
+		jobsByRun: map[int64][]WorkflowJob{
+			100: {
+				{ID: 1001, Name: "e2e (kv-live-migration, noHA, local, dualstack)", Conclusion: "failure"},
+				{ID: 1002, Name: "e2e (kv-live-migration, noHA, shared, dualstack)", Conclusion: "success"},
+				{ID: 1003, Name: "e2e (other-lane, noHA)", Conclusion: "failure"},
+			},
+			102: {
+				{ID: 1021, Name: "e2e (kv-live-migration, noHA, local, dualstack)", Conclusion: "success"},
+				{ID: 1022, Name: "e2e (kv-live-migration, noHA, shared, dualstack)", Conclusion: "failure"},
+			},
+		},
+	}
+
+	source := &GitHubActionsJobSource{
+		owner:        "o",
+		repo:         "r",
+		workflow:     "test.yml",
+		jobName:      "o/r/test.yml",
+		gh:           mock,
+		lanePatterns: []string{"e2e (kv-live-migration,*"},
+		matchedJobs:  make(map[string]int64),
+	}
+
+	runs, err := source.ListRecentRuns(context.Background(), 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should find 2 failures across the runs:
+	// - run 100: local lane failed (job 1001), shared lane passed, other lane failed but doesn't match pattern
+	// - run 101: skipped (success)
+	// - run 102: local lane passed, shared lane failed (job 1022)
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 lane failures, got %d: %v", len(runs), runs)
+	}
+
+	// First failure: run 100, local lane
+	if runs[0].Status != "failure" {
+		t.Errorf("runs[0].Status = %q, want failure", runs[0].Status)
+	}
+	if !strings.Contains(runs[0].JobName, "kv-live-migration") {
+		t.Errorf("runs[0].JobName = %q, expected kv-live-migration lane", runs[0].JobName)
+	}
+
+	// Verify FetchLog uses the matched job ID
+	expectedRunID := runs[0].ID
+	if _, ok := source.matchedJobs[expectedRunID]; !ok {
+		t.Errorf("matchedJobs missing entry for run ID %q", expectedRunID)
+	}
+}
+
+func TestGitHubActionsJobSource_LaneLevel_FetchLog(t *testing.T) {
+	mock := &laneTestMockGH{
+		jobLogs: map[int64]string{
+			1001: "lane failure log content",
+		},
+	}
+
+	source := &GitHubActionsJobSource{
+		owner:        "o",
+		repo:         "r",
+		workflow:     "test.yml",
+		jobName:      "o/r/test.yml",
+		gh:           mock,
+		lanePatterns: []string{"e2e*"},
+		matchedJobs:  map[string]int64{"100:1001": 1001},
+	}
+
+	log, err := source.FetchLog(context.Background(), "100:1001")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if log != "lane failure log content" {
+		t.Errorf("log = %q, want %q", log, "lane failure log content")
+	}
+
+	// Unknown run ID should fail
+	_, err = source.FetchLog(context.Background(), "999:0")
+	if err == nil {
+		t.Error("expected error for unknown lane run ID")
+	}
+}
+
+func TestGitHubActionsJobSource_LaneLevel_SkipsSuccessRuns(t *testing.T) {
+	listJobsCalled := false
+	mock := &laneTestMockGH{
+		workflowRuns: []WorkflowRun{
+			{ID: 200, Status: "completed", Conclusion: "success"},
+		},
+		onListJobs: func() { listJobsCalled = true },
+	}
+
+	source := &GitHubActionsJobSource{
+		owner:        "o",
+		repo:         "r",
+		workflow:     "test.yml",
+		jobName:      "o/r/test.yml",
+		gh:           mock,
+		lanePatterns: []string{"e2e*"},
+		matchedJobs:  make(map[string]int64),
+	}
+
+	runs, err := source.ListRecentRuns(context.Background(), 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected 0 runs, got %d", len(runs))
+	}
+	if listJobsCalled {
+		t.Error("ListWorkflowJobs should not be called for success runs")
+	}
+}
+
+// laneTestMockGH is a minimal mock for testing lane-level GitHubActionsJobSource.
+// It only implements the methods needed by the lane filtering logic.
+type laneTestMockGH struct {
+	workflowRuns []WorkflowRun
+	jobsByRun    map[int64][]WorkflowJob
+	jobLogs      map[int64]string
+	onListJobs   func() // callback for tracking ListWorkflowJobs calls
+}
+
+func (m *laneTestMockGH) ListWorkflowRuns(_ context.Context, _, _, _, _ string, _ int, _ time.Time) ([]WorkflowRun, error) {
+	return m.workflowRuns, nil
+}
+
+func (m *laneTestMockGH) ListWorkflowJobs(_ context.Context, _, _ string, runID int64) ([]WorkflowJob, error) {
+	if m.onListJobs != nil {
+		m.onListJobs()
+	}
+	if m.jobsByRun != nil {
+		return m.jobsByRun[runID], nil
+	}
+	return nil, nil
+}
+
+func (m *laneTestMockGH) GetWorkflowJobLogs(_ context.Context, _, _ string, jobID int64) (string, error) {
+	if m.jobLogs != nil {
+		if log, ok := m.jobLogs[jobID]; ok {
+			return log, nil
+		}
+	}
+	return "", fmt.Errorf("no logs for job %d", jobID)
+}
+
+// Unused interface methods (satisfy GitHubClient)
+func (m *laneTestMockGH) ListLabeledIssues(context.Context, string, string, string) ([]Issue, error) {
+	return nil, nil
+}
+func (m *laneTestMockGH) GetPRReviewComments(context.Context, string, string, int, int64) ([]ReviewComment, error) {
+	return nil, nil
+}
+func (m *laneTestMockGH) GetIssueComments(context.Context, string, string, int, int64) ([]ReviewComment, error) {
+	return nil, nil
+}
+func (m *laneTestMockGH) GetPRState(context.Context, string, string, int) (string, error) {
+	return "", nil
+}
+func (m *laneTestMockGH) AddIssueComment(context.Context, string, string, int, string) error {
+	return nil
+}
+func (m *laneTestMockGH) AddLabel(context.Context, string, string, int, string) error {
+	return nil
+}
+func (m *laneTestMockGH) RemoveLabel(context.Context, string, string, int, string) error {
+	return nil
+}
+func (m *laneTestMockGH) ListPRsByHead(context.Context, string, string, string, string) ([]PR, error) {
+	return nil, nil
+}
+func (m *laneTestMockGH) AddPRCommentReaction(context.Context, string, string, int64, string) error {
+	return nil
+}
+func (m *laneTestMockGH) AddIssueCommentReaction(context.Context, string, string, int64, string) error {
+	return nil
+}
+func (m *laneTestMockGH) GetCheckRuns(context.Context, string, string, string) ([]CheckRun, error) {
+	return nil, nil
+}
+func (m *laneTestMockGH) GetCheckRunLog(context.Context, string, string, int64) (string, error) {
+	return "", nil
+}
+func (m *laneTestMockGH) GetPRHeadSHA(context.Context, string, string, int) (string, error) {
+	return "", nil
+}
+func (m *laneTestMockGH) HasPRCommentReaction(context.Context, string, string, int64, string, string) (bool, error) {
+	return false, nil
+}
+func (m *laneTestMockGH) ReplyToPRComment(context.Context, string, string, int, int64, string) error {
+	return nil
+}
+func (m *laneTestMockGH) AssignIssue(context.Context, string, string, int, string) error {
+	return nil
+}
+func (m *laneTestMockGH) UnassignIssue(context.Context, string, string, int, string) error {
+	return nil
+}
+func (m *laneTestMockGH) GetPRMergeable(context.Context, string, string, int) (string, error) {
+	return "", nil
+}
+func (m *laneTestMockGH) GetPRReviews(context.Context, string, string, int, int64) ([]PRReview, error) {
+	return nil, nil
+}
+func (m *laneTestMockGH) GetPRHeadCommitDate(context.Context, string, string, int) (time.Time, error) {
+	return time.Time{}, nil
+}
+func (m *laneTestMockGH) CreatePR(context.Context, string, string, string, string, string, string) (int, error) {
+	return 0, nil
+}
+func (m *laneTestMockGH) HasLinkedPR(context.Context, string, string, int) (bool, error) {
+	return false, nil
+}
+func (m *laneTestMockGH) GetPR(context.Context, string, string, int) (PR, error) { return PR{}, nil }
+func (m *laneTestMockGH) IsPRBehind(context.Context, string, string, int) (bool, error) {
+	return false, nil
+}
+func (m *laneTestMockGH) CreateIssue(context.Context, string, string, string, string, []string) (int, error) {
+	return 0, nil
+}
+func (m *laneTestMockGH) SearchIssues(context.Context, string) ([]Issue, error) { return nil, nil }
+func (m *laneTestMockGH) GetCommitStatuses(context.Context, string, string, string) ([]CheckRun, error) {
+	return nil, nil
+}
+func (m *laneTestMockGH) CountCommitsSince(context.Context, string, string, time.Time) (int, error) {
+	return 0, nil
 }
 
 // rewriteTransport rewrites all request URLs to point to a test server.

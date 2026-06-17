@@ -75,7 +75,9 @@ type IssuesRoleConfig struct {
 
 // TriageRoleConfig represents a single Triage role entry.
 type TriageRoleConfig struct {
-	Jobs              []string `yaml:"jobs"`
+	Jobs              []string `yaml:"jobs"`               // existing: full URLs for Prow/GCS/cross-repo
+	Workflow          string   `yaml:"workflow"`            // GHA workflow file (relative to project repo)
+	Lanes             []string `yaml:"lanes"`               // glob patterns for matrix job names
 	Schedule          string   `yaml:"schedule"`
 	Lookback          string   `yaml:"lookback"`
 	CreateFlakyIssues *bool    `yaml:"create-flaky-issues"`
@@ -238,8 +240,22 @@ func validateFileConfig(cfg *FileConfig) error {
 		}
 
 		for j, triage := range p.Triage {
-			if len(triage.Jobs) == 0 {
-				return fmt.Errorf("project %d (%s): triage[%d]: jobs is required", i, p.Repo, j)
+			hasJobs := len(triage.Jobs) > 0
+			hasWorkflow := triage.Workflow != ""
+			hasLanes := len(triage.Lanes) > 0
+
+			// Validate: must have either jobs or (workflow + lanes), not both, not neither
+			if hasJobs && (hasWorkflow || hasLanes) {
+				return fmt.Errorf("project %d (%s): triage[%d]: cannot specify both jobs and workflow/lanes", i, p.Repo, j)
+			}
+			if !hasJobs && !hasWorkflow && !hasLanes {
+				return fmt.Errorf("project %d (%s): triage[%d]: either jobs or workflow+lanes is required", i, p.Repo, j)
+			}
+			if hasWorkflow && !hasLanes {
+				return fmt.Errorf("project %d (%s): triage[%d]: workflow requires lanes", i, p.Repo, j)
+			}
+			if hasLanes && !hasWorkflow {
+				return fmt.Errorf("project %d (%s): triage[%d]: lanes requires workflow", i, p.Repo, j)
 			}
 			if triage.Schedule != "" {
 				if _, err := ParseSchedule(triage.Schedule, time.Now()); err != nil {
@@ -435,6 +451,8 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			cfg := baseCfg
 			cfg.Role = "triage"
 			cfg.TriageJobs = triage.Jobs
+			cfg.TriageWorkflow = triage.Workflow
+			cfg.TriageLanePatterns = triage.Lanes
 			cfg.CreateFlakyIssues = boolOr(triage.CreateFlakyIssues, projCreateFlaky)
 			cfg.FlakyLabel = stringOr(triage.FlakyLabel, projFlakyLabel)
 			cfg.SkipComments = stringsOr(triage.SkipComment, projSkipComment)
