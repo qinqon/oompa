@@ -447,14 +447,25 @@ func (a *Agent) hasExistingBotComment(ctx context.Context, issueNumber int, text
 
 // parseFlakyMatch parses Claude's response to a flaky match prompt.
 // Returns the matched issue number and true if the response is "MATCH <number>".
+// Handles multi-line responses where the LLM appends an explanation after
+// the MATCH line (e.g. "MATCH #42\n\nThis matches because...").
 func parseFlakyMatch(response string) (int, bool) {
-	response = strings.TrimLeft(response, "*_")
 	response = strings.TrimSpace(response)
+	// Take only the first line — LLMs often append explanations after the
+	// MATCH/NONE keyword that cause Atoi to fail on the trailing text.
+	if idx := strings.IndexByte(response, '\n'); idx >= 0 {
+		response = response[:idx]
+	}
+	// Strip markdown formatting (bold, italic) from both ends of the line.
+	// LLMs may wrap keywords like "**MATCH #42**" or "_MATCH #42_".
+	response = strings.Trim(response, "*_ \t\r")
 	if !strings.HasPrefix(response, "MATCH") {
 		return 0, false
 	}
 	numStr := strings.TrimSpace(strings.TrimPrefix(response, "MATCH"))
 	numStr = strings.TrimPrefix(numStr, "#")
+	// Strip trailing markdown that may wrap the number (e.g. "42**")
+	numStr = strings.TrimRight(numStr, "*_ \t\r")
 	n, err := strconv.Atoi(numStr)
 	if err != nil || n <= 0 {
 		return 0, false

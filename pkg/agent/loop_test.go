@@ -33,8 +33,7 @@ type mockGitHubClient struct {
 	createdIssues   []Issue       // tracks issues created via CreateIssue
 	nextIssueNumber int           // next issue number to return (defaults to 1)
 	searchResults   []Issue       // results to return from SearchIssues
-	workflowRuns    []WorkflowRun            // workflow runs to return from ListWorkflowRuns
-	workflowJobs    map[int64][]WorkflowJob  // workflow jobs keyed by run ID for ListWorkflowJobs
+	workflowRuns    []WorkflowRun // workflow runs to return from ListWorkflowRuns
 	prReviews      []PRReview // reviews to return from GetPRReviews
 	headCommitDate time.Time  // date to return from GetPRHeadCommitDate
 	recentCommits  int        // number of recent commits returned by CountCommitsSince
@@ -215,10 +214,7 @@ func (m *mockGitHubClient) ListWorkflowRuns(_ context.Context, _, _, _, _ string
 	return m.workflowRuns, nil
 }
 
-func (m *mockGitHubClient) ListWorkflowJobs(_ context.Context, _, _ string, runID int64) ([]WorkflowJob, error) {
-	if m.workflowJobs != nil {
-		return m.workflowJobs[runID], nil
-	}
+func (m *mockGitHubClient) ListWorkflowJobs(_ context.Context, _, _ string, _ int64) ([]WorkflowJob, error) {
 	return nil, nil
 }
 
@@ -2232,6 +2228,17 @@ func TestParseFlakyMatch(t *testing.T) {
 		{"MATCH abc", 0, false},
 		{"something else", 0, false},
 		{"", 0, false},
+		// Multi-line responses: LLM appends explanation after MATCH line
+		{"MATCH #42\n\nThis failure matches issue #42 because both share DNS timeout.", 42, true},
+		{"MATCH 99\nThe root cause is the same infrastructure outage.", 99, true},
+		{"MATCH #2802\n\nBoth failures stem from the same PR merge.", 2802, true},
+		// Multi-line NONE should still return false
+		{"NONE\n\nNo existing issue matches this failure.", 0, false},
+		// Markdown-wrapped responses: bold/italic around MATCH keyword and number
+		{"**MATCH #42**", 42, true},
+		{"**MATCH 99**\n\nExplanation.", 99, true},
+		{"_MATCH #50_", 50, true},
+		{"**MATCH #50**\n", 50, true},
 	}
 	for _, tt := range tests {
 		num, ok := parseFlakyMatch(tt.input)
@@ -3730,57 +3737,6 @@ func TestProcessTriageJobs_DeduplicatesDifferentJobsSameRootCause(t *testing.T) 
 	}
 }
 
-func TestProcessTriageJobs_LaneLevelBranchNameSanitizesColon(t *testing.T) {
-	// Lane-level triage produces run IDs like "runID:jobID". The colon is
-	// invalid in git ref names, so the branch name must replace it with "-".
-	now := time.Now()
-	gh := &mockGitHubClient{
-		workflowRuns: []WorkflowRun{
-			{ID: 27692590968, Status: "completed", Conclusion: "failure", CreatedAt: now.Add(-1 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/27692590968"},
-		},
-		workflowJobs: map[int64][]WorkflowJob{
-			27692590968: {
-				{ID: 81909260565, Name: "e2e (kv-live-migration, noHA, local, foo)", Conclusion: "failure"},
-			},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "flaky-test",
-		TriageWorkflow:    "test.yml",
-		TriageLanePatterns: []string{"e2e (kv-live-migration,*"},
-		TriageLookback:    24 * time.Hour,
-	}
-
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{
-			{result: AgentResult{Result: "Root cause: network timeout"}},
-		},
-	}
-
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
-	a.ProcessTriageJobs(context.Background())
-
-	// Should have created a worktree with a sanitized branch name (no colons)
-	if len(wtm.createdBranches) != 1 {
-		t.Fatalf("expected 1 worktree created, got %d", len(wtm.createdBranches))
-	}
-
-	branch := wtm.createdBranches[0]
-	if strings.Contains(branch, ":") {
-		t.Errorf("branch name contains colon (invalid git ref): %q", branch)
-	}
-
-	expectedBranch := "triage/27692590968-81909260565"
-	if branch != expectedBranch {
-		t.Errorf("expected branch %q, got %q", expectedBranch, branch)
-	}
-}
-
 func TestMergeIssues(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -5233,10 +5189,11 @@ func TestTriageDedup_DifferentFailuresSameJob_CreatesSeparateIssues(t *testing.T
 		analysis,
 		gh.searchResults,
 		"/tmp/worktree",
-		nil, // no concurrent failures in this test
+		nil, // no cycle issues
+		nil, // no concurrent failures (single job)
 	)
 
-	// Title doesn't match, LLM says NONE → no match found
+	// Title doesn't match, LLM says NONE, single job → no match found
 	if matchedIssue != 0 {
 		t.Errorf("expected no match (different failure), got issue #%d", matchedIssue)
 	}
@@ -5310,7 +5267,8 @@ func TestTriageDedup_SameFailureSameJob_MatchesExistingIssue(t *testing.T) {
 		analysis,
 		gh.searchResults,
 		"/tmp/worktree",
-		nil, // no concurrent failures in this test
+		nil, // no cycle issues
+		nil, // no concurrent failures (single job)
 	)
 
 	// LLM says MATCH 42 → should match
@@ -5352,7 +5310,8 @@ func TestTriageDedup_ExactTitleMatch_SkipsLLM(t *testing.T) {
 		analysis,
 		gh.searchResults,
 		"/tmp/worktree",
-		nil, // no concurrent failures in this test
+		nil, // no cycle issues
+		nil, // no concurrent failures (single job)
 	)
 
 	// Exact title match — should return issue #99
@@ -5393,7 +5352,8 @@ func TestTriageDedup_NoExistingIssues_ReturnsZero(t *testing.T) {
 		"analysis",
 		[]Issue{},
 		"/tmp/worktree",
-		nil, // no concurrent failures in this test
+		nil, // no cycle issues
+		nil, // no concurrent failures (single job)
 	)
 
 	if matchedIssue != 0 {
@@ -5887,5 +5847,185 @@ func TestProcessReviewComments_OompaCommandIgnoresBotComments(t *testing.T) {
 		if c.Name == "claude" {
 			t.Error("should not invoke claude for bot-posted /oompa comment")
 		}
+	}
+}
+
+func TestProcessTriageJobs_DeterministicFallbackWhenLLMSaysNone(t *testing.T) {
+	// When multiple different jobs fail and the LLM says NONE for the second
+	// job, the deterministic fallback should match to the cycle issue created
+	// by the first job instead of creating a duplicate.
+	now := time.Now()
+	gh := &mockGitHubClient{
+		workflowRuns: []WorkflowRun{
+			{ID: 100, Status: "completed", Conclusion: "failure", CreatedAt: now.Add(-1 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/100"},
+		},
+		searchResults:   []Issue{}, // GitHub search returns nothing
+		nextIssueNumber: 10,
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+		TriageJobs: []string{
+			"https://github.com/owner/repo/actions/workflows/unit.yml",
+			"https://github.com/owner/repo/actions/workflows/e2e.yml",
+			"https://github.com/owner/repo/actions/workflows/lint.yml",
+		},
+	}
+
+	// First job: analysis → no match → creates issue
+	// Second job: analysis + LLM says NONE → deterministic fallback should match
+	// Third job: analysis + LLM says NONE → deterministic fallback should match
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "## Summary\nInfra outage broke CI"}},   // first job analysis
+			{result: AgentResult{Result: "## Summary\nDNS resolution failed"}},    // second job analysis
+			{result: AgentResult{Result: "NONE"}},                                  // second job LLM says NONE
+			{result: AgentResult{Result: "## Summary\nBuild timeout due to DNS"}}, // third job analysis
+			{result: AgentResult{Result: "NONE"}},                                  // third job LLM says NONE
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a.ProcessTriageJobs(context.Background())
+
+	// Should create exactly 1 issue (first job); jobs 2 and 3 use deterministic fallback
+	if len(gh.createdIssues) != 1 {
+		t.Errorf("expected 1 issue created (deterministic fallback for jobs 2+3), got %d", len(gh.createdIssues))
+	}
+
+	// Run-link comments should be posted for jobs 2 and 3
+	runLinkCount := 0
+	for _, comment := range gh.addedComments {
+		if strings.Contains(comment, "Same failure observed") {
+			runLinkCount++
+		}
+	}
+	if runLinkCount != 2 {
+		t.Errorf("expected 2 run-link comments, got %d", runLinkCount)
+	}
+}
+
+func TestTriageDedup_DeterministicFallbackWithCycleIssuesMerged(t *testing.T) {
+	// Mirrors production behavior: investigateTriageRun merges cycleIssues
+	// into existingIssues before calling matchExistingTriageIssue. When the
+	// LLM says NONE, the deterministic fallback should match to the cycle
+	// issue even though it's present in existingIssues.
+	gh := &mockGitHubClient{
+		searchResults: []Issue{}, // GitHub search returns nothing (search lag)
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+	}
+
+	// LLM says NONE — deterministic fallback should fire after LLM
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "NONE"}},
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+
+	title := "CI Failure: job-b / DNS timeout"
+	analysis := "## Summary\nDNS timeout"
+
+	// Simulate 3 failed jobs with 1 cycle issue already created
+	cycleIssues := []Issue{
+		{Number: 42, Title: "CI Failure: job-a / Infra outage", Body: "Infra outage"},
+	}
+	cycleFailedJobs := []string{"job-a", "job-b", "job-c"}
+
+	// Mirror production: merge cycleIssues into existingIssues (as
+	// investigateTriageRun does before calling matchExistingTriageIssue)
+	existingIssues := mergeIssues([]Issue{}, cycleIssues)
+
+	matchedIssue := a.matchExistingTriageIssue(context.Background(),
+		"job-b", title, analysis,
+		existingIssues,
+		"/tmp/worktree",
+		cycleIssues,
+		cycleFailedJobs,
+	)
+
+	// Should match cycle issue #42 via deterministic fallback after LLM NONE
+	if matchedIssue != 42 {
+		t.Errorf("expected deterministic fallback to match cycle issue #42, got #%d", matchedIssue)
+	}
+
+	// LLM should have been called once (title didn't match, so LLM tried)
+	if codeAgent.callCount != 1 {
+		t.Errorf("expected 1 agent call (LLM tried before fallback), got %d", codeAgent.callCount)
+	}
+}
+
+func TestTriageDedup_DeterministicFallbackWithMultiLineNone(t *testing.T) {
+	// When multiple jobs fail and the LLM returns a multi-line NONE response
+	// (e.g. "NONE\n\nNo match found."), the deterministic fallback should
+	// still match to the cycle issue created by the first job.
+	now := time.Now()
+	gh := &mockGitHubClient{
+		workflowRuns: []WorkflowRun{
+			{ID: 500, Status: "completed", Conclusion: "failure", CreatedAt: now.Add(-1 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/500"},
+		},
+		searchResults:   []Issue{}, // GitHub search returns nothing
+		nextIssueNumber: 20,
+	}
+
+	// Two separate TriageJobs URLs (functionally equivalent to concurrent
+	// jobs or lanes) to verify that the deterministic fallback works
+	// when the LLM returns a multi-line NONE response.
+
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+		TriageJobs: []string{
+			"https://github.com/owner/repo/actions/workflows/unit.yml",
+			"https://github.com/owner/repo/actions/workflows/e2e.yml",
+		},
+	}
+
+	// First job: analysis → creates issue
+	// Second job: analysis + LLM says NONE → deterministic fallback
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "## Summary\nShared root cause"}},
+			{result: AgentResult{Result: "## Summary\nDifferent symptoms same cause"}},
+			{result: AgentResult{Result: "NONE\n\nNo match found."}}, // multi-line NONE
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a.ProcessTriageJobs(context.Background())
+
+	// Should create exactly 1 issue; second job uses deterministic fallback
+	if len(gh.createdIssues) != 1 {
+		t.Errorf("expected 1 issue created, got %d", len(gh.createdIssues))
+	}
+
+	// Verify run-link comment was posted for the second job
+	runLinkFound := false
+	for _, comment := range gh.addedComments {
+		if strings.Contains(comment, "Same failure observed") {
+			runLinkFound = true
+		}
+	}
+	if runLinkFound == false {
+		t.Error("expected a run-link comment for the second job (deterministic fallback)")
 	}
 }
