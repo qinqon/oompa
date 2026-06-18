@@ -125,9 +125,15 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 	// infrastructure outage or a bad PR).
 	// Deduplicate: multiple runs of the same job should not inflate the
 	// concurrent failure count.
+	// Use run.JobName (lane-specific name) rather than ciSource.JobName()
+	// (workflow-level name) so that lane-level triage correctly counts
+	// each failing lane as a separate job. When a single CIJobSource
+	// produces multiple lanes (e.g. matrix workflows), ciSource.JobName()
+	// returns the same value for all of them, causing the deterministic
+	// fallback condition (len(cycleFailedJobs) > 1) to never trigger.
 	var cycleFailedJobs []string
 	for _, task := range tasks {
-		jobName := task.ciSource.JobName()
+		jobName := task.run.JobName
 		if !slices.Contains(cycleFailedJobs, jobName) {
 			cycleFailedJobs = append(cycleFailedJobs, jobName)
 		}
@@ -224,8 +230,11 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 		// when the root cause is shared (e.g. all jobs failing on the
 		// same PR). Constrained by the flaky label and a 30-day window
 		// to keep result sets small and limit LLM token costs.
+		// NOTE: No title filter — issues may be titled "CI Failure:" (triage)
+		// or "Flaky CI:" (PR-based CI), and both need to be found for cross-
+		// system dedup.
 		cutoffDate := time.Now().AddDate(0, 0, -30).Format("2006-01-02")
-		searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:%q in:title \"CI Failure:\" created:>%s",
+		searchQuery := fmt.Sprintf("repo:%s/%s is:issue is:open label:%q created:>%s",
 			a.cfg.Owner, a.cfg.Repo, a.cfg.FlakyLabel, cutoffDate)
 		existingIssues, err := a.gh.SearchIssues(ctx, searchQuery)
 		if err != nil {
@@ -237,7 +246,7 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 		// to avoid presenting the same issue twice to the LLM matcher.
 		existingIssues = mergeIssues(existingIssues, *cycleIssues)
 
-		matchedIssue := a.matchExistingTriageIssue(ctx, ciSource.JobName(), title, analysis, existingIssues, worktreePath, cycleFailedJobs)
+		matchedIssue := a.matchExistingTriageIssue(ctx, ciSource.JobName(), title, analysis, existingIssues, worktreePath, *cycleIssues, cycleFailedJobs)
 
 		if matchedIssue > 0 {
 			a.logger.Info("found matching issue for this failure, adding run link", "job", ciSource.JobName(), "issue", matchedIssue)
@@ -310,12 +319,38 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 //
 // Strategy (mirrors matchExistingFlakyIssue in ci.go):
 //  1. Fast path: exact title match skips LLM matching entirely.
-//  2. Slow path: LLM-based root-cause matching when no exact title match exists.
+//  2. LLM-based root-cause matching when no exact title match exists.
+//  3. Deterministic fallback: when multiple jobs fail concurrently and an issue
+//     was already created in this triage cycle, match to the most recent cycle
+//     issue. This prevents the LLM's inconsistent NONE responses from creating
+//     duplicate issues for correlated failures.
 //
+// cycleIssues provides issues created earlier in the same triage cycle.
 // cycleFailedJobs provides the names of all jobs that failed in the same triage
 // cycle, giving the LLM matcher context about correlated failures.
-func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, analysis string, existingIssues []Issue, worktreePath string, cycleFailedJobs []string) int {
+func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, analysis string, existingIssues []Issue, worktreePath string, cycleIssues []Issue, cycleFailedJobs []string) int {
+	// Deterministic fallback (checked first): when multiple jobs fail
+	// concurrently and an issue was already created in this triage cycle,
+	// match to it. In a batch of concurrent failures, the first investigation
+	// creates an issue and all subsequent ones should group under it.
+	// The LLM is unreliable here because each job's error output looks
+	// superficially different even when they share an underlying cause
+	// (infrastructure outage, bad merge, etc.).
+	//
+	// Defense-in-depth: the caller (investigateTriageRun) merges cycleIssues
+	// into existingIssues before calling this function, so in normal
+	// production flow existingIssues will be non-empty when cycleIssues is.
+	// This early check guards against callers that don't merge, and also
+	// makes the function's contract self-contained.
+	useDeterministicFallback := len(cycleFailedJobs) > 1 && len(cycleIssues) > 0
+
 	if len(existingIssues) == 0 {
+		if useDeterministicFallback {
+			target := cycleIssues[len(cycleIssues)-1]
+			a.logger.Info("deterministic same-cycle dedup: matching to cycle issue (no existing issues)",
+				"issue", target.Number, "job", jobName, "concurrent_jobs", len(cycleFailedJobs))
+			return target.Number
+		}
 		return 0
 	}
 
@@ -332,18 +367,26 @@ func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, an
 	matchResult, matchErr := a.codeAgent.Run(ctx, a.runner, worktreePath, matchPrompt, a.logger, false)
 	if matchErr != nil {
 		a.logger.Warn("failed to run agent for triage issue matching", "error", matchErr)
-		return 0
+		// Fall through to deterministic fallback below
+	} else {
+		matchResponse := strings.TrimSpace(matchResult.Result)
+		if matchedNum, ok := parseFlakyMatch(matchResponse); ok {
+			for _, existing := range existingIssues {
+				if existing.Number == matchedNum {
+					a.logger.Info("agent matched existing triage issue", "issue", matchedNum, "job", jobName)
+					return matchedNum
+				}
+			}
+			a.logger.Warn("agent returned MATCH for unknown issue", "matched_issue", matchedNum, "job", jobName)
+		}
 	}
 
-	matchResponse := strings.TrimSpace(matchResult.Result)
-	if matchedNum, ok := parseFlakyMatch(matchResponse); ok {
-		for _, existing := range existingIssues {
-			if existing.Number == matchedNum {
-				a.logger.Info("agent matched existing triage issue", "issue", matchedNum, "job", jobName)
-				return matchedNum
-			}
-		}
-		a.logger.Warn("agent returned MATCH for unknown issue", "matched_issue", matchedNum, "job", jobName)
+	// Deterministic fallback after LLM says NONE or errors.
+	if useDeterministicFallback {
+		target := cycleIssues[len(cycleIssues)-1] // most recent cycle issue
+		a.logger.Info("deterministic same-cycle dedup: matching to cycle issue",
+			"issue", target.Number, "job", jobName, "concurrent_jobs", len(cycleFailedJobs))
+		return target.Number
 	}
 
 	return 0
