@@ -166,8 +166,10 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 		buildLog = "...\n[Log truncated, showing last 50KB]\n...\n\n" + buildLog[len(buildLog)-maxLogSize:]
 	}
 
-	// Create a worktree on the default branch for read-only codebase access
-	branchName := fmt.Sprintf("triage/%s", run.ID)
+	// Create a worktree on the default branch for read-only codebase access.
+	// Sanitize the run ID for use as a git branch name: lane-level triage
+	// produces IDs like "runID:jobID" and colons are invalid in git refs.
+	branchName := fmt.Sprintf("triage/%s", strings.ReplaceAll(run.ID, ":", "-"))
 
 	// Ensure repo is cloned
 	if err := a.worktrees.EnsureRepoCloned(ctx); err != nil {

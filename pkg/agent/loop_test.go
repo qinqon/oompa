@@ -33,7 +33,8 @@ type mockGitHubClient struct {
 	createdIssues   []Issue       // tracks issues created via CreateIssue
 	nextIssueNumber int           // next issue number to return (defaults to 1)
 	searchResults   []Issue       // results to return from SearchIssues
-	workflowRuns    []WorkflowRun // workflow runs to return from ListWorkflowRuns
+	workflowRuns    []WorkflowRun            // workflow runs to return from ListWorkflowRuns
+	workflowJobs    map[int64][]WorkflowJob  // workflow jobs keyed by run ID for ListWorkflowJobs
 	prReviews      []PRReview // reviews to return from GetPRReviews
 	headCommitDate time.Time  // date to return from GetPRHeadCommitDate
 	recentCommits  int        // number of recent commits returned by CountCommitsSince
@@ -214,7 +215,10 @@ func (m *mockGitHubClient) ListWorkflowRuns(_ context.Context, _, _, _, _ string
 	return m.workflowRuns, nil
 }
 
-func (m *mockGitHubClient) ListWorkflowJobs(_ context.Context, _, _ string, _ int64) ([]WorkflowJob, error) {
+func (m *mockGitHubClient) ListWorkflowJobs(_ context.Context, _, _ string, runID int64) ([]WorkflowJob, error) {
+	if m.workflowJobs != nil {
+		return m.workflowJobs[runID], nil
+	}
 	return nil, nil
 }
 
@@ -3723,6 +3727,57 @@ func TestProcessTriageJobs_DeduplicatesDifferentJobsSameRootCause(t *testing.T) 
 	}
 	if !state.IsRunInvestigated("owner/repo/e2e.yml", "100") {
 		t.Error("expected e2e.yml run to be marked as investigated")
+	}
+}
+
+func TestProcessTriageJobs_LaneLevelBranchNameSanitizesColon(t *testing.T) {
+	// Lane-level triage produces run IDs like "runID:jobID". The colon is
+	// invalid in git ref names, so the branch name must replace it with "-".
+	now := time.Now()
+	gh := &mockGitHubClient{
+		workflowRuns: []WorkflowRun{
+			{ID: 27692590968, Status: "completed", Conclusion: "failure", CreatedAt: now.Add(-1 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/27692590968"},
+		},
+		workflowJobs: map[int64][]WorkflowJob{
+			27692590968: {
+				{ID: 81909260565, Name: "e2e (kv-live-migration, noHA, local, foo)", Conclusion: "failure"},
+			},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "flaky-test",
+		TriageWorkflow:    "test.yml",
+		TriageLanePatterns: []string{"e2e (kv-live-migration,*"},
+		TriageLookback:    24 * time.Hour,
+	}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "Root cause: network timeout"}},
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a.ProcessTriageJobs(context.Background())
+
+	// Should have created a worktree with a sanitized branch name (no colons)
+	if len(wtm.createdBranches) != 1 {
+		t.Fatalf("expected 1 worktree created, got %d", len(wtm.createdBranches))
+	}
+
+	branch := wtm.createdBranches[0]
+	if strings.Contains(branch, ":") {
+		t.Errorf("branch name contains colon (invalid git ref): %q", branch)
+	}
+
+	expectedBranch := "triage/27692590968-81909260565"
+	if branch != expectedBranch {
+		t.Errorf("expected branch %q, got %q", expectedBranch, branch)
 	}
 }
 
