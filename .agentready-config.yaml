@@ -6,3 +6,7 @@ excluded_attributes:
   - standard_layout
   # Go uses ADR-equivalent specs/ directory (see CLAUDE.md)
   - architecture_decisions
+  # Go compiler enforces import cycles; no additional lint rule needed
+  - architectural_boundaries
+  # Internal CLI tool — no external attack surface
+  - threat_model
