@@ -6029,3 +6029,208 @@ func TestTriageDedup_DeterministicFallbackWithMultiLineNone(t *testing.T) {
 		t.Error("expected a run-link comment for the second job (deterministic fallback)")
 	}
 }
+
+func TestProcessReviewComments_PostsChangeSummaryAfterPush(t *testing.T) {
+	// After pushing a fix in response to review feedback, oompa should
+	// comment on the PR with a compare URL and a summary of the changes.
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	runner := &changeSummaryRunner{
+		mockCommandRunner: &mockCommandRunner{},
+		headSHA:           "abc123def456",
+		diffStat:          " pkg/agent/review.go | 5 +++--\n 1 file changed, 3 insertions(+), 2 deletions(-)\n",
+	}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:   42,
+		IssueTitle:    "Fix bug",
+		PRNumber:      100,
+		Status:        "pr-open",
+		WorktreePath:  "/tmp/worktree",
+		LastCommentID: 50,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Find the change summary comment
+	var changeSummaryComment string
+	for _, comment := range gh.addedComments {
+		if strings.Contains(comment, "compare/") {
+			changeSummaryComment = comment
+		}
+	}
+	if changeSummaryComment == "" {
+		t.Fatal("expected a change summary comment with compare URL to be posted")
+	}
+
+	// Should contain a compare URL
+	if !strings.Contains(changeSummaryComment, "https://github.com/owner/repo/compare/") {
+		t.Errorf("expected compare URL in comment, got: %q", changeSummaryComment)
+	}
+	// Should contain a [Change](...) link
+	if !strings.Contains(changeSummaryComment, "[Change](") {
+		t.Errorf("expected [Change](...) link in comment, got: %q", changeSummaryComment)
+	}
+	// Should contain file change info
+	if !strings.Contains(changeSummaryComment, "pkg/agent/review.go") {
+		t.Errorf("expected file path in summary, got: %q", changeSummaryComment)
+	}
+	// Should contain bot marker
+	if !strings.Contains(changeSummaryComment, botMarker) {
+		t.Errorf("expected bot marker in comment, got: %q", changeSummaryComment)
+	}
+	// Should be posted on the PR (issue number 100)
+	for i, comment := range gh.addedComments {
+		if strings.Contains(comment, "compare/") {
+			if gh.addedCommentTargets[i] != 100 {
+				t.Errorf("expected comment posted to PR #100, got #%d", gh.addedCommentTargets[i])
+			}
+		}
+	}
+}
+
+func TestProcessReviewComments_NoChangeSummaryWhenNoPush(t *testing.T) {
+	// When the agent doesn't make any changes, no change summary comment should be posted.
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	runner := &mockCommandRunner{claudeResults: [][]byte{streamResultJSON(AgentResult{Result: "Nothing to do"})}}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:   42,
+		IssueTitle:    "Fix bug",
+		PRNumber:      100,
+		Status:        "pr-open",
+		WorktreePath:  "/tmp/worktree",
+		LastCommentID: 50,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// No push should have been attempted
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "push" {
+			t.Error("expected no git push when agent makes no changes")
+		}
+	}
+
+	// No change summary comment should be posted
+	for _, comment := range gh.addedComments {
+		if strings.Contains(comment, "compare/") {
+			t.Errorf("expected no change summary comment when no push, got: %q", comment)
+		}
+	}
+}
+
+func TestBuildChangeSummary(t *testing.T) {
+	tests := []struct {
+		name      string
+		diffStat  string
+		runnerErr error // if set, runner returns this error instead of diffStat
+		want      []string // strings that should appear in the output
+		notWant   []string // strings that should NOT appear in the output
+	}{
+		{
+			name:     "single file changed",
+			diffStat: " pkg/agent/review.go | 5 +++--\n 1 file changed, 3 insertions(+), 2 deletions(-)\n",
+			want:     []string{"pkg/agent/review.go", "5 +++--"},
+			notWant:  []string{"file changed"},
+		},
+		{
+			name:     "multiple files changed",
+			diffStat: " pkg/agent/review.go | 10 +++++++---\n pkg/agent/loop.go   |  3 ++-\n 2 files changed, 9 insertions(+), 4 deletions(-)\n",
+			want:     []string{"pkg/agent/review.go", "pkg/agent/loop.go"},
+			notWant:  []string{"files changed"},
+		},
+		{
+			name:     "empty diff stat",
+			diffStat: "",
+			want:     []string{"Updated code to address review feedback"},
+		},
+		{
+			name:      "runner error returns fallback",
+			runnerErr: fmt.Errorf("git diff failed"),
+			want:      []string{"Updated code to address review feedback"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &mockCommandRunner{stdout: []byte(tt.diffStat), err: tt.runnerErr}
+			agent := newTestAgent(&mockGitHubClient{}, runner, &mockWorktreeManager{})
+
+			result := agent.buildChangeSummary(context.Background(), "/tmp/worktree", "abc", "def")
+
+			for _, s := range tt.want {
+				if !strings.Contains(result, s) {
+					t.Errorf("expected %q in summary, got: %q", s, result)
+				}
+			}
+			for _, s := range tt.notWant {
+				if strings.Contains(result, s) {
+					t.Errorf("unexpected %q in summary, got: %q", s, result)
+				}
+			}
+		})
+	}
+}
+
+// changeSummaryRunner simulates review feedback that results in uncommitted changes,
+// a successful amend+push, and provides a diff stat for the change summary.
+type changeSummaryRunner struct {
+	*mockCommandRunner
+	headSHA   string // SHA to return for git rev-parse HEAD after the agent runs (post-push SHA)
+	diffStat  string // output of git diff --stat
+	revCount  int    // tracks how many times rev-parse HEAD was called
+	headBefore string // pre-agent SHA
+}
+
+func (r *changeSummaryRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
+	r.mockCommandRunner.Run(ctx, workDir, name, args...) //nolint:errcheck // recording call for test assertions
+
+	// git rev-parse --abbrev-ref HEAD: return a stable branch name for gitPush
+	if name == "git" && len(args) >= 3 && args[0] == "rev-parse" && args[1] == "--abbrev-ref" && args[2] == "HEAD" {
+		return []byte("ai/issue-42\n"), nil, nil
+	}
+
+	// git rev-parse HEAD: return different SHAs before and after
+	if name == "git" && len(args) >= 2 && args[0] == "rev-parse" && args[1] == "HEAD" {
+		r.revCount++
+		if r.revCount == 1 {
+			// First call: HEAD before agent runs
+			r.headBefore = "before-sha-1234567890"
+			return []byte(r.headBefore + "\n"), nil, nil
+		}
+		// All subsequent calls: HEAD after push
+		return []byte(r.headSHA + "\n"), nil, nil
+	}
+
+	// git status --porcelain: return dirty (triggers amend path)
+	if name == "git" && len(args) >= 1 && args[0] == "status" {
+		return []byte("M pkg/agent/review.go\n"), nil, nil
+	}
+
+	// git log --format=%s (fixup commit check): return no fixups
+	if name == "git" && len(args) >= 1 && args[0] == "log" {
+		return []byte(""), nil, nil
+	}
+
+	// git diff --stat: return file changes
+	if name == "git" && len(args) >= 1 && args[0] == "diff" {
+		return []byte(r.diffStat), nil, nil
+	}
+
+	return nil, nil, nil
+}

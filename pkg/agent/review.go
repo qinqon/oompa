@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -350,6 +351,11 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			}
 		}
 
+		// Comment on the PR with a link to the pushed change and a summary.
+		if pushed {
+			a.commentChangeSummary(ctx, task.work, headSHABefore)
+		}
+
 		// Track consecutive no-op cycles for retry loop detection.
 		// A "no-op" is when the agent ran but no changes were pushed.
 		if pushed {
@@ -363,4 +369,66 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			)
 		}
 	})
+}
+
+// commentChangeSummary posts a comment on the PR with a compare URL and
+// a summary of the changes that were pushed in response to review feedback.
+func (a *Agent) commentChangeSummary(ctx context.Context, work *IssueWork, beforeSHA string) {
+	afterOut, _, err := a.runner.Run(ctx, work.WorktreePath, "git", "rev-parse", "HEAD")
+	if err != nil {
+		a.logger.Warn("failed to get HEAD after push", "pr", work.PRNumber, "error", err)
+		return
+	}
+	afterSHA := strings.TrimSpace(string(afterOut))
+
+	if beforeSHA == "" || afterSHA == "" || beforeSHA == afterSHA {
+		return
+	}
+
+	summary := a.buildChangeSummary(ctx, work.WorktreePath, beforeSHA, afterSHA)
+
+	compareURL := fmt.Sprintf("https://github.com/%s/%s/compare/%s..%s",
+		a.cfg.Owner, a.cfg.Repo, beforeSHA, afterSHA)
+
+	body := fmt.Sprintf("[Change](%s)\n%s\n\n%s", compareURL, summary, a.botComment())
+
+	if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber, body); err != nil {
+		a.logger.Warn("failed to post change summary comment", "pr", work.PRNumber, "error", err)
+	}
+}
+
+// buildChangeSummary returns a bullet-point summary of file changes between two SHAs.
+func (a *Agent) buildChangeSummary(ctx context.Context, worktreePath, beforeSHA, afterSHA string) string {
+	out, _, err := a.runner.Run(ctx, worktreePath, "git", "diff", "--stat", "--no-color", beforeSHA, afterSHA)
+	if err != nil {
+		return "- Updated code to address review feedback"
+	}
+
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return "- Updated code to address review feedback"
+	}
+
+	lines := strings.Split(trimmed, "\n")
+
+	var bullets []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Each line looks like: "path/to/file.go | 5 ++---"
+		parts := strings.SplitN(line, "|", 2)
+		if len(parts) == 2 {
+			filePath := strings.TrimSpace(parts[0])
+			change := strings.TrimSpace(parts[1])
+			bullets = append(bullets, fmt.Sprintf("- `%s` (%s)", filePath, change))
+		}
+	}
+
+	if len(bullets) == 0 {
+		return "- Updated code to address review feedback"
+	}
+
+	return strings.Join(bullets, "\n")
 }
