@@ -122,6 +122,14 @@ type FakeGitHub struct {
 	nextReviewComID int64
 	nextIssueNumber int
 
+	// Deferred items: only become visible after the first GET on the same resource.
+	// This simulates comments arriving after state recovery (first GET) but before
+	// ProcessReviewComments (second GET), which is the normal production scenario.
+	deferredReviewComments map[int][]*FakeReviewComment // PR number -> deferred review comments
+	deferredIssueComments  map[int][]*FakeComment       // issue number -> deferred issue comments
+	reviewCommentsGets     map[int]int                  // PR number -> GET request count
+	issueCommentsGets      map[int]int                  // issue number -> GET request count
+
 	// Recorders for assertions
 	CreatePRCalls    []CreatePRCall
 	CreateIssueCalls []CreateIssueCall
@@ -156,21 +164,25 @@ type ReactionCall struct {
 // NewFakeGitHub creates a new stateful fake GitHub server.
 func NewFakeGitHub(t *testing.T, owner, repo string) *FakeGitHub {
 	fg := &FakeGitHub{
-		t:               t,
-		issues:          make(map[int]*FakeIssue),
-		comments:        make(map[int][]*FakeComment),
-		prs:             make(map[int]*FakePR),
-		reviewComments:  make(map[int][]*FakeReviewComment),
-		checkRuns:       make(map[string][]*FakeCheckRun),
-		reviews:         make(map[int][]*FakeReview),
-		prHeadSHAs:      make(map[int]string),
-		prMergeStates:   make(map[int]string),
-		commitStatuses:  make(map[string][]map[string]any),
-		reactions:       make(map[int64][]map[string]any),
-		nextCommentID:   1,
-		nextPRNumber:    100,
-		nextReviewComID: 1,
-		nextIssueNumber: 900,
+		t:                      t,
+		issues:                 make(map[int]*FakeIssue),
+		comments:               make(map[int][]*FakeComment),
+		prs:                    make(map[int]*FakePR),
+		reviewComments:         make(map[int][]*FakeReviewComment),
+		checkRuns:              make(map[string][]*FakeCheckRun),
+		reviews:                make(map[int][]*FakeReview),
+		prHeadSHAs:             make(map[int]string),
+		prMergeStates:          make(map[int]string),
+		commitStatuses:         make(map[string][]map[string]any),
+		reactions:              make(map[int64][]map[string]any),
+		nextCommentID:          1,
+		nextPRNumber:           100,
+		nextReviewComID:        1,
+		nextIssueNumber:        900,
+		deferredReviewComments: make(map[int][]*FakeReviewComment),
+		deferredIssueComments:  make(map[int][]*FakeComment),
+		reviewCommentsGets:     make(map[int]int),
+		issueCommentsGets:      make(map[int]int),
 	}
 
 	prefix := fmt.Sprintf("/api/v3/repos/%s/%s", owner, repo)
@@ -508,6 +520,15 @@ func (fg *FakeGitHub) handleIssueComments(w http.ResponseWriter, r *http.Request
 
 	switch r.Method {
 	case "GET":
+		// Promote deferred issue comments after the first GET (state recovery).
+		fg.issueCommentsGets[issueNum]++
+		if fg.issueCommentsGets[issueNum] > 1 {
+			if deferred, ok := fg.deferredIssueComments[issueNum]; ok && len(deferred) > 0 {
+				fg.comments[issueNum] = append(fg.comments[issueNum], deferred...)
+				delete(fg.deferredIssueComments, issueNum)
+			}
+		}
+
 		comments := fg.comments[issueNum]
 		if comments == nil {
 			comments = []*FakeComment{}
@@ -692,6 +713,42 @@ func (fg *FakeGitHub) SeedReviewComment(prNumber int, comment FakeReviewComment)
 	fg.reviewComments[prNumber] = append(fg.reviewComments[prNumber], &comment)
 }
 
+// SeedReviewCommentDeferred adds an inline review comment that only becomes
+// visible after the first GET on the PR's review comments endpoint. This
+// simulates a comment arriving after state recovery but before the poll loop.
+func (fg *FakeGitHub) SeedReviewCommentDeferred(prNumber int, comment FakeReviewComment) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	if comment.ID == 0 {
+		comment.ID = fg.nextReviewComID
+		fg.nextReviewComID++
+	} else if comment.ID >= fg.nextReviewComID {
+		fg.nextReviewComID = comment.ID + 1
+	}
+	if comment.User == nil {
+		comment.User = map[string]any{"login": "reviewer"}
+	}
+	fg.deferredReviewComments[prNumber] = append(fg.deferredReviewComments[prNumber], &comment)
+}
+
+// SeedIssueCommentDeferred adds an issue comment that only becomes visible
+// after the first GET on the issue's comments endpoint. This simulates a
+// comment arriving after state recovery but before the poll loop.
+func (fg *FakeGitHub) SeedIssueCommentDeferred(issueNumber int, comment FakeComment) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	if comment.ID == 0 {
+		comment.ID = fg.nextCommentID
+		fg.nextCommentID++
+	} else if comment.ID >= fg.nextCommentID {
+		fg.nextCommentID = comment.ID + 1
+	}
+	if comment.User == nil {
+		comment.User = map[string]any{"login": "reviewer"}
+	}
+	fg.deferredIssueComments[issueNumber] = append(fg.deferredIssueComments[issueNumber], &comment)
+}
+
 // SeedCheckRun adds a check run for a commit SHA.
 func (fg *FakeGitHub) SeedCheckRun(sha string, cr FakeCheckRun) {
 	fg.mu.Lock()
@@ -767,17 +824,30 @@ func (fg *FakeGitHub) handlePRReviewComments(w http.ResponseWriter, r *http.Requ
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(reply)
 	case "GET":
+		// Promote deferred review comments after the first GET (state recovery).
+		// Page 1 counts as the initial GET; subsequent page requests within the
+		// same logical listing are not counted again.
+		q := r.URL.Query()
+		page, _ := strconv.Atoi(q.Get("page"))
+		if page < 1 {
+			page = 1
+		}
+		if page == 1 {
+			fg.reviewCommentsGets[prNum]++
+			if fg.reviewCommentsGets[prNum] > 1 {
+				if deferred, ok := fg.deferredReviewComments[prNum]; ok && len(deferred) > 0 {
+					fg.reviewComments[prNum] = append(fg.reviewComments[prNum], deferred...)
+					delete(fg.deferredReviewComments, prNum)
+				}
+			}
+		}
+
 		// Return review comments with pagination support.
 		comments := fg.reviewComments[prNum]
 		if comments == nil {
 			comments = []*FakeReviewComment{}
 		}
-		q := r.URL.Query()
-		page, _ := strconv.Atoi(q.Get("page"))
 		perPage, _ := strconv.Atoi(q.Get("per_page"))
-		if page < 1 {
-			page = 1
-		}
 		if perPage <= 0 {
 			perPage = 30
 		}

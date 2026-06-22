@@ -58,6 +58,48 @@ func recoverLastRebaseTime(ctx context.Context, gh GitHubClient, cfg Config, wor
 	}
 }
 
+// recoverCommentCursors recovers the comment cursors (LastCommentID, LastReviewID,
+// LastIssueCommentID) from GitHub by fetching all existing comments/reviews and
+// setting each cursor to the max ID. This prevents re-processing old comments
+// after a restart (e.g., --exit-on-new-version).
+func recoverCommentCursors(ctx context.Context, gh GitHubClient, cfg Config, work *IssueWork, prNumber int, logger *slog.Logger) {
+	// Recover LastCommentID from PR review comments
+	comments, err := gh.GetPRReviewComments(ctx, cfg.Owner, cfg.Repo, prNumber, 0)
+	if err != nil {
+		logger.Warn("failed to get PR review comments for cursor recovery", "pr", prNumber, "error", err)
+	} else {
+		for _, c := range comments {
+			if c.ID > work.LastCommentID {
+				work.LastCommentID = c.ID
+			}
+		}
+	}
+
+	// Recover LastReviewID from PR reviews
+	reviews, err := gh.GetPRReviews(ctx, cfg.Owner, cfg.Repo, prNumber, 0)
+	if err != nil {
+		logger.Warn("failed to get PR reviews for cursor recovery", "pr", prNumber, "error", err)
+	} else {
+		for _, r := range reviews {
+			if r.ID > work.LastReviewID {
+				work.LastReviewID = r.ID
+			}
+		}
+	}
+
+	// Recover LastIssueCommentID from PR conversation comments (Issues API)
+	issueComments, err := gh.GetIssueComments(ctx, cfg.Owner, cfg.Repo, prNumber, 0)
+	if err != nil {
+		logger.Warn("failed to get issue comments for cursor recovery", "pr", prNumber, "error", err)
+	} else {
+		for _, c := range issueComments {
+			if c.ID > work.LastIssueCommentID {
+				work.LastIssueCommentID = c.ID
+			}
+		}
+	}
+}
+
 // BuildStateFromGitHub reconstructs state by scanning labeled issues and their PRs.
 func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, cloneDir string, logger *slog.Logger) *State {
 	state := NewState()
@@ -98,7 +140,7 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 				case openPR != nil:
 					work.PRNumber = openPR.Number
 					work.Status = StatusPROpen
-					// lastCommentID stays 0 — ProcessReviewComments uses :eyes: reaction to skip already-handled comments
+					recoverCommentCursors(ctx, gh, cfg, work, openPR.Number, logger)
 					recoverLastRebaseTime(ctx, gh, cfg, work, openPR.Number, logger)
 					logger.Info("recovered state from GitHub", "issue", issue.Number, "pr", work.PRNumber)
 				case hasMerged:
@@ -158,6 +200,7 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 			CreatedAt:    time.Now(),
 		}
 
+		recoverCommentCursors(ctx, gh, cfg, work, prNumber, logger)
 		recoverLastRebaseTime(ctx, gh, cfg, work, prNumber, logger)
 
 		state.ActiveIssues[IssueKey(cfg.Owner, cfg.Repo, prNumber)] = work
