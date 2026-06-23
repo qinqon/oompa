@@ -104,7 +104,12 @@ There is NO fallback — if the skill does not reply to a thread, it will remain
 
 CRITICAL: Do NOT commit, push, or amend — the outer agent handles git operations automatically.
 If you make code changes, leave them UNCOMMITTED. Do NOT run "git add", "git commit", or "git push".
-Do NOT run "git push" even if the skill tries to — skip step 7 (commit/push) from the skill workflow.`)
+Do NOT run "git push" even if the skill tries to — skip step 7 (commit/push) from the skill workflow.
+
+COMMIT MESSAGE CHANGES: If asked to fix or change the commit message, write the full desired
+commit message (subject + body) to a file named ".oompa-commit-msg" in the repository root.
+Do NOT run "git commit --amend" yourself — the outer agent will read this file and apply it
+during the squash/amend step. Do NOT git add or commit the .oompa-commit-msg file.`)
 
 	return prompt.String()
 }
