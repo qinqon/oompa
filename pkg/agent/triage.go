@@ -253,15 +253,10 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 			a.addTriageRunLinkComment(ctx, ciSource.JobName(), run, matchedIssue)
 		} else {
 			// Create a new issue with the failure signature in the title
-			body := fmt.Sprintf(`Periodic CI job **%s** failed in run [%s](%s).
-
-## Analysis
-
-%s
-
----
-*This issue was automatically created by oompa based on CI failure analysis.*
-<!-- oompa-triage -->`, ciSource.JobName(), run.ID, run.LogURL, analysis)
+			body := fmt.Sprintf("Periodic CI job **%s** failed in run [%s](%s).\n\n"+
+			"## Analysis\n\n"+
+			"%s\n\n"+
+			"%s\n<!-- oompa-triage -->", ciSource.JobName(), run.ID, run.LogURL, analysis, a.botComment())
 
 			issueNumber, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, title, body, []string{a.cfg.FlakyLabel})
 			if err != nil {

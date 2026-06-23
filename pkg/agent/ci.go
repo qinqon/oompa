@@ -846,6 +846,11 @@ func (a *Agent) postConsolidatedCIComment(ctx context.Context, work *IssueWork, 
 		comment.WriteString(formatCIInfrastructureSection(infrastructure))
 	}
 
+	// Visible attribution footer
+	comment.WriteString("\n")
+	comment.WriteString(a.botComment())
+	comment.WriteString("\n")
+
 	// Append per-check dedup markers so alreadyCheckedCI still works
 	comment.WriteString("\n")
 	for _, r := range results {
