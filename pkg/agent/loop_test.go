@@ -38,8 +38,9 @@ type mockGitHubClient struct {
 	workflowRuns    []WorkflowRun // workflow runs to return from ListWorkflowRuns
 	prReviews      []PRReview // reviews to return from GetPRReviews
 	headCommitDate time.Time  // date to return from GetPRHeadCommitDate
-	recentCommits  int        // number of recent commits returned by CountCommitsSince
-	countCommitsErr error     // error to return from CountCommitsSince
+	recentCommits   int             // number of recent commits returned by CountCommitsSince
+	countCommitsErr error           // error to return from CountCommitsSince
+	hasEyesReaction map[int64]map[string]bool // commentID -> user -> has eyes reaction
 
 	listIssuesCalled bool // tracks whether ListLabeledIssues was called
 	listIssuesErr    error
@@ -134,7 +135,12 @@ func (m *mockGitHubClient) GetPRHeadSHA(_ context.Context, _, _ string, _ int) (
 	return "abc123", nil
 }
 
-func (m *mockGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, _ int64, _, _ string) (bool, error) {
+func (m *mockGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, commentID int64, reaction, user string) (bool, error) {
+	if reaction == "eyes" && m.hasEyesReaction != nil {
+		if byUser, ok := m.hasEyesReaction[commentID]; ok {
+			return byUser[user], nil
+		}
+	}
 	return false, nil
 }
 
