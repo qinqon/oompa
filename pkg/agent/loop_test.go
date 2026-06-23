@@ -5995,11 +5995,15 @@ type commitMsgCodeAgent struct {
 	result    AgentResult
 	err       error
 	prompts   []string
+	callCount int
 }
 
 func (m *commitMsgCodeAgent) Run(_ context.Context, _ CommandRunner, workDir, prompt string, _ *slog.Logger, _ bool) (AgentResult, error) {
+	m.callCount++
 	m.prompts = append(m.prompts, prompt)
-	if m.commitMsg != "" {
+	// Only write the commit message file on the first call (the review fix).
+	// Subsequent calls (e.g. change summary LLM) should not recreate it.
+	if m.commitMsg != "" && m.callCount == 1 {
 		// Simulate the agent writing the commit message file
 		if err := os.WriteFile(filepath.Join(workDir, commitMsgFile), []byte(m.commitMsg), 0o644); err != nil {
 			return AgentResult{}, err
@@ -6114,7 +6118,7 @@ func TestProcessReviewComments_AmendUsesCommitMsgFile(t *testing.T) {
 	runner := &changeSummaryRunner{
 		mockCommandRunner: &mockCommandRunner{},
 		headSHA:           "after-sha",
-		diffStat:          " pkg/agent/review.go | 5 +++--\n",
+		diffPatch:         "diff --git a/pkg/agent/review.go b/pkg/agent/review.go\n@@ -1 +1 @@\n-old\n+new\n",
 	}
 	wt := &fixedPathWorktreeManager{fixedPath: worktreeDir}
 
@@ -6451,7 +6455,7 @@ func TestTriageDedup_DeterministicFallbackWithMultiLineNone(t *testing.T) {
 
 func TestProcessReviewComments_PostsChangeSummaryAfterPush(t *testing.T) {
 	// After pushing a fix in response to review feedback, oompa should
-	// comment on the PR with a compare URL and a summary of the changes.
+	// comment on the PR with a compare URL and a semantic summary of the changes.
 	gh := &mockGitHubClient{
 		prComments: []ReviewComment{
 			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
@@ -6460,13 +6464,16 @@ func TestProcessReviewComments_PostsChangeSummaryAfterPush(t *testing.T) {
 	runner := &changeSummaryRunner{
 		mockCommandRunner: &mockCommandRunner{},
 		headSHA:           "abc123def456",
-		diffStat:          " pkg/agent/review.go | 5 +++--\n 1 file changed, 3 insertions(+), 2 deletions(-)\n",
+		diffPatch:         "diff --git a/pkg/agent/review.go b/pkg/agent/review.go\n--- a/pkg/agent/review.go\n+++ b/pkg/agent/review.go\n@@ -1,3 +1,5 @@\n+// Added validation\n func foo() {\n+\treturn nil\n }\n",
 	}
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.codeAgent = &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "Done"}},                                                 // review fix
+			{result: AgentResult{Result: "- Added validation logic to the review handler"}}, // change summary
+		},
 	}
 	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
 		IssueNumber:   42,
@@ -6498,9 +6505,9 @@ func TestProcessReviewComments_PostsChangeSummaryAfterPush(t *testing.T) {
 	if !strings.Contains(changeSummaryComment, "[Change](") {
 		t.Errorf("expected [Change](...) link in comment, got: %q", changeSummaryComment)
 	}
-	// Should contain file change info
-	if !strings.Contains(changeSummaryComment, "pkg/agent/review.go") {
-		t.Errorf("expected file path in summary, got: %q", changeSummaryComment)
+	// Should contain semantic summary from LLM (not raw file paths with stats)
+	if !strings.Contains(changeSummaryComment, "Added validation logic") {
+		t.Errorf("expected semantic summary in comment, got: %q", changeSummaryComment)
 	}
 	// Should contain bot marker
 	if !strings.Contains(changeSummaryComment, botMarker) {
@@ -6555,40 +6562,77 @@ func TestProcessReviewComments_NoChangeSummaryWhenNoPush(t *testing.T) {
 
 func TestBuildChangeSummary(t *testing.T) {
 	tests := []struct {
-		name      string
-		diffStat  string
-		runnerErr error // if set, runner returns this error instead of diffStat
-		want      []string // strings that should appear in the output
-		notWant   []string // strings that should NOT appear in the output
+		name        string
+		diff        string       // git diff output (full patch)
+		runnerErr   error        // if set, runner returns this error for git diff
+		llmResult   string       // LLM response text
+		llmErr      error        // if set, LLM call returns this error
+		want        []string     // strings that should appear in the output
+		notWant     []string     // strings that should NOT appear in the output
 	}{
 		{
-			name:     "single file changed",
-			diffStat: " pkg/agent/review.go | 5 +++--\n 1 file changed, 3 insertions(+), 2 deletions(-)\n",
-			want:     []string{"pkg/agent/review.go", "5 +++--"},
-			notWant:  []string{"file changed"},
+			name:      "LLM summarizes single file change",
+			diff:      "diff --git a/pkg/agent/review.go b/pkg/agent/review.go\n@@ -1,3 +1,5 @@\n+// Added validation\n func foo() {}\n",
+			llmResult: "- Added input validation to the review handler",
+			want:      []string{"Added input validation to the review handler"},
+			notWant:   []string{"review.go", "+++"},
 		},
 		{
-			name:     "multiple files changed",
-			diffStat: " pkg/agent/review.go | 10 +++++++---\n pkg/agent/loop.go   |  3 ++-\n 2 files changed, 9 insertions(+), 4 deletions(-)\n",
-			want:     []string{"pkg/agent/review.go", "pkg/agent/loop.go"},
-			notWant:  []string{"files changed"},
+			name:      "LLM summarizes multiple changes",
+			diff:      "diff --git a/review.go b/review.go\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/loop.go b/loop.go\n@@ -1 +1 @@\n-old\n+new\n",
+			llmResult: "- Refactored review handler for clarity\n- Updated loop to handle edge cases",
+			want:      []string{"Refactored review handler", "Updated loop to handle edge cases"},
+			notWant:   []string{"review.go", "loop.go"},
 		},
 		{
-			name:     "empty diff stat",
-			diffStat: "",
-			want:     []string{"Updated code to address review feedback"},
+			name: "empty diff returns fallback",
+			diff: "",
+			want: []string{"Updated code to address review feedback"},
 		},
 		{
-			name:      "runner error returns fallback",
+			name:      "git diff error returns fallback",
 			runnerErr: fmt.Errorf("git diff failed"),
+			want:      []string{"Updated code to address review feedback"},
+		},
+		{
+			name:   "LLM error returns fallback",
+			diff:   "diff --git a/foo.go b/foo.go\n@@ -1 +1 @@\n-old\n+new\n",
+			llmErr: fmt.Errorf("LLM unavailable"),
+			want:   []string{"Updated code to address review feedback"},
+		},
+		{
+			name:      "LLM returns empty result uses fallback",
+			diff:      "diff --git a/foo.go b/foo.go\n@@ -1 +1 @@\n-old\n+new\n",
+			llmResult: "",
+			want:      []string{"Updated code to address review feedback"},
+		},
+		{
+			name:      "LLM output without bullet prefix gets normalized",
+			diff:      "diff --git a/foo.go b/foo.go\n@@ -1 +1 @@\n-old\n+new\n",
+			llmResult: "Fixed the null pointer check",
+			want:      []string{"- Fixed the null pointer check"},
+		},
+		{
+			name:      "LLM returns diff artifacts uses fallback",
+			diff:      "diff --git a/foo.go b/foo.go\n@@ -1 +1 @@\n-old\n+new\n",
+			llmResult: "diff --git a/foo.go b/foo.go\n@@ -1 +1 @@\n-old\n+new",
+			want:      []string{"Updated code to address review feedback"},
+		},
+		{
+			name:      "LLM returns stat artifacts uses fallback",
+			diff:      "diff --git a/foo.go b/foo.go\n@@ -1 +1 @@\n-old\n+new\n",
+			llmResult: "- foo.go | 2 files changed, 1 insertions(+), 1 deletions(-)",
 			want:      []string{"Updated code to address review feedback"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			runner := &mockCommandRunner{stdout: []byte(tt.diffStat), err: tt.runnerErr}
+			runner := &mockCommandRunner{stdout: []byte(tt.diff), err: tt.runnerErr}
 			agent := newTestAgent(&mockGitHubClient{}, runner, &mockWorktreeManager{})
+			agent.codeAgent = &sequentialMockCodeAgent{
+				results: []mockCodeAgentCall{{result: AgentResult{Result: tt.llmResult}, err: tt.llmErr}},
+			}
 
 			result := agent.buildChangeSummary(context.Background(), "/tmp/worktree", "abc", "def")
 
@@ -6607,12 +6651,12 @@ func TestBuildChangeSummary(t *testing.T) {
 }
 
 // changeSummaryRunner simulates review feedback that results in uncommitted changes,
-// a successful amend+push, and provides a diff stat for the change summary.
+// a successful amend+push, and provides a diff patch for the change summary.
 type changeSummaryRunner struct {
 	*mockCommandRunner
-	headSHA   string // SHA to return for git rev-parse HEAD after the agent runs (post-push SHA)
-	diffStat  string // output of git diff --stat
-	revCount  int    // tracks how many times rev-parse HEAD was called
+	headSHA    string // SHA to return for git rev-parse HEAD after the agent runs (post-push SHA)
+	diffPatch  string // output of git diff (full patch)
+	revCount   int    // tracks how many times rev-parse HEAD was called
 	headBefore string // pre-agent SHA
 }
 
@@ -6646,9 +6690,9 @@ func (r *changeSummaryRunner) Run(ctx context.Context, workDir, name string, arg
 		return []byte(""), nil, nil
 	}
 
-	// git diff --stat: return file changes
+	// git diff: return full patch
 	if name == "git" && len(args) >= 1 && args[0] == "diff" {
-		return []byte(r.diffStat), nil, nil
+		return []byte(r.diffPatch), nil, nil
 	}
 
 	return nil, nil, nil

@@ -397,38 +397,82 @@ func (a *Agent) commentChangeSummary(ctx context.Context, work *IssueWork, befor
 	}
 }
 
-// buildChangeSummary returns a bullet-point summary of file changes between two SHAs.
+// buildChangeSummary returns a semantic bullet-point summary of changes between two SHAs.
+// It runs `git diff` to get the actual patch, passes it to the LLM for summarization,
+// and returns concise human-readable descriptions of each logical change.
+// Falls back to a generic message if the diff or LLM call fails.
 func (a *Agent) buildChangeSummary(ctx context.Context, worktreePath, beforeSHA, afterSHA string) string {
-	out, _, err := a.runner.Run(ctx, worktreePath, "git", "diff", "--stat", "--no-color", beforeSHA, afterSHA)
+	const fallback = "- Updated code to address review feedback"
+
+	out, _, err := a.runner.Run(ctx, worktreePath, "git", "diff", "--no-color", beforeSHA, afterSHA)
 	if err != nil {
-		return "- Updated code to address review feedback"
+		return fallback
 	}
 
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "" {
-		return "- Updated code to address review feedback"
+	diff := strings.TrimSpace(string(out))
+	if diff == "" {
+		return fallback
 	}
 
-	lines := strings.Split(trimmed, "\n")
+	prompt := buildChangeSummaryPrompt(diff)
+	result, err := a.codeAgent.Run(ctx, a.runner, worktreePath, prompt, a.logger, false)
+	if err != nil {
+		a.logger.Warn("LLM summarization failed, using fallback", "error", err)
+		return fallback
+	}
 
+	summary := strings.TrimSpace(result.Result)
+	if summary == "" {
+		return fallback
+	}
+
+	// Reject LLM output that contains raw diff or stat artifacts — posting these
+	// would reproduce the original bug this change was meant to fix.
+	if containsDiffArtifacts(summary) {
+		a.logger.Warn("LLM summary contained diff/stat artifacts, using fallback")
+		return fallback
+	}
+
+	// Ensure each line is a bullet point; the LLM should produce them but be defensive.
+	lines := strings.Split(summary, "\n")
 	var bullets []string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		// Each line looks like: "path/to/file.go | 5 ++---"
-		parts := strings.SplitN(line, "|", 2)
-		if len(parts) == 2 {
-			filePath := strings.TrimSpace(parts[0])
-			change := strings.TrimSpace(parts[1])
-			bullets = append(bullets, fmt.Sprintf("- `%s` (%s)", filePath, change))
+		if !strings.HasPrefix(line, "- ") {
+			line = "- " + line
 		}
+		bullets = append(bullets, line)
 	}
 
 	if len(bullets) == 0 {
-		return "- Updated code to address review feedback"
+		return fallback
 	}
 
 	return strings.Join(bullets, "\n")
+}
+
+// containsDiffArtifacts returns true if the text contains raw diff or stat
+// markers that indicate the LLM returned diff formatting instead of a
+// semantic summary.
+func containsDiffArtifacts(text string) bool {
+	lower := strings.ToLower(text)
+	artifacts := []string{
+		"diff --git",
+		"+++ ",
+		"--- a/",
+		"--- b/",
+		"@@ ",
+		" files changed",
+		" insertions(+)",
+		" deletions(-)",
+	}
+	for _, marker := range artifacts {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
