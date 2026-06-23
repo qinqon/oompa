@@ -35,6 +35,13 @@ func TestBuildStateFromGitHub_RecoversPRState(t *testing.T) {
 			{ID: 10, User: "alice", Body: "looks good"},
 			{ID: 20, User: "bob", Body: "fix this"},
 		},
+		prReviews: []PRReview{
+			{ID: 5, User: "carol", State: "CHANGES_REQUESTED", Body: "needs work"},
+			{ID: 15, User: "dave", State: "APPROVED", Body: "lgtm"},
+		},
+		issueComments: []ReviewComment{
+			{ID: 30, User: "eve", Body: "/oompa fix tests"},
+		},
 	}
 	cfg := Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"}
 
@@ -50,8 +57,16 @@ func TestBuildStateFromGitHub_RecoversPRState(t *testing.T) {
 	if work.Status != "pr-open" {
 		t.Errorf("expected status 'pr-open', got %q", work.Status)
 	}
-	if work.LastCommentID != 0 {
-		t.Errorf("expected lastCommentID 0 (reactions used instead), got %d", work.LastCommentID)
+	// Comment cursors should be recovered to max existing IDs to prevent
+	// re-processing old comments after a restart.
+	if work.LastCommentID != 20 {
+		t.Errorf("expected LastCommentID 20, got %d", work.LastCommentID)
+	}
+	if work.LastReviewID != 15 {
+		t.Errorf("expected LastReviewID 15, got %d", work.LastReviewID)
+	}
+	if work.LastIssueCommentID != 30 {
+		t.Errorf("expected LastIssueCommentID 30, got %d", work.LastIssueCommentID)
 	}
 }
 
@@ -189,5 +204,69 @@ func TestNewState_InvestigatedRuns(t *testing.T) {
 	}
 	if len(s.InvestigatedRuns) != 0 {
 		t.Errorf("expected empty InvestigatedRuns, got %d", len(s.InvestigatedRuns))
+	}
+}
+
+func TestBuildStateFromGitHub_WatchPRsRecoversCursors(t *testing.T) {
+	gh := &mockGitHubClient{
+		prs: []PR{
+			{Number: 500, State: "open", Head: "feature-branch", Title: "My Feature"},
+		},
+		prComments: []ReviewComment{
+			{ID: 100, User: "alice", Body: "fix this"},
+			{ID: 200, User: "bob", Body: "also this"},
+		},
+		prReviews: []PRReview{
+			{ID: 50, User: "carol", State: "CHANGES_REQUESTED", Body: "needs work"},
+		},
+		issueComments: []ReviewComment{
+			{ID: 300, User: "eve", Body: "/oompa fix tests"},
+		},
+	}
+	cfg := Config{
+		Owner:    "owner",
+		Repo:     "repo",
+		WatchPRs: []int{500},
+	}
+
+	state := BuildStateFromGitHub(context.Background(), gh, cfg, "/tmp/clone", slog.Default())
+
+	work, ok := state.ActiveIssues[IssueKey("owner", "repo", 500)]
+	if !ok {
+		t.Fatal("expected watched PR 500 in state")
+	}
+	if work.LastCommentID != 200 {
+		t.Errorf("expected LastCommentID 200, got %d", work.LastCommentID)
+	}
+	if work.LastReviewID != 50 {
+		t.Errorf("expected LastReviewID 50, got %d", work.LastReviewID)
+	}
+	if work.LastIssueCommentID != 300 {
+		t.Errorf("expected LastIssueCommentID 300, got %d", work.LastIssueCommentID)
+	}
+}
+
+func TestBuildStateFromGitHub_RecoversCursorsNoComments(t *testing.T) {
+	// When a PR has no comments/reviews, cursors should stay at 0.
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 7, Title: "Clean PR", Labels: []string{"good-for-ai"}}},
+		prs:    []PR{{Number: 77, State: "open", Head: "ai/issue-7"}},
+	}
+	cfg := Config{Owner: "owner", Repo: "repo", Label: "good-for-ai"}
+
+	state := BuildStateFromGitHub(context.Background(), gh, cfg, "/tmp/clone", slog.Default())
+
+	work, ok := state.ActiveIssues[IssueKey("owner", "repo", 7)]
+	if !ok {
+		t.Fatal("expected issue 7 in state")
+	}
+	if work.LastCommentID != 0 {
+		t.Errorf("expected LastCommentID 0, got %d", work.LastCommentID)
+	}
+	if work.LastReviewID != 0 {
+		t.Errorf("expected LastReviewID 0, got %d", work.LastReviewID)
+	}
+	if work.LastIssueCommentID != 0 {
+		t.Errorf("expected LastIssueCommentID 0, got %d", work.LastIssueCommentID)
 	}
 }

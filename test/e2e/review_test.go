@@ -39,18 +39,24 @@ func TestE2E_ReviewFeedback(t *testing.T) {
 		Base:   "main",
 	})
 
-	// Seed 35 review comments to exercise the pagination loop (catches #151).
-	// The pre-#151 code used PerPage=30, which would drop comments after page 1.
-	// Comments 1001-1002 are the primary review feedback; 1003-1035 are filler
-	// to push total count past the old pagination boundary.
-	fg.SeedReviewComment(200, FakeReviewComment{
+	// Seed 35 review comments using SeedReviewCommentDeferred so they only
+	// become visible after state recovery (first GET). This simulates comments
+	// arriving after oompa starts, preventing cursor recovery from advancing
+	// past them — which is the normal production scenario. (#244)
+	//
+	// Note: the 35-comment count is preserved from the original pagination
+	// regression test (pre-#151, when PerPage was 30). With the current
+	// PerPage=100, all 35 fit in a single page so pagination is not exercised
+	// here; the value of this test is verifying that every comment receives
+	// an :eyes: reaction regardless of deferred seeding timing.
+	fg.SeedReviewCommentDeferred(200, FakeReviewComment{
 		ID:   1001,
 		Body: "Please add error handling for the nil case.",
 		Path: "middleware.go",
 		Line: 42,
 		User: map[string]any{"login": "reviewer1"},
 	})
-	fg.SeedReviewComment(200, FakeReviewComment{
+	fg.SeedReviewCommentDeferred(200, FakeReviewComment{
 		ID:   1002,
 		Body: "Consider using a context logger instead of the global one.",
 		Path: "middleware.go",
@@ -58,7 +64,7 @@ func TestE2E_ReviewFeedback(t *testing.T) {
 		User: map[string]any{"login": "reviewer1"},
 	})
 	for i := int64(1003); i <= 1035; i++ {
-		fg.SeedReviewComment(200, FakeReviewComment{
+		fg.SeedReviewCommentDeferred(200, FakeReviewComment{
 			ID:   i,
 			Body: fmt.Sprintf("Review comment %d for pagination test.", i),
 			Path: "middleware.go",
@@ -159,7 +165,9 @@ func TestE2E_ReviewFeedback_PRConversationComment(t *testing.T) {
 	})
 
 	// Seed an issue comment (PR conversation tab) with /oompa prefix.
-	fg.SeedIssueComment(201, FakeComment{
+	// Use deferred seeding so the comment only appears after state recovery,
+	// simulating a comment arriving after oompa starts. (#244)
+	fg.SeedIssueCommentDeferred(201, FakeComment{
 		ID:   2001,
 		Body: "/oompa please also update the CHANGELOG",
 		User: map[string]any{"login": "reviewer1"},
