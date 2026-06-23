@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -60,40 +61,86 @@ func recoverLastRebaseTime(ctx context.Context, gh GitHubClient, cfg Config, wor
 
 // recoverCommentCursors recovers the comment cursors (LastCommentID, LastReviewID,
 // LastIssueCommentID) from GitHub by fetching all existing comments/reviews and
-// setting each cursor to the max ID. This prevents re-processing old comments
-// after a restart (e.g., --exit-on-new-version).
+// setting each cursor to the max ID among comments that show evidence of prior
+// processing. This prevents both re-processing old comments after a restart AND
+// skipping unprocessed comments that arrived after the last processing cycle.
+//
+// Processing evidence differs by cursor type:
+//
+// LastCommentID (PR review comments): bot-posted, bot-replied-to, contains
+// bot marker, or has an eyes reaction from the bot.
+//
+// LastReviewID (PR reviews): bot-posted or contains bot marker. The agent
+// never creates PR reviews in practice, so this cursor typically recovers
+// to 0 — all reviews are re-fetched once and the cursor advances on the
+// first poll cycle after filtering.
+//
+// LastIssueCommentID (issue comments): bot-posted or contains bot marker.
+//
+// Comments from external reviewers that have NOT been processed remain above
+// the cursor so they get picked up in the next review cycle.
 func recoverCommentCursors(ctx context.Context, gh GitHubClient, cfg Config, work *IssueWork, prNumber int, logger *slog.Logger) {
-	// Recover LastCommentID from PR review comments
+	// Recover LastCommentID from PR review comments.
+	// Only advance past comments that show evidence of processing:
+	// bot-posted, bot-replied-to, containing bot marker, or having eyes reaction.
 	comments, err := gh.GetPRReviewComments(ctx, cfg.Owner, cfg.Repo, prNumber, 0)
 	if err != nil {
 		logger.Warn("failed to get PR review comments for cursor recovery", "pr", prNumber, "error", err)
 	} else {
+		// Build a set of comment IDs that the bot has replied to.
+		botRepliedTo := make(map[int64]bool)
 		for _, c := range comments {
-			if c.ID > work.LastCommentID {
+			if c.User == cfg.GitHubUser && c.InReplyToID != 0 {
+				botRepliedTo[c.InReplyToID] = true
+			}
+		}
+
+		for _, c := range comments {
+			processed := c.User == cfg.GitHubUser ||
+				botRepliedTo[c.ID] ||
+				strings.Contains(c.Body, botMarker)
+			if !processed {
+				// Check for eyes reaction from bot — the definitive processing marker.
+				// This catches comments that were processed (eyes added) but got no
+				// bot reply (e.g., agent pushed changes without replying individually).
+				if hasEyes, eyesErr := gh.HasPRCommentReaction(ctx, cfg.Owner, cfg.Repo, c.ID, "eyes", cfg.GitHubUser); eyesErr != nil {
+					logger.Warn("failed to check eyes reaction for cursor recovery", "pr", prNumber, "comment", c.ID, "error", eyesErr)
+				} else if hasEyes {
+					processed = true
+				}
+			}
+			if processed && c.ID > work.LastCommentID {
 				work.LastCommentID = c.ID
 			}
 		}
 	}
 
-	// Recover LastReviewID from PR reviews
+	// Recover LastReviewID from PR reviews.
+	// Only advance past reviews from the bot user or containing the bot marker.
+	// The agent never creates PR reviews, so this cursor typically recovers to 0.
+	// All reviews are re-fetched once at startup; ProcessReviewComments filters
+	// them and advances the cursor on the first poll cycle.
 	reviews, err := gh.GetPRReviews(ctx, cfg.Owner, cfg.Repo, prNumber, 0)
 	if err != nil {
 		logger.Warn("failed to get PR reviews for cursor recovery", "pr", prNumber, "error", err)
 	} else {
 		for _, r := range reviews {
-			if r.ID > work.LastReviewID {
+			processed := r.User == cfg.GitHubUser || strings.Contains(r.Body, botMarker)
+			if processed && r.ID > work.LastReviewID {
 				work.LastReviewID = r.ID
 			}
 		}
 	}
 
-	// Recover LastIssueCommentID from PR conversation comments (Issues API)
+	// Recover LastIssueCommentID from PR conversation comments (Issues API).
+	// Only advance past comments from the bot user or containing the bot marker.
 	issueComments, err := gh.GetIssueComments(ctx, cfg.Owner, cfg.Repo, prNumber, 0)
 	if err != nil {
 		logger.Warn("failed to get issue comments for cursor recovery", "pr", prNumber, "error", err)
 	} else {
 		for _, c := range issueComments {
-			if c.ID > work.LastIssueCommentID {
+			processed := c.User == cfg.GitHubUser || strings.Contains(c.Body, botMarker)
+			if processed && c.ID > work.LastIssueCommentID {
 				work.LastIssueCommentID = c.ID
 			}
 		}
