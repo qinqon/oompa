@@ -9,6 +9,44 @@ import (
 	"strings"
 )
 
+// commitMsgFile is the well-known filename an agent writes to request a commit
+// message change. The outer automation reads and deletes it during squash/amend.
+const commitMsgFile = ".oompa-commit-msg"
+
+// readCommitMsgFile reads and removes the commit message override file from the
+// worktree root. Returns the trimmed contents and true if the file existed and
+// was non-empty; returns ("", false) otherwise.
+func readCommitMsgFile(worktreePath string) (string, bool) {
+	path := filepath.Join(worktreePath, commitMsgFile)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	_ = os.Remove(path) //nolint:errcheck // best-effort cleanup
+	msg := strings.TrimSpace(string(content))
+	if msg == "" {
+		return "", false
+	}
+	return msg, true
+}
+
+// ensureTrailers appends configured Signed-off-by and Assisted-by trailers to
+// a commit message if they are not already present. This prevents DCO/policy
+// violations when the agent overrides the commit message via .oompa-commit-msg.
+func (a *Agent) ensureTrailers(msg string) string {
+	var trailers []string
+	if a.cfg.SignedOffBy != "" && !strings.Contains(msg, "Signed-off-by:") {
+		trailers = append(trailers, fmt.Sprintf("Signed-off-by: %s", a.cfg.SignedOffBy))
+	}
+	if a.cfg.AssistedBy != "" && !strings.Contains(msg, "Assisted-by:") {
+		trailers = append(trailers, fmt.Sprintf("Assisted-by: %s", a.cfg.AssistedBy))
+	}
+	if len(trailers) > 0 {
+		msg += "\n\n" + strings.Join(trailers, "\n")
+	}
+	return msg
+}
+
 // buildPRBody constructs a PR description. If Claude wrote a .pr-body.md file
 // (filled from the repo's PR template), that is used. Otherwise falls back to
 // constructing a body from the git log.
@@ -72,13 +110,25 @@ func (a *Agent) hasUncommittedChanges(ctx context.Context, worktreePath string) 
 }
 
 // gitAmendAll stages all changes and amends the current commit.
+// If the agent wrote a .oompa-commit-msg file, its contents replace the commit message.
 func (a *Agent) gitAmendAll(ctx context.Context, worktreePath string) error {
 	if a.cfg.DryRun {
 		a.logger.Info("[dry-run] would amend commit", "worktree", worktreePath)
 		return nil
 	}
+	// Read the commit message override BEFORE git add -A so it doesn't get staged.
+	newMsg, hasNewMsg := readCommitMsgFile(worktreePath)
+
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "add", "-A"); err != nil {
 		return fmt.Errorf("git add: %w (stderr: %s)", err, string(stderr))
+	}
+	if hasNewMsg {
+		a.logger.Info("using agent-provided commit message", "worktree", worktreePath)
+		newMsg = a.ensureTrailers(newMsg)
+		if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "--amend", "-m", newMsg); err != nil {
+			return fmt.Errorf("git commit --amend -m: %w (stderr: %s)", err, string(stderr))
+		}
+		return nil
 	}
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "--amend", "--no-edit"); err != nil {
 		return fmt.Errorf("git commit --amend: %w (stderr: %s)", err, string(stderr))
@@ -88,11 +138,15 @@ func (a *Agent) gitAmendAll(ctx context.Context, worktreePath string) error {
 
 // gitSquashInto squashes all commits after the given SHA into that commit.
 // Used to fold agent-created review feedback commits back into the original HEAD.
+// If the agent wrote a .oompa-commit-msg file, its contents replace the commit message.
 func (a *Agent) gitSquashInto(ctx context.Context, worktreePath, targetSHA string) error {
 	if a.cfg.DryRun {
 		a.logger.Info("[dry-run] would squash into", "worktree", worktreePath, "target", shortSHA(targetSHA))
 		return nil
 	}
+	// Read the commit message override BEFORE git add -A so it doesn't get staged.
+	newMsg, hasNewMsg := readCommitMsgFile(worktreePath)
+
 	// Stage all changes first to capture any unstaged modifications the agent left behind
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "add", "-A"); err != nil {
 		return fmt.Errorf("git add: %w (stderr: %s)", err, string(stderr))
@@ -101,9 +155,17 @@ func (a *Agent) gitSquashInto(ctx context.Context, worktreePath, targetSHA strin
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "reset", "--soft", targetSHA); err != nil {
 		return fmt.Errorf("git reset --soft %s: %w (stderr: %s)", shortSHA(targetSHA), err, string(stderr))
 	}
-	// Amend the target commit with the staged changes
-	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "--amend", "--no-edit"); err != nil {
-		return fmt.Errorf("git commit --amend: %w (stderr: %s)", err, string(stderr))
+	// Amend the target commit with the staged changes, using the new message if provided
+	if hasNewMsg {
+		a.logger.Info("using agent-provided commit message", "worktree", worktreePath)
+		newMsg = a.ensureTrailers(newMsg)
+		if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "--amend", "-m", newMsg); err != nil {
+			return fmt.Errorf("git commit --amend -m: %w (stderr: %s)", err, string(stderr))
+		}
+	} else {
+		if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "commit", "--amend", "--no-edit"); err != nil {
+			return fmt.Errorf("git commit --amend: %w (stderr: %s)", err, string(stderr))
+		}
 	}
 	return nil
 }

@@ -328,3 +328,25 @@ func TestBuildFlakyMatchPrompt_RootCauseInstructions(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildReviewResponsePrompt_CommitMessageInstructions(t *testing.T) {
+	work := IssueWork{
+		IssueNumber: 42,
+		IssueTitle:  "Fix nil pointer in handler",
+		PRNumber:    100,
+	}
+
+	prompt := buildReviewResponsePrompt(work, nil, nil, nil, "owner", "repo")
+
+	checks := []string{
+		".oompa-commit-msg",
+		"commit message",
+		"Do NOT run \"git commit --amend\"",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}

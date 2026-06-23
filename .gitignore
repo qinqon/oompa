@@ -32,6 +32,7 @@ Thumbs.db
 
 # Agent workflow artifacts
 .pr-body.md
+.oompa-commit-msg
 
 # AgentReady reports
 .agentready/

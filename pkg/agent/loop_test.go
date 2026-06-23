@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -5920,6 +5922,344 @@ func TestProcessReviewComments_OompaCommandIgnoresBotComments(t *testing.T) {
 		if c.Name == "claude" {
 			t.Error("should not invoke claude for bot-posted /oompa comment")
 		}
+	}
+}
+
+func TestReadCommitMsgFile_Present(t *testing.T) {
+	// When .oompa-commit-msg exists and is non-empty, readCommitMsgFile should
+	// return its trimmed contents and true, then delete the file.
+	dir := t.TempDir()
+	msgPath := filepath.Join(dir, commitMsgFile)
+	want := "feat: new commit subject\n\nBody paragraph"
+	if err := os.WriteFile(msgPath, []byte(want+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, ok := readCommitMsgFile(dir)
+	if !ok {
+		t.Fatal("expected readCommitMsgFile to return true when file exists")
+	}
+	if msg != want {
+		t.Errorf("expected %q, got %q", want, msg)
+	}
+
+	// File should have been deleted
+	if _, err := os.Stat(msgPath); !os.IsNotExist(err) {
+		t.Error("expected .oompa-commit-msg to be deleted after reading")
+	}
+}
+
+func TestReadCommitMsgFile_Absent(t *testing.T) {
+	// When .oompa-commit-msg does not exist, readCommitMsgFile should return ("", false).
+	dir := t.TempDir()
+	msg, ok := readCommitMsgFile(dir)
+	if ok {
+		t.Error("expected readCommitMsgFile to return false when file is absent")
+	}
+	if msg != "" {
+		t.Errorf("expected empty string, got %q", msg)
+	}
+}
+
+func TestReadCommitMsgFile_Empty(t *testing.T) {
+	// When .oompa-commit-msg exists but is empty/whitespace-only, return ("", false).
+	dir := t.TempDir()
+	msgPath := filepath.Join(dir, commitMsgFile)
+	if err := os.WriteFile(msgPath, []byte("  \n  \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, ok := readCommitMsgFile(dir)
+	if ok {
+		t.Error("expected readCommitMsgFile to return false for empty file")
+	}
+	if msg != "" {
+		t.Errorf("expected empty string, got %q", msg)
+	}
+
+	// File should have been deleted even when empty
+	if _, err := os.Stat(msgPath); !os.IsNotExist(err) {
+		t.Error("expected .oompa-commit-msg to be deleted after reading empty file")
+	}
+}
+
+// commitMsgCodeAgent is a mock CodeAgent that writes .oompa-commit-msg to the workdir.
+type commitMsgCodeAgent struct {
+	commitMsg string
+	result    AgentResult
+	err       error
+	prompts   []string
+}
+
+func (m *commitMsgCodeAgent) Run(_ context.Context, _ CommandRunner, workDir, prompt string, _ *slog.Logger, _ bool) (AgentResult, error) {
+	m.prompts = append(m.prompts, prompt)
+	if m.commitMsg != "" {
+		// Simulate the agent writing the commit message file
+		if err := os.WriteFile(filepath.Join(workDir, commitMsgFile), []byte(m.commitMsg), 0o644); err != nil {
+			return AgentResult{}, err
+		}
+	}
+	return m.result, m.err
+}
+
+// fixedPathWorktreeManager returns a fixed path from CreateWorktree, allowing tests
+// to use a real temp directory for commit message file tests.
+type fixedPathWorktreeManager struct {
+	mockWorktreeManager
+	fixedPath string
+}
+
+func (m *fixedPathWorktreeManager) CreateWorktree(_ context.Context, branchName string) (string, error) {
+	m.createdBranches = append(m.createdBranches, branchName)
+	return m.fixedPath, nil
+}
+
+func TestProcessReviewComments_SquashUsesCommitMsgFile(t *testing.T) {
+	// When the agent commits directly AND writes .oompa-commit-msg,
+	// gitSquashInto should use -m with the file's contents instead of --no-edit.
+	// Configured trailers should be appended automatically.
+	worktreeDir := t.TempDir()
+
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 70, User: "reviewer", Body: "/oompa fix the commit message"},
+		},
+	}
+	runner := &reviewSquashRunner{
+		mockCommandRunner: &mockCommandRunner{},
+		headSHAs:          []string{"original-sha", "agent-committed-sha"},
+	}
+	wt := &fixedPathWorktreeManager{fixedPath: worktreeDir}
+
+	agent := &Agent{
+		gh:        gh,
+		runner:    runner,
+		worktrees: wt,
+		state:     NewState(),
+		cfg: Config{
+			Owner:       "owner",
+			Repo:        "repo",
+			Label:       "good-for-ai",
+			FlakyLabel:  "flaky-test",
+			GitHubUser:  "test-bot",
+			SignedOffBy: "Test User <test@example.com>",
+			AssistedBy:  "Claude <noreply@anthropic.com>",
+		},
+		logger: slog.Default(),
+		codeAgent: &commitMsgCodeAgent{
+			commitMsg: "fix: corrected commit subject\n\nProper body",
+			result:    AgentResult{Result: "Done"},
+		},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: worktreeDir,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Verify git commit --amend -m was called with the new message plus trailers
+	foundAmendWithMsg := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[0] == "commit" && c.Args[1] == "--amend" && c.Args[2] == "-m" {
+			foundAmendWithMsg = true
+			if len(c.Args) >= 4 {
+				msg := c.Args[3]
+				if !strings.Contains(msg, "fix: corrected commit subject") {
+					t.Errorf("commit message missing subject, got %q", msg)
+				}
+				if !strings.Contains(msg, "Proper body") {
+					t.Errorf("commit message missing body, got %q", msg)
+				}
+				if !strings.Contains(msg, "Signed-off-by: Test User <test@example.com>") {
+					t.Errorf("commit message missing Signed-off-by trailer, got %q", msg)
+				}
+				if !strings.Contains(msg, "Assisted-by: Claude <noreply@anthropic.com>") {
+					t.Errorf("commit message missing Assisted-by trailer, got %q", msg)
+				}
+			}
+		}
+	}
+	if !foundAmendWithMsg {
+		t.Error("expected git commit --amend -m <msg> when .oompa-commit-msg is present")
+	}
+
+	// The .oompa-commit-msg file should have been cleaned up
+	if _, err := os.Stat(filepath.Join(worktreeDir, commitMsgFile)); !os.IsNotExist(err) {
+		t.Error("expected .oompa-commit-msg to be deleted after use")
+	}
+}
+
+func TestProcessReviewComments_AmendUsesCommitMsgFile(t *testing.T) {
+	// When the agent leaves uncommitted changes AND writes .oompa-commit-msg,
+	// gitAmendAll should use -m with the file's contents instead of --no-edit.
+	// Configured trailers should be appended automatically.
+	worktreeDir := t.TempDir()
+
+	gh := &mockGitHubClient{
+		issueComments: []ReviewComment{
+			{ID: 70, User: "reviewer", Body: "/oompa fix the commit message"},
+		},
+	}
+	// Use changeSummaryRunner which simulates uncommitted changes (git status returns dirty)
+	runner := &changeSummaryRunner{
+		mockCommandRunner: &mockCommandRunner{},
+		headSHA:           "after-sha",
+		diffStat:          " pkg/agent/review.go | 5 +++--\n",
+	}
+	wt := &fixedPathWorktreeManager{fixedPath: worktreeDir}
+
+	agent := &Agent{
+		gh:        gh,
+		runner:    runner,
+		worktrees: wt,
+		state:     NewState(),
+		cfg: Config{
+			Owner:       "owner",
+			Repo:        "repo",
+			Label:       "good-for-ai",
+			FlakyLabel:  "flaky-test",
+			GitHubUser:  "test-bot",
+			SignedOffBy: "Test User <test@example.com>",
+			AssistedBy:  "Claude <noreply@anthropic.com>",
+		},
+		logger: slog.Default(),
+		codeAgent: &commitMsgCodeAgent{
+			commitMsg: "fix: updated commit message\n\nNew body",
+			result:    AgentResult{Result: "Done"},
+		},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		Status:       "pr-open",
+		WorktreePath: worktreeDir,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Verify git commit --amend -m was called with the new message plus trailers
+	foundAmendWithMsg := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) >= 3 && c.Args[0] == "commit" && c.Args[1] == "--amend" && c.Args[2] == "-m" {
+			foundAmendWithMsg = true
+			if len(c.Args) >= 4 {
+				msg := c.Args[3]
+				if !strings.Contains(msg, "fix: updated commit message") {
+					t.Errorf("commit message missing subject, got %q", msg)
+				}
+				if !strings.Contains(msg, "New body") {
+					t.Errorf("commit message missing body, got %q", msg)
+				}
+				if !strings.Contains(msg, "Signed-off-by: Test User <test@example.com>") {
+					t.Errorf("commit message missing Signed-off-by trailer, got %q", msg)
+				}
+				if !strings.Contains(msg, "Assisted-by: Claude <noreply@anthropic.com>") {
+					t.Errorf("commit message missing Assisted-by trailer, got %q", msg)
+				}
+			}
+		}
+	}
+	if !foundAmendWithMsg {
+		t.Error("expected git commit --amend -m <msg> when .oompa-commit-msg is present")
+	}
+
+	// The .oompa-commit-msg file should have been cleaned up
+	if _, err := os.Stat(filepath.Join(worktreeDir, commitMsgFile)); !os.IsNotExist(err) {
+		t.Error("expected .oompa-commit-msg to be deleted after use")
+	}
+}
+
+func TestEnsureTrailers_AppendsWhenMissing(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.SignedOffBy = "Test User <test@example.com>"
+	agent.cfg.AssistedBy = "Claude <noreply@anthropic.com>"
+
+	msg := agent.ensureTrailers("fix: subject\n\nbody text")
+
+	if !strings.Contains(msg, "Signed-off-by: Test User <test@example.com>") {
+		t.Error("expected Signed-off-by trailer to be appended")
+	}
+	if !strings.Contains(msg, "Assisted-by: Claude <noreply@anthropic.com>") {
+		t.Error("expected Assisted-by trailer to be appended")
+	}
+	if !strings.Contains(msg, "fix: subject") {
+		t.Error("original subject should be preserved")
+	}
+	if !strings.Contains(msg, "body text") {
+		t.Error("original body should be preserved")
+	}
+}
+
+func TestEnsureTrailers_SkipsWhenPresent(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	agent.cfg.SignedOffBy = "Test User <test@example.com>"
+	agent.cfg.AssistedBy = "Claude <noreply@anthropic.com>"
+
+	msg := "fix: subject\n\nbody text\n\nSigned-off-by: Test User <test@example.com>\nAssisted-by: Claude <noreply@anthropic.com>"
+	result := agent.ensureTrailers(msg)
+
+	if result != msg {
+		t.Errorf("expected message to be unchanged when trailers already present, got %q", result)
+	}
+}
+
+func TestEnsureTrailers_NoConfigNoChange(t *testing.T) {
+	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
+	// No SignedOffBy or AssistedBy configured
+
+	msg := "fix: subject\n\nbody text"
+	result := agent.ensureTrailers(msg)
+
+	if result != msg {
+		t.Errorf("expected message to be unchanged when no trailers configured, got %q", result)
+	}
+}
+
+func TestProcessReviewComments_SquashWithoutCommitMsgFileUsesNoEdit(t *testing.T) {
+	// When the agent commits directly but does NOT write .oompa-commit-msg,
+	// gitSquashInto should use --no-edit (preserving the original message).
+	gh := &mockGitHubClient{
+		prComments: []ReviewComment{
+			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+		},
+	}
+	runner := &reviewSquashRunner{
+		mockCommandRunner: &mockCommandRunner{},
+		headSHAs:          []string{"original-sha", "agent-committed-sha"},
+	}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.codeAgent = &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+	}
+	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
+		IssueNumber:   42,
+		IssueTitle:    "Fix bug",
+		PRNumber:      100,
+		Status:        "pr-open",
+		WorktreePath:  "/tmp/worktree",
+		LastCommentID: 50,
+	}
+
+	agent.ProcessReviewComments(context.Background())
+
+	// Verify git commit --amend --no-edit was called (NOT -m)
+	foundNoEdit := false
+	for _, c := range runner.calls {
+		if c.Name == "git" && len(c.Args) >= 2 && c.Args[0] == "commit" && c.Args[1] == "--amend" {
+			if len(c.Args) >= 3 && c.Args[2] == "--no-edit" {
+				foundNoEdit = true
+			}
+		}
+	}
+	if !foundNoEdit {
+		t.Error("expected git commit --amend --no-edit when no .oompa-commit-msg file exists")
 	}
 }
 
