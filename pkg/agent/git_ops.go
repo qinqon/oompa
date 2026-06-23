@@ -117,6 +117,31 @@ func isConventionalCommitTitle(title string) bool {
 	return conventionalCommitRe.MatchString(title)
 }
 
+// maxSubjectLen is the maximum length of a commit subject line.
+const maxSubjectLen = 72
+
+// truncateSubject shortens a commit subject to fit within maxLen runes.
+// If truncation is needed, it breaks at the last word boundary before the limit
+// and appends "...". If there is no word boundary, it hard-truncates.
+// Operates on runes to avoid splitting multi-byte UTF-8 sequences.
+func truncateSubject(subject string, maxLen int) string {
+	runes := []rune(subject)
+	if len(runes) <= maxLen {
+		return subject
+	}
+	// Reserve space for the ellipsis suffix.
+	cutoff := maxLen - 3
+	if cutoff <= 0 {
+		return string(runes[:maxLen])
+	}
+	// Try to break at the last space before the cutoff.
+	truncated := string(runes[:cutoff])
+	if idx := strings.LastIndex(truncated, " "); idx > 0 {
+		return truncated[:idx] + "..."
+	}
+	return truncated + "..."
+}
+
 // gitSquashCommits squashes all commits since the origin default branch into a single commit.
 func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issueNumber int, issueTitle string) error {
 	// Get all commit messages since origin default branch
@@ -138,15 +163,13 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 	// Strip any Signed-off-by/Assisted-by trailers Claude may have added to individual
 	// commits before building the body, then append exactly one canonical set of trailers.
 	//
-	// When the issue title already starts with a conventional commit prefix (e.g. "feat:",
-	// "build:", "refactor(scope):"), use the title as-is for the subject and move the issue
-	// reference to the body. Otherwise, use the legacy "Fix #N: <title>" format.
+	// The subject line uses the issue title directly (truncated to 72 chars).
+	// The issue reference goes in the body as "Related-to: #N" to avoid
+	// auto-close keywords (Fix, Fixes, Closes) that some CI systems reject
+	// (e.g. kubevirt prow's invalid-commit-message check).
+	subject := truncateSubject(issueTitle, maxSubjectLen)
 	var commitMsg string
-	if isConventionalCommitTitle(issueTitle) {
-		commitMsg = fmt.Sprintf("%s\n\nFixes #%d", issueTitle, issueNumber)
-	} else {
-		commitMsg = fmt.Sprintf("Fix #%d: %s", issueNumber, issueTitle)
-	}
+	commitMsg = fmt.Sprintf("%s\n\nRelated-to: #%d", subject, issueNumber)
 	if commitMessages != "" {
 		commitMsg += "\n\n" + stripTrailers(commitMessages)
 	}
