@@ -3118,8 +3118,8 @@ func TestProcessNewIssues_SquashesCommits(t *testing.T) {
 				// Verify commit message includes issue number
 				if len(c.Args) >= 3 {
 					commitMsg := c.Args[2]
-					if !strings.Contains(commitMsg, "Fix #42") {
-						t.Errorf("expected commit message to contain 'Fix #42', got: %s", commitMsg)
+					if !strings.Contains(commitMsg, "Related-to: #42") {
+						t.Errorf("expected commit message to contain 'Related-to: #42', got: %s", commitMsg)
 					}
 					if !strings.Contains(commitMsg, "Signed-off-by") {
 						t.Errorf("expected commit message to contain 'Signed-off-by', got: %s", commitMsg)
@@ -3201,6 +3201,35 @@ func TestIsConventionalCommitTitle(t *testing.T) {
 	}
 }
 
+func TestTruncateSubject(t *testing.T) {
+	tests := []struct {
+		name     string
+		subject  string
+		maxLen   int
+		expected string
+	}{
+		{"short subject unchanged", "fix: short title", 72, "fix: short title"},
+		{"exactly 72 chars unchanged", strings.Repeat("a", 72), 72, strings.Repeat("a", 72)},
+		{"long title truncated at word boundary", "CI Failure: pull-e2e-cluster-network-addons-operator-monitoring-k8s / The pull-e2e-cluster-network-addons-operator-monitoring-k8s", 72, "CI Failure: pull-e2e-cluster-network-addons-operator-monitoring-k8s..."},
+		{"long single word hard truncated", strings.Repeat("x", 100), 72, strings.Repeat("x", 69) + "..."},
+		{"empty string unchanged", "", 72, ""},
+		{"breaks at last space before cutoff", "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13", 72, "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11..."},
+		{"multi-byte runes not split", "Ошибка CI: " + strings.Repeat("слово ", 20), 30, "Ошибка CI: слово слово..."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateSubject(tt.subject, tt.maxLen)
+			if got != tt.expected {
+				t.Errorf("truncateSubject(%q, %d) =\n  %q (len=%d)\nwant:\n  %q (len=%d)", tt.subject, tt.maxLen, got, len(got), tt.expected, len(tt.expected))
+			}
+			if len([]rune(got)) > tt.maxLen {
+				t.Errorf("truncateSubject result exceeds maxLen: got %d runes, max %d", len([]rune(got)), tt.maxLen)
+			}
+		})
+	}
+}
+
 func TestProcessNewIssues_SquashesCommits_ConventionalCommitTitle(t *testing.T) {
 	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
 	gh := &mockGitHubClient{
@@ -3213,8 +3242,8 @@ func TestProcessNewIssues_SquashesCommits_ConventionalCommitTitle(t *testing.T) 
 	agent.cfg.SignedOffBy = "Test User <test@example.com>"
 	agent.ProcessNewIssues(context.Background())
 
-	// Verify the commit message uses the conventional commit title as-is
-	// and puts "Fixes #N" in the body instead of "Fix #N: <title>"
+	// Verify the commit message uses the issue title as the subject
+	// and puts "Related-to: #N" in the body (no auto-close keywords)
 	for _, c := range runner.calls {
 		if c.Name != "git" || len(c.Args) < 3 || c.Args[0] != "commit" || c.Args[1] != "-m" {
 			continue
@@ -3225,13 +3254,13 @@ func TestProcessNewIssues_SquashesCommits_ConventionalCommitTitle(t *testing.T) 
 		if lines[0] != "build: consolidate multi-arch container build scripts" {
 			t.Errorf("expected subject line to be the conventional commit title, got: %q", lines[0])
 		}
-		// Should NOT contain "Fix #1532:" prefix
-		if strings.Contains(commitMsg, "Fix #1532:") {
-			t.Errorf("commit message should not contain 'Fix #1532:' for conventional commit titles, got: %s", commitMsg)
+		// Should NOT contain auto-close keywords
+		if strings.Contains(commitMsg, "Fix #1532") || strings.Contains(commitMsg, "Fixes #1532") || strings.Contains(commitMsg, "Closes #1532") {
+			t.Errorf("commit message should not contain auto-close keywords, got: %s", commitMsg)
 		}
-		// Should contain "Fixes #1532" in the body
-		if !strings.Contains(commitMsg, "Fixes #1532") {
-			t.Errorf("expected commit body to contain 'Fixes #1532', got: %s", commitMsg)
+		// Should contain "Related-to: #1532" in the body
+		if !strings.Contains(commitMsg, "Related-to: #1532") {
+			t.Errorf("expected commit body to contain 'Related-to: #1532', got: %s", commitMsg)
 		}
 		// Should still have trailers
 		if !strings.Contains(commitMsg, "Signed-off-by") {
@@ -3254,22 +3283,66 @@ func TestProcessNewIssues_SquashesCommits_NonConventionalTitle(t *testing.T) {
 	agent.cfg.SignedOffBy = "Test User <test@example.com>"
 	agent.ProcessNewIssues(context.Background())
 
-	// Verify the commit message uses the legacy "Fix #N: <title>" format
+	// Verify the commit message uses the issue title as subject and
+	// references the issue in the body with "Related-to:" (no auto-close keywords)
 	for _, c := range runner.calls {
 		if c.Name != "git" || len(c.Args) < 3 || c.Args[0] != "commit" || c.Args[1] != "-m" {
 			continue
 		}
 		commitMsg := c.Args[2]
-		if !strings.Contains(commitMsg, "Fix #42: implement feature X") {
-			t.Errorf("expected commit message to contain 'Fix #42: implement feature X', got: %s", commitMsg)
-		}
-		// Should NOT contain standalone "Fixes #42" in body (that's for conventional commits)
 		lines := strings.SplitN(commitMsg, "\n", 2)
-		if lines[0] != "Fix #42: implement feature X" {
-			t.Errorf("expected subject line to be 'Fix #42: implement feature X', got: %q", lines[0])
+		if lines[0] != "implement feature X" {
+			t.Errorf("expected subject line to be 'implement feature X', got: %q", lines[0])
+		}
+		// Should NOT contain auto-close keywords
+		if strings.Contains(commitMsg, "Fix #42") || strings.Contains(commitMsg, "Fixes #42") || strings.Contains(commitMsg, "Closes #42") {
+			t.Errorf("commit message should not contain auto-close keywords, got: %s", commitMsg)
+		}
+		// Should contain "Related-to: #42" in the body
+		if !strings.Contains(commitMsg, "Related-to: #42") {
+			t.Errorf("expected commit body to contain 'Related-to: #42', got: %s", commitMsg)
 		}
 		if !strings.Contains(commitMsg, "Signed-off-by") {
 			t.Errorf("expected commit message to contain 'Signed-off-by', got: %s", commitMsg)
+		}
+		return
+	}
+	t.Error("expected git commit -m to be called")
+}
+
+func TestProcessNewIssues_SquashesCommits_LongTitle(t *testing.T) {
+	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
+	longTitle := "CI Failure: pull-e2e-cluster-network-addons-operator-monitoring-k8s / The pull-e2e-cluster-network-addons-operator-monitoring-k8s"
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 2799, Title: longTitle, Body: "CI is failing"}},
+	}
+	runner := &mockCommandRunner{stdout: claudeResult}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.ProcessNewIssues(context.Background())
+
+	// Verify the commit subject is truncated to 72 characters
+	for _, c := range runner.calls {
+		if c.Name != "git" || len(c.Args) < 3 || c.Args[0] != "commit" || c.Args[1] != "-m" {
+			continue
+		}
+		commitMsg := c.Args[2]
+		lines := strings.SplitN(commitMsg, "\n", 2)
+		subject := lines[0]
+		if len(subject) > 72 {
+			t.Errorf("subject line exceeds 72 chars (%d): %q", len(subject), subject)
+		}
+		if !strings.HasSuffix(subject, "...") {
+			t.Errorf("truncated subject should end with '...', got: %q", subject)
+		}
+		// Should NOT contain auto-close keywords
+		if strings.Contains(commitMsg, "Fix #2799") || strings.Contains(commitMsg, "Fixes #2799") {
+			t.Errorf("commit message should not contain auto-close keywords, got: %s", commitMsg)
+		}
+		// Should contain "Related-to: #2799" in the body
+		if !strings.Contains(commitMsg, "Related-to: #2799") {
+			t.Errorf("expected commit body to contain 'Related-to: #2799', got: %s", commitMsg)
 		}
 		return
 	}
