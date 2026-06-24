@@ -440,3 +440,19 @@ Instructions:
 
 	return prompt.String()
 }
+
+func buildChangeSummaryPrompt(diff string) string {
+	return fmt.Sprintf(`Summarize the following code diff as a concise bullet list. Each bullet should describe one logical change in a single sentence. Do not include file paths, stat numbers, or diff formatting. Focus on what was changed and why it matters.
+
+<diff>
+%s
+</diff>
+
+Rules:
+- One bullet per logical change (group related hunks)
+- Start each bullet with "- "
+- Be specific and semantic (e.g. "Converted truncateSubject to use rune-based slicing for multi-byte UTF-8 safety")
+- Do not mention file paths or line counts
+- Do not include any text outside the bullet list
+- Do NOT modify any files or run any commands`, diff)
+}
