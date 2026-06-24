@@ -242,7 +242,20 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		}
 		headSHABefore := strings.TrimSpace(string(headBefore))
 
-		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, task.prComments, a.cfg.Owner, a.cfg.Repo)
+		// Get PR diff stat to scope the agent's changes to only files in this PR.
+		// This prevents the agent from making sweeping unrelated changes when
+		// addressing review feedback (e.g. removing recently-merged functionality).
+		// Use three-dot diff (merge-base) to exclude upstream changes when the
+		// branch is behind the default branch.
+		var prDiffStat string
+		diffStatOut, _, diffErr := a.runner.Run(ctx, task.work.WorktreePath, "git", "diff", "--stat", a.originDefaultBranch()+"...HEAD")
+		if diffErr != nil {
+			a.logger.Warn("failed to get PR diff stat for scope constraint", "pr", task.work.PRNumber, "error", diffErr)
+		} else {
+			prDiffStat = strings.TrimSpace(string(diffStatOut))
+		}
+
+		prompt := buildReviewResponsePrompt(*task.work, task.humanComments, task.humanReviews, task.prComments, a.cfg.Owner, a.cfg.Repo, prDiffStat)
 		agentResult, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
 		// Track cumulative cost even on failure — failed invocations still consume
 		// tokens and incur costs, so the MaxPRSessionCost guard must count them.
