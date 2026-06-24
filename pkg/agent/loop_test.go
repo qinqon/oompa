@@ -3747,6 +3747,81 @@ func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob(t *testing.T) {
 	}
 }
 
+func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob_DifferentSignatures(t *testing.T) {
+	// When multiple failed runs of the same job are investigated in the same
+	// triage cycle but produce different failure signatures (different LLM
+	// summaries), the second run should still match the issue created by the
+	// first via same-job cycle dedup. This is the bug reported in #253:
+	// same workflow (kubevirt-ipam-controller.yaml) with different run IDs
+	// produced different titles, causing exact title match to fail and the
+	// LLM to say NONE, resulting in duplicate issues.
+	now := time.Now()
+	gh := &mockGitHubClient{
+		workflowRuns: []WorkflowRun{
+			{ID: 300, Status: "completed", Conclusion: "failure", CreatedAt: now.Add(-1 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/300"},
+			{ID: 200, Status: "completed", Conclusion: "failure", CreatedAt: now.Add(-2 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/200"},
+		},
+		searchResults:   []Issue{}, // GitHub search returns nothing (eventual consistency lag)
+		nextIssueNumber: 10,
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+		TriageJobs:        []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
+		TriageLookback:    24 * time.Hour,
+	}
+
+	// Runs produce DIFFERENT failure signatures — titles will NOT match exactly.
+	// The LLM says NONE for the second run (unreliable matching).
+	// Without the same-job cycle dedup fix, this would create 2 issues.
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "## Summary\nCompile error in main.go line 42"}},    // first run analysis
+			{result: AgentResult{Result: "## Summary\nCompile error in main.go line 99"}},    // second run analysis (different signature)
+			{result: AgentResult{Result: "NONE"}},                                             // LLM says no match (unreliable)
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a.ProcessTriageJobs(context.Background())
+
+	// Should create exactly 1 issue (first run) and post a run-link comment (second run)
+	if len(gh.createdIssues) != 1 {
+		t.Errorf("expected 1 issue created (same-job dedup with different signatures), got %d", len(gh.createdIssues))
+	}
+
+	// The run-link comment for the second run should reference the issue created by the first
+	runLinkFound := false
+	for _, comment := range gh.addedComments {
+		if strings.Contains(comment, "Same failure observed") {
+			runLinkFound = true
+		}
+	}
+	if !runLinkFound {
+		t.Error("expected a run-link comment for the deduplicated second run")
+	}
+
+	// Both runs should be marked as investigated
+	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+		t.Error("expected run 300 to be marked as investigated")
+	}
+	if !state.IsRunInvestigated("owner/repo/ci.yml", "200") {
+		t.Error("expected run 200 to be marked as investigated")
+	}
+
+	// The LLM matching agent should NOT have been called because same-job
+	// cycle dedup fires before LLM matching. Only 2 calls expected:
+	// analysis for run 300 + analysis for run 200. No LLM match call.
+	if codeAgent.callCount != 2 {
+		t.Errorf("expected 2 agent calls (analysis only, no LLM match needed), got %d", codeAgent.callCount)
+	}
+}
+
 func TestProcessTriageJobs_DeduplicatesDifferentJobsSameRootCause(t *testing.T) {
 	// When different jobs fail for the same root cause in the same triage cycle,
 	// the second job should match the issue created by the first via LLM matching
@@ -5309,6 +5384,136 @@ func TestTriageDedup_DifferentFailuresSameJob_CreatesSeparateIssues(t *testing.T
 	}
 	if gh.createdIssues[0].Title != title {
 		t.Errorf("expected title %q, got %q", title, gh.createdIssues[0].Title)
+	}
+}
+
+func TestFindSameJobCycleIssue(t *testing.T) {
+	tests := []struct {
+		name        string
+		jobName     string
+		cycleIssues []Issue
+		want        int
+	}{
+		{
+			name:        "no cycle issues",
+			jobName:     "owner/repo/ci.yml",
+			cycleIssues: nil,
+			want:        0,
+		},
+		{
+			name:    "matching cycle issue",
+			jobName: "owner/repo/ci.yml",
+			cycleIssues: []Issue{
+				{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Compile error in main.go"},
+			},
+			want: 10,
+		},
+		{
+			name:    "no matching cycle issue (different job)",
+			jobName: "owner/repo/ci.yml",
+			cycleIssues: []Issue{
+				{Number: 10, Title: "CI Failure: owner/repo/e2e.yml / Test timeout"},
+			},
+			want: 0,
+		},
+		{
+			name:    "multiple cycle issues returns first match",
+			jobName: "owner/repo/ci.yml",
+			cycleIssues: []Issue{
+				{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Error A"},
+				{Number: 11, Title: "CI Failure: owner/repo/ci.yml / Error B"},
+			},
+			want: 10,
+		},
+		{
+			name:    "matches by prefix regardless of failure signature",
+			jobName: "owner/repo/ci.yml",
+			cycleIssues: []Issue{
+				{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Compile error in main.go line 42"},
+			},
+			want: 10,
+		},
+		{
+			name:    "title without failure signature also matches",
+			jobName: "owner/repo/ci.yml",
+			cycleIssues: []Issue{
+				{Number: 10, Title: "CI Failure: owner/repo/ci.yml"},
+			},
+			want: 10,
+		},
+		{
+			name:    "does not match when job name is prefix of another job",
+			jobName: "owner/repo/ci.yml",
+			cycleIssues: []Issue{
+				{Number: 10, Title: "CI Failure: owner/repo/ci.yml-long / Some error"},
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findSameJobCycleIssue(tt.jobName, tt.cycleIssues)
+			if got != tt.want {
+				t.Errorf("findSameJobCycleIssue(%q, ...) = %d, want %d", tt.jobName, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTriageDedup_SameJobCycleIssue_MatchesBeforeLLM(t *testing.T) {
+	// When a cycle issue exists for the same job, matchExistingTriageIssue
+	// should return it immediately without calling the LLM matcher.
+	// This tests the fix for #253: same workflow, different signatures.
+	gh := &mockGitHubClient{
+		searchResults: []Issue{}, // no existing issues from search
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+	}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			// Should NOT be called — same-job cycle dedup fires first
+			{result: AgentResult{Result: "NONE"}},
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+
+	cycleIssues := []Issue{
+		{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Compile error in main.go line 42"},
+	}
+
+	// Different title (different failure signature) but same job
+	title := "CI Failure: owner/repo/ci.yml / Compile error in main.go line 99"
+	analysis := "## Summary\nCompile error in main.go line 99"
+
+	existingIssues := mergeIssues(gh.searchResults, cycleIssues)
+	matchedIssue := a.matchExistingTriageIssue(context.Background(),
+		"owner/repo/ci.yml",
+		title,
+		analysis,
+		existingIssues,
+		"/tmp/worktree",
+		cycleIssues,
+		[]string{"owner/repo/ci.yml"}, // single job
+	)
+
+	// Should match the cycle issue even though titles differ
+	if matchedIssue != 10 {
+		t.Errorf("expected match to cycle issue #10, got %d", matchedIssue)
+	}
+
+	// LLM should NOT have been called (same-job cycle dedup is pre-LLM)
+	if codeAgent.callCount != 0 {
+		t.Errorf("expected 0 agent calls (same-job cycle dedup), got %d", codeAgent.callCount)
 	}
 }
 

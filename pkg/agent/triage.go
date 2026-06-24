@@ -254,9 +254,9 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 		} else {
 			// Create a new issue with the failure signature in the title
 			body := fmt.Sprintf("Periodic CI job **%s** failed in run [%s](%s).\n\n"+
-			"## Analysis\n\n"+
-			"%s\n\n"+
-			"%s\n<!-- oompa-triage -->", ciSource.JobName(), run.ID, run.LogURL, analysis, a.botComment())
+				"## Analysis\n\n"+
+				"%s\n\n"+
+				"%s\n<!-- oompa-triage -->", ciSource.JobName(), run.ID, run.LogURL, analysis, a.botComment())
 
 			issueNumber, err := a.gh.CreateIssue(ctx, a.cfg.Owner, a.cfg.Repo, title, body, []string{a.cfg.FlakyLabel})
 			if err != nil {
@@ -313,6 +313,9 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 // current failure by content, not just job name. Returns the issue number if found, 0 otherwise.
 //
 // Strategy (mirrors matchExistingFlakyIssue in ci.go):
+//  0. Same-job cycle dedup: if an issue was already created in this triage
+//     cycle for the same job, match to it unconditionally. Multiple runs of
+//     the same workflow within a lookback window should always group together.
 //  1. Fast path: exact title match skips LLM matching entirely.
 //  2. LLM-based root-cause matching when no exact title match exists.
 //  3. Deterministic fallback: when multiple jobs fail concurrently and an issue
@@ -324,6 +327,21 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 // cycleFailedJobs provides the names of all jobs that failed in the same triage
 // cycle, giving the LLM matcher context about correlated failures.
 func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, analysis string, existingIssues []Issue, worktreePath string, cycleIssues []Issue, cycleFailedJobs []string) int {
+	// Same-job cycle dedup: if an issue was already created in this triage
+	// cycle for the same job, match to it unconditionally. When the same
+	// GitHub Actions workflow has multiple failed runs with different run
+	// IDs within the lookback window, the failure signatures may differ
+	// slightly between runs (the LLM produces different summaries), causing
+	// exact title match and LLM matching to both fail. Since both runs come
+	// from the same workflow/job in the same triage cycle, they should always
+	// group under the same issue.
+	sameJobCycleIssue := findSameJobCycleIssue(jobName, cycleIssues)
+	if sameJobCycleIssue > 0 {
+		a.logger.Info("same-job cycle dedup: matching to cycle issue created for this job",
+			"issue", sameJobCycleIssue, "job", jobName)
+		return sameJobCycleIssue
+	}
+
 	// Deterministic fallback (checked first): when multiple jobs fail
 	// concurrently and an issue was already created in this triage cycle,
 	// match to it. In a batch of concurrent failures, the first investigation
@@ -384,6 +402,20 @@ func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, an
 		return target.Number
 	}
 
+	return 0
+}
+
+// findSameJobCycleIssue returns the issue number of a cycle issue that was
+// created for the same job, or 0 if none exists. It matches by checking if
+// the issue title starts with "CI Failure: <jobName>", which is the title
+// format used by investigateTriageRun.
+func findSameJobCycleIssue(jobName string, cycleIssues []Issue) int {
+	prefix := fmt.Sprintf("CI Failure: %s", jobName)
+	for _, issue := range cycleIssues {
+		if issue.Title == prefix || strings.HasPrefix(issue.Title, prefix+" / ") {
+			return issue.Number
+		}
+	}
 	return 0
 }
 
