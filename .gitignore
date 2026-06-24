@@ -36,3 +36,6 @@ Thumbs.db
 
 # AgentReady reports
 .agentready/
+
+# mdBook build output
+docs/book/

@@ -1,0 +1,19 @@
+[book]
+title = "Oompa Documentation"
+authors = ["Enrique Llorente Pastora"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/qinqon/oompa"
+edit-url-template = "https://github.com/qinqon/oompa/edit/main/docs/src/{path}"
+site-url = "/oompa/"
+
+[output.html.search]
+enable = true
+
+[output.html.playground]
+editable = false
