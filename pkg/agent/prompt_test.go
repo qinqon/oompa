@@ -88,7 +88,7 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		},
 	}
 
-	prompt := buildReviewResponsePrompt(work, comments, nil, nil, "owner", "repo")
+	prompt := buildReviewResponsePrompt(work, comments, nil, nil, "owner", "repo", " handler.go | 5 ++---\n 1 file changed")
 
 	checks := []string{
 		"reviewer1",
@@ -112,6 +112,9 @@ func TestBuildReviewResponsePrompt(t *testing.T) {
 		"Decline invalid suggestions",
 		"Resolve addressed review threads",
 		"skip step 7",
+		"SCOPE CONSTRAINT",
+		"Files changed in this PR",
+		"handler.go | 5",
 	}
 
 	for _, want := range checks {
@@ -133,7 +136,7 @@ func TestBuildReviewResponsePrompt_WithPRComments(t *testing.T) {
 		{ID: 11, User: "reviewer2", Body: "/oompa add Signed-off-by trailers"},
 	}
 
-	prompt := buildReviewResponsePrompt(work, nil, nil, prComments, "owner", "repo")
+	prompt := buildReviewResponsePrompt(work, nil, nil, prComments, "owner", "repo", "")
 
 	checks := []string{
 		"PR conversation directives",
@@ -336,7 +339,7 @@ func TestBuildReviewResponsePrompt_CommitMessageInstructions(t *testing.T) {
 		PRNumber:    100,
 	}
 
-	prompt := buildReviewResponsePrompt(work, nil, nil, nil, "owner", "repo")
+	prompt := buildReviewResponsePrompt(work, nil, nil, nil, "owner", "repo", "")
 
 	checks := []string{
 		".oompa-commit-msg",
@@ -349,4 +352,41 @@ func TestBuildReviewResponsePrompt_CommitMessageInstructions(t *testing.T) {
 			t.Errorf("prompt missing %q", want)
 		}
 	}
+}
+
+func TestBuildReviewResponsePrompt_ScopeConstraint(t *testing.T) {
+	work := IssueWork{
+		IssueNumber: 42,
+		IssueTitle:  "Fix nil pointer in handler",
+		PRNumber:    100,
+	}
+
+	t.Run("with diff stat includes scope constraint and file list", func(t *testing.T) {
+		diffStat := " pkg/agent/triage.go | 45 ++++++++++-\n pkg/agent/loop_test.go | 205 +++++++++\n 2 files changed, 246 insertions(+), 4 deletions(-)"
+		prompt := buildReviewResponsePrompt(work, nil, nil, nil, "owner", "repo", diffStat)
+
+		checks := []string{
+			"SCOPE CONSTRAINT",
+			"MUST only modify files",
+			"Files changed in this PR",
+			"triage.go",
+			"loop_test.go",
+		}
+		for _, want := range checks {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("prompt missing %q", want)
+			}
+		}
+	})
+
+	t.Run("without diff stat omits both file list and scope constraint", func(t *testing.T) {
+		prompt := buildReviewResponsePrompt(work, nil, nil, nil, "owner", "repo", "")
+
+		if strings.Contains(prompt, "Files changed in this PR") {
+			t.Error("prompt should not include file list section when diff stat is empty")
+		}
+		if strings.Contains(prompt, "SCOPE CONSTRAINT") {
+			t.Error("prompt should not include scope constraint when diff stat is empty")
+		}
+	})
 }
