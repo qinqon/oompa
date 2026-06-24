@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -17,7 +18,7 @@ type Config struct {
 	DryRun        bool
 	OneShot       bool
 	SignedOffBy   string
-	AssistedBy    string   // Assisted-by trailer value for commits (e.g. "Claude <noreply@anthropic.com>")
+	AssistedBy    string   // Assisted-by trailer value for commits (e.g. "oompa with claude-opus-4-6 <https://github.com/qinqon/oompa>")
 	GitHubUser      string   // authenticated GitHub username (for reaction checks)
 	GitHubToken     string   // GitHub token (passed to Claude for gh CLI access)
 	GitHubHeadOwner string   // owner for PR head filtering (fork owner for PAT, repo owner for App)
@@ -53,17 +54,39 @@ type Config struct {
 	GitHubAppInstallationID int64
 }
 
-// DefaultAssistedBy returns the default Assisted-by trailer value for the given agent backend.
-func DefaultAssistedBy(agentBackend string) string {
+// DefaultAssistedBy returns the default Assisted-by trailer value.
+// When agentModel is provided, the short model name is extracted
+// (e.g. "google-vertex-anthropic/claude-opus-4-6@default" → "claude-opus-4-6")
+// and included as "oompa with <model>".
+func DefaultAssistedBy(agentBackend, agentModel string) string {
 	if agentBackend == "" {
 		return ""
 	}
-	switch agentBackend {
-	case "claudecode":
-		return "Claude <noreply@anthropic.com>"
-	case "opencode":
-		return "Claude <noreply@anthropic.com>"
-	default:
-		return fmt.Sprintf("%s <noreply@anthropic.com>", agentBackend)
+	model := ExtractModelShortName(agentModel)
+	if model != "" {
+		return fmt.Sprintf("oompa with %s <https://github.com/qinqon/oompa>", model)
 	}
+	return "oompa <https://github.com/qinqon/oompa>"
+}
+
+// ExtractModelShortName extracts the short model name from a fully-qualified
+// model identifier. Examples:
+//
+//	"google-vertex-anthropic/claude-opus-4-6@default" → "claude-opus-4-6"
+//	"github-copilot/claude-opus-4.8" → "claude-opus-4.8"
+//	"claude-opus-4-6" → "claude-opus-4-6"
+//	"" → ""
+func ExtractModelShortName(model string) string {
+	if model == "" {
+		return ""
+	}
+	// Strip provider prefix (everything before the last '/')
+	if idx := strings.LastIndex(model, "/"); idx >= 0 {
+		model = model[idx+1:]
+	}
+	// Strip variant suffix (everything from '@' onward)
+	if idx := strings.Index(model, "@"); idx >= 0 {
+		model = model[:idx]
+	}
+	return model
 }
