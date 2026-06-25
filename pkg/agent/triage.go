@@ -317,8 +317,11 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 //     cycle for the same job, match to it unconditionally. Multiple runs of
 //     the same workflow within a lookback window should always group together.
 //  1. Fast path: exact title match skips LLM matching entirely.
-//  2. LLM-based root-cause matching when no exact title match exists.
-//  3. Deterministic fallback: when multiple jobs fail concurrently and an issue
+//  2. Same-job match: if an existing open issue has the same job name prefix
+//     ("CI Failure: <jobName>"), match to it. This handles cross-day dedup
+//     where the failure signature suffix varies between runs.
+//  3. LLM-based root-cause matching when no title-based match exists.
+//  4. Deterministic fallback: when multiple jobs fail concurrently and an issue
 //     was already created in this triage cycle, match to the most recent cycle
 //     issue. This prevents the LLM's inconsistent NONE responses from creating
 //     duplicate issues for correlated failures.
@@ -375,6 +378,19 @@ func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, an
 		}
 	}
 
+	// Same-job match: if an existing open issue tracks the same CI job
+	// (matching by "CI Failure: <jobName>" prefix), match to it without
+	// LLM involvement. This handles cross-day dedup where the same job
+	// fails on consecutive days — the failure signature suffix may vary
+	// between runs (different LLM summaries), causing exact title match
+	// to miss, but the job name is stable.
+	sameJobIssue := findSameJobIssue(jobName, existingIssues)
+	if sameJobIssue > 0 {
+		a.logger.Info("same-job match for existing triage issue",
+			"issue", sameJobIssue, "job", jobName)
+		return sameJobIssue
+	}
+
 	// Slow path: LLM-based root-cause matching
 	matchPrompt := buildTriageMatchPrompt(jobName, analysis, existingIssues, cycleFailedJobs)
 	matchResult, matchErr := a.codeAgent.Run(ctx, a.runner, worktreePath, matchPrompt, a.logger, false)
@@ -410,8 +426,18 @@ func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, an
 // the issue title starts with "CI Failure: <jobName>", which is the title
 // format used by investigateTriageRun.
 func findSameJobCycleIssue(jobName string, cycleIssues []Issue) int {
+	return findSameJobIssue(jobName, cycleIssues)
+}
+
+// findSameJobIssue returns the issue number of an issue that tracks the same
+// CI job, or 0 if none exists. It matches by checking if the issue title
+// starts with "CI Failure: <jobName>" (with or without a failure signature
+// suffix). This provides deterministic cross-day dedup: when the same job
+// fails on consecutive days, the failure signature may differ between runs
+// (different LLM summaries), but the job name prefix is stable.
+func findSameJobIssue(jobName string, issues []Issue) int {
 	prefix := fmt.Sprintf("CI Failure: %s", jobName)
-	for _, issue := range cycleIssues {
+	for _, issue := range issues {
 		if issue.Title == prefix || strings.HasPrefix(issue.Title, prefix+" / ") {
 			return issue.Number
 		}
