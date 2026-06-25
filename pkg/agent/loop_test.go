@@ -5306,10 +5306,11 @@ func TestBuildStateFromGitHub_NoHeadCommitDate(t *testing.T) {
 	}
 }
 
-func TestTriageDedup_DifferentFailuresSameJob_CreatesSeparateIssues(t *testing.T) {
-	// Two different failures from the same job should create two separate issues.
-	// Existing issue is about VLAN test failure; new failure is CRI-O mirror 404.
-	// The LLM says NONE — no match.
+func TestTriageDedup_DifferentFailuresSameJob_MatchesByJobName(t *testing.T) {
+	// Two different failures from the same job should match the existing
+	// issue via same-job prefix match, even when the failure signatures
+	// differ. This prevents duplicate issues when the LLM produces
+	// different summaries for the same job across days (issue #257).
 	gh := &mockGitHubClient{
 		searchResults: []Issue{
 			{Number: 1501, Title: "CI Failure: periodic-knmstate-e2e-handler-k8s-latest / VLAN bridge test timeout",
@@ -5328,14 +5329,12 @@ func TestTriageDedup_DifferentFailuresSameJob_CreatesSeparateIssues(t *testing.T
 	}
 
 	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{
-			{result: AgentResult{Result: "NONE"}}, // LLM matching says no match
-		},
+		results: []mockCodeAgentCall{}, // Should NOT be called — same-job match fires first
 	}
 
 	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
 
-	// Simulate calling matchExistingTriageIssue + issue creation path directly
+	// Different failure signature from the same job
 	title := "CI Failure: periodic-knmstate-e2e-handler-k8s-latest / CRI-O mirror returned HTTP 404"
 	analysis := "## Summary\nCRI-O mirror returned HTTP 404\n\n## Root Cause\nInfrastructure mirror outage"
 
@@ -5349,41 +5348,14 @@ func TestTriageDedup_DifferentFailuresSameJob_CreatesSeparateIssues(t *testing.T
 		nil, // no concurrent failures (single job)
 	)
 
-	// Title doesn't match, LLM says NONE, single job → no match found
-	if matchedIssue != 0 {
-		t.Errorf("expected no match (different failure), got issue #%d", matchedIssue)
+	// Same-job prefix match should find issue #1501
+	if matchedIssue != 1501 {
+		t.Errorf("expected same-job match on issue #1501, got #%d", matchedIssue)
 	}
 
-	// The LLM matching agent should have been called (no exact title match)
-	if codeAgent.callCount != 1 {
-		t.Errorf("expected 1 agent call for LLM matching, got %d", codeAgent.callCount)
-	}
-
-	// Verify the prompt contains the analysis and existing issues
-	if len(codeAgent.prompts) != 1 {
-		t.Fatalf("expected 1 prompt, got %d", len(codeAgent.prompts))
-	}
-	prompt := codeAgent.prompts[0]
-	if !strings.Contains(prompt, "periodic-knmstate-e2e-handler-k8s-latest") {
-		t.Error("expected prompt to contain job name")
-	}
-	if !strings.Contains(prompt, "CRI-O mirror returned HTTP 404") {
-		t.Error("expected prompt to contain analysis")
-	}
-	if !strings.Contains(prompt, "Issue #1501") {
-		t.Error("expected prompt to contain existing issue")
-	}
-
-	// Now verify a new issue would be created with the failure signature in the title
-	issueNum, err := gh.CreateIssue(context.Background(), "owner", "repo", title, "analysis body", []string{"ci-flake"})
-	if err != nil {
-		t.Fatalf("unexpected error creating issue: %v", err)
-	}
-	if issueNum == 0 {
-		t.Error("expected issue to be created")
-	}
-	if gh.createdIssues[0].Title != title {
-		t.Errorf("expected title %q, got %q", title, gh.createdIssues[0].Title)
+	// LLM should NOT have been called (same-job match is pre-LLM)
+	if codeAgent.callCount != 0 {
+		t.Errorf("expected 0 agent calls (same-job match), got %d", codeAgent.callCount)
 	}
 }
 
@@ -5518,7 +5490,8 @@ func TestTriageDedup_SameJobCycleIssue_MatchesBeforeLLM(t *testing.T) {
 }
 
 func TestTriageDedup_SameFailureSameJob_MatchesExistingIssue(t *testing.T) {
-	// Same failure from the same job should match the existing issue via LLM.
+	// Same failure from the same job should match the existing issue via
+	// same-job prefix match (no LLM needed).
 	gh := &mockGitHubClient{
 		searchResults: []Issue{
 			{Number: 42, Title: "CI Failure: periodic-e2e-test / DNS resolution failure",
@@ -5536,9 +5509,7 @@ func TestTriageDedup_SameFailureSameJob_MatchesExistingIssue(t *testing.T) {
 	}
 
 	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{
-			{result: AgentResult{Result: "MATCH 42"}}, // LLM says it matches
-		},
+		results: []mockCodeAgentCall{}, // Should NOT be called — same-job match fires first
 	}
 
 	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
@@ -5557,9 +5528,14 @@ func TestTriageDedup_SameFailureSameJob_MatchesExistingIssue(t *testing.T) {
 		nil, // no concurrent failures (single job)
 	)
 
-	// LLM says MATCH 42 → should match
+	// Same-job prefix match → should match issue #42
 	if matchedIssue != 42 {
 		t.Errorf("expected match on issue #42, got #%d", matchedIssue)
+	}
+
+	// LLM should NOT have been called
+	if codeAgent.callCount != 0 {
+		t.Errorf("expected 0 agent calls (same-job match), got %d", codeAgent.callCount)
 	}
 }
 
@@ -5608,6 +5584,228 @@ func TestTriageDedup_ExactTitleMatch_SkipsLLM(t *testing.T) {
 	// LLM should NOT have been called
 	if codeAgent.callCount != 0 {
 		t.Errorf("expected 0 agent calls (exact title match), got %d", codeAgent.callCount)
+	}
+}
+
+func TestTriageDedup_SameJobDifferentSignature_MatchesAcrossDays(t *testing.T) {
+	// When the same CI job fails on consecutive days, the failure signature
+	// (LLM summary) may differ between runs. The same-job match should find
+	// the existing issue by job name prefix without invoking the LLM.
+	// This is the cross-day dedup scenario from issue #257.
+	gh := &mockGitHubClient{
+		searchResults: []Issue{
+			{Number: 2835, Title: "CI Failure: kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml / DHCP timeout in pod network",
+				Body: "Periodic CI job failed. DHCP timeout during pod network setup."},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+	}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{}, // Should NOT be called — same-job match fires first
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+
+	// Next day: same job, different failure signature from LLM
+	title := "CI Failure: kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml / IPAM controller pod CrashLoopBackOff"
+	analysis := "## Summary\nIPAM controller pod CrashLoopBackOff\n\n## Root Cause\nMemory limit exceeded"
+
+	matchedIssue := a.matchExistingTriageIssue(context.Background(),
+		"kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml",
+		title,
+		analysis,
+		gh.searchResults,
+		"/tmp/worktree",
+		nil, // no cycle issues (different triage cycle)
+		nil, // no concurrent failures (single job)
+	)
+
+	// Should match issue #2835 via same-job prefix match
+	if matchedIssue != 2835 {
+		t.Errorf("expected same-job match on issue #2835, got #%d", matchedIssue)
+	}
+
+	// LLM should NOT have been called (same-job match is pre-LLM)
+	if codeAgent.callCount != 0 {
+		t.Errorf("expected 0 agent calls (same-job match), got %d", codeAgent.callCount)
+	}
+}
+
+func TestTriageDedup_SameJobNoSignature_MatchesAcrossDays(t *testing.T) {
+	// Existing issue has no failure signature suffix. Same-job match
+	// should still find it.
+	gh := &mockGitHubClient{
+		searchResults: []Issue{
+			{Number: 100, Title: "CI Failure: owner/repo/ci.yml",
+				Body: "Periodic CI job failed."},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+	}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+
+	title := "CI Failure: owner/repo/ci.yml / New failure signature"
+	analysis := "## Summary\nNew failure"
+
+	matchedIssue := a.matchExistingTriageIssue(context.Background(),
+		"owner/repo/ci.yml",
+		title,
+		analysis,
+		gh.searchResults,
+		"/tmp/worktree",
+		nil, nil,
+	)
+
+	if matchedIssue != 100 {
+		t.Errorf("expected same-job match on issue #100, got #%d", matchedIssue)
+	}
+	if codeAgent.callCount != 0 {
+		t.Errorf("expected 0 agent calls, got %d", codeAgent.callCount)
+	}
+}
+
+func TestTriageDedup_DifferentJob_DoesNotSameJobMatch(t *testing.T) {
+	// Issues from a DIFFERENT job should NOT be matched by same-job match.
+	// They should fall through to LLM matching.
+	gh := &mockGitHubClient{
+		searchResults: []Issue{
+			{Number: 200, Title: "CI Failure: owner/repo/e2e.yml / DNS timeout",
+				Body: "Periodic CI job failed. DNS timeout."},
+		},
+	}
+	runner := &mockCommandRunner{}
+	wtm := &mockWorktreeManager{}
+	state := NewState()
+	cfg := Config{
+		Owner:             "owner",
+		Repo:              "repo",
+		FlakyLabel:        "ci-flake",
+		CreateFlakyIssues: true,
+	}
+
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "NONE"}}, // LLM says no match
+		},
+	}
+
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+
+	// Different job name
+	title := "CI Failure: owner/repo/ci.yml / Compile error"
+	analysis := "## Summary\nCompile error"
+
+	matchedIssue := a.matchExistingTriageIssue(context.Background(),
+		"owner/repo/ci.yml",
+		title,
+		analysis,
+		gh.searchResults,
+		"/tmp/worktree",
+		nil, nil,
+	)
+
+	// Should NOT match — different job
+	if matchedIssue != 0 {
+		t.Errorf("expected no match (different job), got #%d", matchedIssue)
+	}
+
+	// LLM should have been called (same-job match didn't fire)
+	if codeAgent.callCount != 1 {
+		t.Errorf("expected 1 agent call (LLM matching), got %d", codeAgent.callCount)
+	}
+}
+
+func TestFindSameJobIssue(t *testing.T) {
+	tests := []struct {
+		name   string
+		job    string
+		issues []Issue
+		want   int
+	}{
+		{
+			name:   "no issues",
+			job:    "owner/repo/ci.yml",
+			issues: nil,
+			want:   0,
+		},
+		{
+			name: "matches with signature",
+			job:  "owner/repo/ci.yml",
+			issues: []Issue{
+				{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Some error"},
+			},
+			want: 10,
+		},
+		{
+			name: "matches without signature",
+			job:  "owner/repo/ci.yml",
+			issues: []Issue{
+				{Number: 11, Title: "CI Failure: owner/repo/ci.yml"},
+			},
+			want: 11,
+		},
+		{
+			name: "no match different job",
+			job:  "owner/repo/ci.yml",
+			issues: []Issue{
+				{Number: 12, Title: "CI Failure: owner/repo/e2e.yml / Timeout"},
+			},
+			want: 0,
+		},
+		{
+			name: "no match job name is prefix of another",
+			job:  "owner/repo/ci.yml",
+			issues: []Issue{
+				{Number: 13, Title: "CI Failure: owner/repo/ci.yml-extended / Error"},
+			},
+			want: 0,
+		},
+		{
+			name: "returns first match",
+			job:  "owner/repo/ci.yml",
+			issues: []Issue{
+				{Number: 14, Title: "CI Failure: owner/repo/ci.yml / Error A"},
+				{Number: 15, Title: "CI Failure: owner/repo/ci.yml / Error B"},
+			},
+			want: 14,
+		},
+		{
+			name: "ignores non-CI-Failure titles",
+			job:  "owner/repo/ci.yml",
+			issues: []Issue{
+				{Number: 16, Title: "Flaky CI: owner/repo/ci.yml / Intermittent test"},
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findSameJobIssue(tt.job, tt.issues)
+			if got != tt.want {
+				t.Errorf("findSameJobIssue(%q, ...) = %d, want %d", tt.job, got, tt.want)
+			}
+		})
 	}
 }
 
