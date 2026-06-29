@@ -194,7 +194,7 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 	a.runner.Run(ctx, worktreePath, "git", "checkout", a.defaultBranch()) //nolint:errcheck // best-effort
 
 	// Build the triage prompt
-	prompt := buildPeriodicCITriagePrompt(ciSource.JobName(), run.ID, buildLog, a.cfg.Owner, a.cfg.Repo)
+	prompt := buildPeriodicCITriagePrompt(ciSource.JobName(), run.ID, buildLog, a.cfg.Owner, a.cfg.Repo, run.Event, run.HeadBranch, run.DisplayTitle)
 
 	// Run agent in the worktree
 	a.logger.Info("running agent for CI triage", "job", ciSource.JobName(), "runID", run.ID)

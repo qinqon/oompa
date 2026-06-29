@@ -718,11 +718,14 @@ func (g *GitHubActionsJobSource) ListRecentRuns(ctx context.Context, limit int) 
 		}
 
 		jobRuns = append(jobRuns, JobRun{
-			ID:        fmt.Sprintf("%d", run.ID),
-			JobName:   g.jobName,
-			Status:    status,
-			Timestamp: run.CreatedAt,
-			LogURL:    run.HTMLURL,
+			ID:           fmt.Sprintf("%d", run.ID),
+			JobName:      g.jobName,
+			Status:       status,
+			Timestamp:    run.CreatedAt,
+			LogURL:       run.HTMLURL,
+			Event:        run.Event,
+			HeadBranch:   run.HeadBranch,
+			DisplayTitle: run.DisplayTitle,
 		})
 	}
 
@@ -777,11 +780,14 @@ func (g *GitHubActionsJobSource) listRecentRunsLaneLevel(ctx context.Context, li
 			g.matchedJobs[laneRunID] = job.ID
 
 			jobRuns = append(jobRuns, JobRun{
-				ID:        laneRunID,
-				JobName:   laneName,
-				Status:    "failure",
-				Timestamp: run.CreatedAt,
-				LogURL:    run.HTMLURL,
+				ID:           laneRunID,
+				JobName:      laneName,
+				Status:       "failure",
+				Timestamp:    run.CreatedAt,
+				LogURL:       run.HTMLURL,
+				Event:        run.Event,
+				HeadBranch:   run.HeadBranch,
+				DisplayTitle: run.DisplayTitle,
 			})
 		}
 
