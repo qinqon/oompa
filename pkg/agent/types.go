@@ -89,20 +89,26 @@ type CheckRun struct {
 
 // JobRun represents a CI job run (periodic or triggered).
 type JobRun struct {
-	ID        string    // build ID or run number
-	JobName   string    // human-readable job name
-	Status    string    // success, failure, pending
-	Timestamp time.Time // when the run started
-	LogURL    string    // URL to view logs
+	ID           string    // build ID or run number
+	JobName      string    // human-readable job name
+	Status       string    // success, failure, pending
+	Timestamp    time.Time // when the run started
+	LogURL       string    // URL to view logs
+	Event        string    // trigger event (e.g. "push", "pull_request", "schedule")
+	HeadBranch   string    // branch that triggered the run
+	DisplayTitle string    // human-readable title (e.g. PR title)
 }
 
 // WorkflowRun represents a GitHub Actions workflow run.
 type WorkflowRun struct {
-	ID         int64
-	Status     string // queued, in_progress, completed
-	Conclusion string // success, failure, cancelled, skipped, timed_out, action_required, neutral
-	CreatedAt  time.Time
-	HTMLURL    string
+	ID           int64
+	Status       string // queued, in_progress, completed
+	Conclusion   string // success, failure, cancelled, skipped, timed_out, action_required, neutral
+	CreatedAt    time.Time
+	HTMLURL      string
+	Event        string // e.g. "push", "pull_request", "schedule"
+	HeadBranch   string // branch that triggered the run
+	DisplayTitle string // human-readable title (e.g. PR title)
 }
 
 // WorkflowJob represents a GitHub Actions workflow job.

@@ -642,11 +642,14 @@ func (g *GoGitHubClient) ListWorkflowRuns(ctx context.Context, owner, repo, work
 
 		for _, run := range runs.WorkflowRuns {
 			workflowRuns = append(workflowRuns, WorkflowRun{
-				ID:         run.GetID(),
-				Status:     run.GetStatus(),
-				Conclusion: run.GetConclusion(),
-				CreatedAt:  run.GetCreatedAt().Time,
-				HTMLURL:    run.GetHTMLURL(),
+				ID:           run.GetID(),
+				Status:       run.GetStatus(),
+				Conclusion:   run.GetConclusion(),
+				CreatedAt:    run.GetCreatedAt().Time,
+				HTMLURL:      run.GetHTMLURL(),
+				Event:        run.GetEvent(),
+				HeadBranch:   run.GetHeadBranch(),
+				DisplayTitle: run.GetDisplayTitle(),
 			})
 		}
 

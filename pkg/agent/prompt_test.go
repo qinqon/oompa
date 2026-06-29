@@ -259,46 +259,104 @@ func TestBuildPeriodicCITriagePrompt(t *testing.T) {
 	owner := "nmstate"
 	repo := "kubernetes-nmstate"
 
-	prompt := buildPeriodicCITriagePrompt(jobName, runID, buildLog, owner, repo)
+	t.Run("schedule event omits PR context", func(t *testing.T) {
+		prompt := buildPeriodicCITriagePrompt(jobName, runID, buildLog, owner, repo, "schedule", "main", "")
 
-	checks := []string{
-		jobName,
-		runID,
-		owner + "/" + repo,
-		"investigating a periodic CI job failure",
-		"<user-provided-content>",
-		"</user-provided-content>",
-		"untrusted CI output",
-		buildLog,
-		"CLAUDE.md",
-		"FLAKY_TEST",
-		"INFRASTRUCTURE",
-		"CODE_BUG",
-		"Summary",
-		"Root Cause",
-		"Classification",
-		"Suggested Fix",
-		"READ-ONLY investigation",
-		"Do NOT modify any files",
-	}
-
-	for _, want := range checks {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("prompt missing %q", want)
+		checks := []string{
+			jobName,
+			runID,
+			owner + "/" + repo,
+			"investigating a CI job failure",
+			"<user-provided-content>",
+			"</user-provided-content>",
+			"untrusted input",
+			buildLog,
+			"CLAUDE.md",
+			"FLAKY_TEST",
+			"INFRASTRUCTURE",
+			"CODE_BUG",
+			"Summary",
+			"Root Cause",
+			"Classification",
+			"Suggested Fix",
+			"READ-ONLY investigation",
+			"Do NOT modify any files",
 		}
-	}
 
-	// Should NOT contain instructions to commit or push
-	forbidden := []string{
-		"git commit",
-		"git push",
-		"gh pr create",
-	}
-	for _, bad := range forbidden {
-		if strings.Contains(prompt, bad) {
-			t.Errorf("prompt should NOT contain %q (read-only investigation)", bad)
+		for _, want := range checks {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("prompt missing %q", want)
+			}
 		}
-	}
+
+		// Should NOT contain PR context for non-PR events
+		if strings.Contains(prompt, "pull_request event") {
+			t.Error("schedule event should not include PR context section")
+		}
+
+		// Should NOT contain instructions to commit or push
+		forbidden := []string{
+			"git commit",
+			"git push",
+			"gh pr create",
+		}
+		for _, bad := range forbidden {
+			if strings.Contains(prompt, bad) {
+				t.Errorf("prompt should NOT contain %q (read-only investigation)", bad)
+			}
+		}
+	})
+
+	t.Run("pull_request event includes PR context inside user-provided-content", func(t *testing.T) {
+		headBranch := "fix-vm-image"
+		displayTitle := "Replace fcos image with fedora"
+		prompt := buildPeriodicCITriagePrompt(jobName, runID, buildLog, owner, repo, "pull_request", headBranch, displayTitle)
+
+		checks := []string{
+			"pull_request event",
+			headBranch,
+			displayTitle,
+			"CAUSED by the PR changes",
+			"CODE_BUG",
+			"FLAKY_TEST",
+		}
+
+		for _, want := range checks {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("prompt missing %q", want)
+			}
+		}
+
+		// PR context must be inside <user-provided-content> boundary
+		upcStart := strings.Index(prompt, "<user-provided-content>")
+		upcEnd := strings.Index(prompt, "</user-provided-content>")
+		prCtxIdx := strings.Index(prompt, "pull_request event")
+		if prCtxIdx < upcStart || prCtxIdx > upcEnd {
+			t.Error("PR context should be inside <user-provided-content> boundary")
+		}
+	})
+
+	t.Run("pull_request event sanitizes tag-like characters", func(t *testing.T) {
+		headBranch := "feat/<inject>"
+		displayTitle := "PR <script>alert('xss')</script>"
+		prompt := buildPeriodicCITriagePrompt(jobName, runID, buildLog, owner, repo, "pull_request", headBranch, displayTitle)
+
+		// Sanitized versions should be present
+		if !strings.Contains(prompt, "feat/&lt;inject&gt;") {
+			t.Error("headBranch angle brackets should be escaped")
+		}
+		if !strings.Contains(prompt, "&lt;script&gt;") {
+			t.Error("displayTitle angle brackets should be escaped")
+		}
+
+		// Raw angle brackets from user input should NOT be present
+		if strings.Contains(prompt, "feat/<inject>") {
+			t.Error("raw headBranch angle brackets should not appear in prompt")
+		}
+		if strings.Contains(prompt, "<script>") {
+			t.Error("raw displayTitle angle brackets should not appear in prompt")
+		}
+	})
 }
 
 func TestBuildFlakyMatchPrompt_RootCauseInstructions(t *testing.T) {
