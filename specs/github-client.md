@@ -44,17 +44,20 @@ type GitHubClient interface {
 from opening duplicate PRs (issue #264), so both must see the *complete*
 picture, not just the first API page:
 
-- `ListPRsByHead` cannot trust GitHub's `head` filter: it is silently ignored
-  when the fork repo has a different name than the base repo, in which case
-  the response is the repo's entire PR list. Results are therefore always
-  verified client-side (`head.ref == branch`) and queried per state,
-  sorted `created`/`desc`:
+- `ListPRsByHead` cannot trust GitHub's `head` filter, which misbehaves in two
+  distinct ways: the `owner:branch` form matches nothing when the fork repo
+  has a different name than the base repo (hence the bare-`branch` fallback),
+  and the bare form may be ignored entirely (e.g. when the branch cannot be
+  resolved on the upstream repo), returning the repo's unfiltered PR list.
+  Results are therefore always verified client-side (`head.ref == branch`)
+  and queried per state, sorted `updated`/`desc`:
   - `state=open`: paginated fully (`PerPage: 100`) — the open set is small on
-    any repo.
-  - `state=closed`: paginated up to `maxClosedPRPages` (5) pages — enough to
-    spot a recently merged or rejected fix PR without walking thousands of
+    any repo. A match here short-circuits the closed scan, because an open PR
+    already decides the caller's outcome.
+  - `state=closed`: paginated up to `maxClosedPRPages` (5) pages — sorting by
+    most recent update keeps recently merged or rejected fix PRs inside the
+    window regardless of when they were created, without walking thousands of
     historical PRs on every poll.
-  - Open PRs are returned before closed ones.
   - `Merged` is derived from `merged_at != nil` because the *list* endpoint
     never populates the `merged` boolean (only the *get* endpoint does).
 - `HasLinkedPR` paginates the issue timeline fully (`PerPage: 100`). Every

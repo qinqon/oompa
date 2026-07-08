@@ -276,9 +276,11 @@ func TestRemoveLabel(t *testing.T) {
 }
 
 func TestListPRsByHead(t *testing.T) {
+	var closedRequests int
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("state") != "open" {
+			closedRequests++
 			_ = json.NewEncoder(w).Encode([]*github.PullRequest{})
 			return
 		}
@@ -306,6 +308,9 @@ func TestListPRsByHead(t *testing.T) {
 	}
 	if prs[0].Head != "ai/issue-42" {
 		t.Errorf("expected head 'ai/issue-42', got %q", prs[0].Head)
+	}
+	if closedRequests != 0 {
+		t.Errorf("open match should short-circuit the closed scan, got %d closed requests", closedRequests)
 	}
 }
 
@@ -414,6 +419,14 @@ func TestListPRsByHead_CapsClosedPRScan(t *testing.T) {
 		if q.Get("state") != "closed" {
 			_ = json.NewEncoder(w).Encode([]*github.PullRequest{})
 			return
+		}
+		// Recently merged PRs must sort near the front even when created long
+		// ago, or the page cap would hide them.
+		if got := q.Get("sort"); got != "updated" {
+			t.Errorf("expected sort=updated, got %q", got)
+		}
+		if got := q.Get("direction"); got != "desc" {
+			t.Errorf("expected direction=desc, got %q", got)
 		}
 		closedRequests++
 		// Endless pages of non-matching closed PRs

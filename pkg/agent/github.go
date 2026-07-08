@@ -216,10 +216,10 @@ func (g *GoGitHubClient) RemoveLabel(ctx context.Context, owner, repo string, is
 }
 
 // maxClosedPRPages bounds the scan of closed PRs in listPRsByHead. When
-// GitHub ignores the head filter (fork repo named differently than the base
-// repo) the closed list is the repo's entire PR history, newest first. Five
-// pages of 100 are enough to spot a recently merged or rejected fix PR
-// without walking thousands of historical PRs on every poll.
+// GitHub ignores the head filter the closed list is the repo's entire PR
+// history, most recently updated first. Five pages of 100 are enough to spot
+// a recently merged or rejected fix PR without walking thousands of
+// historical PRs on every poll.
 const maxClosedPRPages = 5
 
 func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, headOwner, branch string) ([]PR, error) {
@@ -242,30 +242,32 @@ func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, headOwn
 	return g.listPRsByHead(ctx, owner, repo, branch, branch)
 }
 
-// listPRsByHead returns PRs whose head ref is exactly branch, open PRs first.
-// Because the head filter may be silently ignored by GitHub (see
-// ListPRsByHead), every state is paginated and verified client-side:
-// open PRs are scanned fully (the open set is small on any repo), closed
-// PRs only through the newest maxClosedPRPages pages.
+// listPRsByHead returns PRs whose head ref is exactly branch. Because the
+// head filter may be silently ignored by GitHub (see ListPRsByHead), results
+// are paginated and verified client-side. Open PRs are scanned fully (the
+// open set is small on any repo) and short-circuit the closed scan — an open
+// match already decides the caller's outcome. Closed PRs are scanned most
+// recently updated first, through at most maxClosedPRPages pages, which keeps
+// recently merged or rejected fix PRs visible regardless of creation date.
 func (g *GoGitHubClient) listPRsByHead(ctx context.Context, owner, repo, head, branch string) ([]PR, error) {
 	openPRs, err := g.listPRsByHeadState(ctx, owner, repo, head, branch, "open", 0)
 	if err != nil {
 		return nil, err
 	}
-	closedPRs, err := g.listPRsByHeadState(ctx, owner, repo, head, branch, "closed", maxClosedPRPages)
-	if err != nil {
-		return nil, err
+	if len(openPRs) > 0 {
+		return openPRs, nil
 	}
-	return append(openPRs, closedPRs...), nil
+	return g.listPRsByHeadState(ctx, owner, repo, head, branch, "closed", maxClosedPRPages)
 }
 
 // listPRsByHeadState lists PRs in the given state whose head ref is exactly
-// branch, paginated newest first. maxPages == 0 means no page limit.
+// branch, paginated most recently updated first. maxPages == 0 means no page
+// limit.
 func (g *GoGitHubClient) listPRsByHeadState(ctx context.Context, owner, repo, head, branch, state string, maxPages int) ([]PR, error) {
 	opts := &github.PullRequestListOptions{
 		Head:      head,
 		State:     state,
-		Sort:      "created",
+		Sort:      "updated",
 		Direction: "desc",
 		ListOptions: github.ListOptions{
 			PerPage: 100,
