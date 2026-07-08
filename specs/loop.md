@@ -31,6 +31,10 @@ When `--watch-prs` is set, `BootstrapWatchedPRs` runs instead of `ProcessNewIssu
 
 ### ProcessNewIssues behavior
 - Skips issues already in state (unless `prNumber == 0` and status is `implementing`, in which case it re-checks for the PR)
+- Duplicate-PR guards, evaluated before any work starts:
+  - `ListPRsByHead` on the `ai/issue-N` branch: an open PR is tracked as `pr-open` and skipped; a merged PR is skipped for good; a closed unmerged PR falls through to allow a retry
+  - `HasLinkedPR`: skips the issue when any open PR (e.g. human-created) cross-references it
+  - Both guards **fail closed**: on GitHub API error the issue is deferred to the next poll cycle (see specs/error-handling.md), never processed blindly
 - Cleans up stale worktrees/branches before creating new ones
 - After Claude finishes, the agent pushes the branch and creates the PR (Claude does NOT push or create PRs)
 
@@ -57,6 +61,10 @@ All interfaces mocked:
 - `TestProcessReviewComments_NoNewComments` -- no action taken
 - `TestProcessReviewComments_AddressesHumanComments` -- runs agent call, updates lastCommentID, verifies no agent-posted replies (skill owns replies)
 - `TestProcessNewIssues_RechecksForPR` -- re-checks for PR when prNumber is 0
+- `TestProcessNewIssues_SkipsLinkedPR` -- issue with an open cross-referenced PR is not processed
+- `TestProcessNewIssues_DefersOnListPRsError` -- ListPRsByHead failure defers the issue (no Claude run, no PR)
+- `TestProcessNewIssues_DefersOnLinkedPRCheckError` -- HasLinkedPR failure defers the issue (no Claude run, no PR)
+- `TestProcessNewIssues_SkipsMergedPR` -- issue whose fix PR was merged is not re-processed
 - `TestProcessReviewComments_SkipsNonWhitelistedUsers` -- skips comments from users not in whitelist
 - `TestProcessReviewComments_AllowsAllWhenWhitelistEmpty` -- allows all when whitelist is empty
 - `TestCleanupDone_MergedPR` -- removes worktree, deletes from state

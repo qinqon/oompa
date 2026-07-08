@@ -215,6 +215,13 @@ func (g *GoGitHubClient) RemoveLabel(ctx context.Context, owner, repo string, is
 	return nil
 }
 
+// maxClosedPRPages bounds the scan of closed PRs in listPRsByHead. When
+// GitHub ignores the head filter the closed list is the repo's entire PR
+// history, most recently updated first. Five pages of 100 are enough to spot
+// a recently merged or rejected fix PR without walking thousands of
+// historical PRs on every poll.
+const maxClosedPRPages = 5
+
 func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, headOwner, branch string) ([]PR, error) {
 	head := branch
 	if headOwner != "" {
@@ -235,31 +242,64 @@ func (g *GoGitHubClient) ListPRsByHead(ctx context.Context, owner, repo, headOwn
 	return g.listPRsByHead(ctx, owner, repo, branch, branch)
 }
 
+// listPRsByHead returns PRs whose head ref is exactly branch. Because the
+// head filter may be silently ignored by GitHub (see ListPRsByHead), results
+// are paginated and verified client-side. Open PRs are scanned fully (the
+// open set is small on any repo) and short-circuit the closed scan — an open
+// match already decides the caller's outcome. Closed PRs are scanned most
+// recently updated first, through at most maxClosedPRPages pages, which keeps
+// recently merged or rejected fix PRs visible regardless of creation date.
 func (g *GoGitHubClient) listPRsByHead(ctx context.Context, owner, repo, head, branch string) ([]PR, error) {
-	opts := &github.PullRequestListOptions{
-		Head:  head,
-		State: "all",
-	}
-
-	ghPRs, _, err := g.client.PullRequests.List(ctx, owner, repo, opts)
+	openPRs, err := g.listPRsByHeadState(ctx, owner, repo, head, branch, "open", 0)
 	if err != nil {
-		return nil, fmt.Errorf("listing PRs: %w", err)
+		return nil, err
+	}
+	if len(openPRs) > 0 {
+		return openPRs, nil
+	}
+	return g.listPRsByHeadState(ctx, owner, repo, head, branch, "closed", maxClosedPRPages)
+}
+
+// listPRsByHeadState lists PRs in the given state whose head ref is exactly
+// branch, paginated most recently updated first. maxPages == 0 means no page
+// limit.
+func (g *GoGitHubClient) listPRsByHeadState(ctx context.Context, owner, repo, head, branch, state string, maxPages int) ([]PR, error) {
+	opts := &github.PullRequestListOptions{
+		Head:      head,
+		State:     state,
+		Sort:      "updated",
+		Direction: "desc",
+		ListOptions: github.ListOptions{
+			PerPage: 100,
+		},
 	}
 
 	var prs []PR
-	for _, p := range ghPRs {
-		// Verify the head ref actually matches — the GitHub API may ignore
-		// the head filter when the branch doesn't exist on the upstream repo
-		if p.GetHead().GetRef() != branch {
-			continue
+	for page := 1; ; page++ {
+		ghPRs, resp, err := g.client.PullRequests.List(ctx, owner, repo, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing %s PRs: %w", state, err)
 		}
-		prs = append(prs, PR{
-			Number: p.GetNumber(),
-			Title:  p.GetTitle(),
-			State:  p.GetState(),
-			Merged: p.GetMerged(),
-			Head:   p.GetHead().GetRef(),
-		})
+		for _, p := range ghPRs {
+			// Verify the head ref actually matches — the GitHub API may ignore
+			// the head filter when the branch doesn't exist on the upstream repo
+			if p.GetHead().GetRef() != branch {
+				continue
+			}
+			prs = append(prs, PR{
+				Number: p.GetNumber(),
+				Title:  p.GetTitle(),
+				State:  p.GetState(),
+				// The list endpoint never populates the merged boolean,
+				// only merged_at — derive Merged from it.
+				Merged: p.GetMerged() || p.MergedAt != nil,
+				Head:   p.GetHead().GetRef(),
+			})
+		}
+		if resp.NextPage == 0 || (maxPages > 0 && page >= maxPages) {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 	return prs, nil
 }
@@ -479,25 +519,35 @@ func (g *GoGitHubClient) CreatePR(ctx context.Context, owner, repo, title, body,
 }
 
 func (g *GoGitHubClient) HasLinkedPR(ctx context.Context, owner, repo string, issueNumber int) (bool, error) {
-	events, _, err := g.client.Issues.ListIssueTimeline(ctx, owner, repo, issueNumber, nil)
-	if err != nil {
-		return false, fmt.Errorf("listing issue timeline: %w", err)
-	}
+	// Every label, assignment, comment and rename is a timeline event, so
+	// cross-references easily land beyond the first page on active issues —
+	// paginate through all of them.
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		events, resp, err := g.client.Issues.ListIssueTimeline(ctx, owner, repo, issueNumber, opts)
+		if err != nil {
+			return false, fmt.Errorf("listing issue timeline: %w", err)
+		}
 
-	for _, e := range events {
-		if e.GetEvent() != "cross-referenced" {
-			continue
+		for _, e := range events {
+			if e.GetEvent() != "cross-referenced" {
+				continue
+			}
+			src := e.GetSource()
+			if src == nil || src.GetIssue() == nil {
+				continue
+			}
+			// GitHub's timeline returns PRs as issues with a PullRequestLinks field
+			if src.GetIssue().IsPullRequest() && src.GetIssue().GetState() == "open" {
+				return true, nil
+			}
 		}
-		src := e.GetSource()
-		if src == nil || src.GetIssue() == nil {
-			continue
+
+		if resp.NextPage == 0 {
+			return false, nil
 		}
-		// GitHub's timeline returns PRs as issues with a PullRequestLinks field
-		if src.GetIssue().IsPullRequest() && src.GetIssue().GetState() == "open" {
-			return true, nil
-		}
+		opts.Page = resp.NextPage
 	}
-	return false, nil
 }
 
 func (g *GoGitHubClient) GetPR(ctx context.Context, owner, repo string, prNumber int) (PR, error) {

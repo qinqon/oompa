@@ -66,9 +66,15 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 
 		branchName := issueBranchName(issue.Number)
 
-		// Check if a PR already exists for this issue (open, closed, or merged)
+		// Check if a PR already exists for this issue (open, closed, or merged).
+		// Fail closed on error: without PR visibility we risk opening a
+		// duplicate — defer the issue to the next poll cycle instead.
 		prs, err := a.gh.ListPRsByHead(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.GitHubHeadOwner, branchName)
-		if err == nil && len(prs) > 0 {
+		if err != nil {
+			a.logger.Warn("failed to list PRs for issue, deferring to next poll", "issue", issue.Number, "error", err)
+			continue
+		}
+		if len(prs) > 0 {
 			// Find the first open PR, or check if any was merged
 			openPR, hasMerged := classifyPRs(prs)
 			if openPR != nil {
@@ -90,9 +96,12 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			// PR was closed (rejected) — fall through to allow retry
 		}
 
-		// Check if any open PR already references this issue (e.g., created by a human)
+		// Check if any open PR already references this issue (e.g., created by
+		// a human). Fail closed on error: defer to the next poll cycle rather
+		// than risk creating a duplicate PR.
 		if linked, err := a.gh.HasLinkedPR(ctx, a.cfg.Owner, a.cfg.Repo, issue.Number); err != nil {
-			a.logger.Warn("failed to check for linked PRs", "issue", issue.Number, "error", err)
+			a.logger.Warn("failed to check for linked PRs, deferring to next poll", "issue", issue.Number, "error", err)
+			continue
 		} else if linked {
 			a.logger.Info("skipping issue with existing linked PR", "issue", issue.Number)
 			continue
