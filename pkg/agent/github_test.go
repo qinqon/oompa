@@ -278,6 +278,10 @@ func TestRemoveLabel(t *testing.T) {
 func TestListPRsByHead(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != "open" {
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{})
+			return
+		}
 		prs := []*github.PullRequest{
 			{
 				Number: new(100),
@@ -302,6 +306,139 @@ func TestListPRsByHead(t *testing.T) {
 	}
 	if prs[0].Head != "ai/issue-42" {
 		t.Errorf("expected head 'ai/issue-42', got %q", prs[0].Head)
+	}
+}
+
+func TestListPRsByHead_PaginatesOpenPRs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if got := q.Get("per_page"); got != "100" {
+			t.Errorf("expected per_page=100, got %q", got)
+		}
+		if q.Get("state") != "open" {
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{})
+			return
+		}
+		if page := q.Get("page"); page == "" || page == "1" {
+			// Page 1: only non-matching PRs (simulates GitHub ignoring the head filter)
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			prs := []*github.PullRequest{
+				{
+					Number: new(1),
+					State:  new("open"),
+					Head:   &github.PullRequestBranch{Ref: new("some/other-branch")},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(prs)
+			return
+		}
+		// Page 2: the matching PR
+		prs := []*github.PullRequest{
+			{
+				Number: new(100),
+				State:  new("open"),
+				Head:   &github.PullRequestBranch{Ref: new("ai/issue-42")},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(prs)
+	})
+
+	gh := setupTestClient(t, mux)
+	prs, err := gh.ListPRsByHead(context.Background(), "owner", "repo", "qinqon", "ai/issue-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 PR found on page 2, got %d", len(prs))
+	}
+	if prs[0].Number != 100 {
+		t.Errorf("expected PR 100, got %d", prs[0].Number)
+	}
+}
+
+func TestListPRsByHead_FindsClosedPRAcrossPages(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("state") != "closed" {
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{})
+			return
+		}
+		if page := q.Get("page"); page == "" || page == "1" {
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			prs := []*github.PullRequest{
+				{
+					Number: new(1),
+					State:  new("closed"),
+					Head:   &github.PullRequestBranch{Ref: new("some/other-branch")},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(prs)
+			return
+		}
+		// Page 2: the matching merged PR. The list endpoint only exposes
+		// merged_at, never the merged boolean.
+		prs := []*github.PullRequest{
+			{
+				Number:   new(100),
+				State:    new("closed"),
+				MergedAt: &github.Timestamp{Time: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)},
+				Head:     &github.PullRequestBranch{Ref: new("ai/issue-42")},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(prs)
+	})
+
+	gh := setupTestClient(t, mux)
+	prs, err := gh.ListPRsByHead(context.Background(), "owner", "repo", "qinqon", "ai/issue-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 PR found on closed page 2, got %d", len(prs))
+	}
+	if prs[0].Number != 100 {
+		t.Errorf("expected PR 100, got %d", prs[0].Number)
+	}
+	if !prs[0].Merged {
+		t.Error("expected Merged=true derived from merged_at")
+	}
+}
+
+func TestListPRsByHead_CapsClosedPRScan(t *testing.T) {
+	var closedRequests int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/pulls", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("state") != "closed" {
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{})
+			return
+		}
+		closedRequests++
+		// Endless pages of non-matching closed PRs
+		w.Header().Set("Link", `<`+r.URL.Path+`?page=`+fmt.Sprint(closedRequests+1)+`>; rel="next"`)
+		prs := []*github.PullRequest{
+			{
+				Number: new(closedRequests),
+				State:  new("closed"),
+				Head:   &github.PullRequestBranch{Ref: new("some/other-branch")},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(prs)
+	})
+
+	gh := setupTestClient(t, mux)
+	// Empty headOwner: no fallback retry, so the closed scan runs exactly once.
+	prs, err := gh.ListPRsByHead(context.Background(), "owner", "repo", "", "ai/issue-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(prs) != 0 {
+		t.Fatalf("expected no matching PRs, got %d", len(prs))
+	}
+	if closedRequests != maxClosedPRPages {
+		t.Errorf("expected closed scan to stop at %d pages, got %d", maxClosedPRPages, closedRequests)
 	}
 }
 
@@ -383,6 +520,50 @@ func TestHasLinkedPR_NoLinkedPRs(t *testing.T) {
 	}
 	if linked {
 		t.Error("expected HasLinkedPR to return false when no linked PRs")
+	}
+}
+
+func TestHasLinkedPR_PaginatesTimeline(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/issues/42/timeline", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			t.Errorf("expected per_page=100, got %q", got)
+		}
+		if page := r.URL.Query().Get("page"); page == "" || page == "1" {
+			// Page 1: only non-PR activity (labels, comments, ...)
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			events := []map[string]any{
+				{"event": "labeled"},
+				{"event": "commented"},
+				{"event": "assigned"},
+			}
+			_ = json.NewEncoder(w).Encode(events)
+			return
+		}
+		// Page 2: the cross-referenced open PR
+		events := []map[string]any{
+			{
+				"event": "cross-referenced",
+				"source": map[string]any{
+					"type": "issue",
+					"issue": map[string]any{
+						"number":       99,
+						"state":        "open",
+						"pull_request": map[string]any{"url": "https://api.github.com/repos/owner/repo/pulls/99"},
+					},
+				},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(events)
+	})
+
+	gh := setupTestClient(t, mux)
+	linked, err := gh.HasLinkedPR(context.Background(), "owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !linked {
+		t.Error("expected HasLinkedPR to find the cross-referenced PR on page 2")
 	}
 }
 

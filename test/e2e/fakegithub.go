@@ -628,8 +628,21 @@ func (fg *FakeGitHub) handleListPRs(w http.ResponseWriter, r *http.Request) {
 	defer fg.mu.Unlock()
 
 	headFilter := r.URL.Query().Get("head")
+	stateFilter := r.URL.Query().Get("state")
 	var result []fakePRJSON
 	for _, pr := range fg.prs {
+		switch stateFilter {
+		case "", "all":
+			// no state filtering
+		case "open":
+			if pr.State != "open" {
+				continue
+			}
+		default: // "closed" (merged PRs are closed too)
+			if pr.State == "open" {
+				continue
+			}
+		}
 		if headFilter != "" {
 			// headFilter can be "owner:branch" or just "branch"
 			branchName := headFilter

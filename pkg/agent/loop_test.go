@@ -30,6 +30,9 @@ type mockGitHubClient struct {
 	prHeadSHAs      []string         // returns these in sequence; if empty returns "abc123"
 	prsAfterNCalls  int              // only return PRs after this many ListPRsByHead calls
 	prsCallCount    int
+	listPRsErr      error // error to return from ListPRsByHead
+	linkedPR        bool  // return value for HasLinkedPR
+	linkedPRErr     error // error to return from HasLinkedPR
 	mergeableState  string        // mergeable state to return from GetPRMergeable (default: "clean")
 	prBehind        bool          // whether IsPRBehind returns true
 	createdIssues   []Issue       // tracks issues created via CreateIssue
@@ -93,6 +96,9 @@ func (m *mockGitHubClient) RemoveLabel(_ context.Context, _, _ string, _ int, la
 
 func (m *mockGitHubClient) ListPRsByHead(_ context.Context, _, _, _, _ string) ([]PR, error) {
 	m.prsCallCount++
+	if m.listPRsErr != nil {
+		return nil, m.listPRsErr
+	}
 	if m.prsAfterNCalls > 0 && m.prsCallCount <= m.prsAfterNCalls {
 		return nil, nil
 	}
@@ -175,7 +181,10 @@ func (m *mockGitHubClient) CreatePR(_ context.Context, _, _, _, _, _, _ string) 
 }
 
 func (m *mockGitHubClient) HasLinkedPR(_ context.Context, _, _ string, _ int) (bool, error) {
-	return false, nil
+	if m.linkedPRErr != nil {
+		return false, m.linkedPRErr
+	}
+	return m.linkedPR, nil
 }
 
 func (m *mockGitHubClient) GetPR(_ context.Context, _, _ string, prNumber int) (PR, error) {
@@ -410,6 +419,97 @@ func TestProcessNewIssues_SkipsWhenPRExists(t *testing.T) {
 	}
 	if work.Status != "pr-open" {
 		t.Errorf("expected status 'pr-open', got %q", work.Status)
+	}
+}
+
+func TestProcessNewIssues_SkipsLinkedPR(t *testing.T) {
+	gh := &mockGitHubClient{
+		issues:   []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+		linkedPR: true, // an open PR (e.g. human-created) already references the issue
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.ProcessNewIssues(context.Background())
+
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke claude when a linked PR exists")
+	}
+	if len(wt.createdBranches) != 0 {
+		t.Error("should not create worktree when a linked PR exists")
+	}
+	if len(gh.addedComments) != 0 {
+		t.Errorf("should not comment on issue with linked PR, got %v", gh.addedComments)
+	}
+	if _, ok := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]; ok {
+		t.Error("issue with linked PR should not be tracked")
+	}
+}
+
+func TestProcessNewIssues_DefersOnListPRsError(t *testing.T) {
+	gh := &mockGitHubClient{
+		issues:     []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+		listPRsErr: &mockError{msg: "boom"},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.ProcessNewIssues(context.Background())
+
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke claude when PR listing fails")
+	}
+	if len(wt.createdBranches) != 0 {
+		t.Error("should not create worktree when PR listing fails")
+	}
+	if _, ok := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]; ok {
+		t.Error("deferred issue should not be tracked so the next poll retries it")
+	}
+}
+
+func TestProcessNewIssues_DefersOnLinkedPRCheckError(t *testing.T) {
+	gh := &mockGitHubClient{
+		issues:      []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+		linkedPRErr: &mockError{msg: "boom"},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.ProcessNewIssues(context.Background())
+
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke claude when linked PR check fails")
+	}
+	if len(wt.createdBranches) != 0 {
+		t.Error("should not create worktree when linked PR check fails")
+	}
+	if _, ok := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]; ok {
+		t.Error("deferred issue should not be tracked so the next poll retries it")
+	}
+}
+
+func TestProcessNewIssues_SkipsMergedPR(t *testing.T) {
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+		prs:    []PR{{Number: 100, State: "closed", Merged: true, Head: "ai/issue-42"}},
+	}
+	runner := &mockCommandRunner{}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.ProcessNewIssues(context.Background())
+
+	if len(runner.calls) != 0 {
+		t.Error("should not invoke claude when the fix PR was merged")
+	}
+	if len(wt.createdBranches) != 0 {
+		t.Error("should not create worktree when the fix PR was merged")
+	}
+	if _, ok := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]; ok {
+		t.Error("issue with merged PR should not be tracked")
 	}
 }
 
