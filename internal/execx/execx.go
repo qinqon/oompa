@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"sync"
@@ -123,9 +124,10 @@ func (r *ExecRunner) RunStreamWithStdin(ctx context.Context, workDir, stdin stri
 	// Always call Wait to release child process resources and avoid zombies.
 	waitErr := cmd.Wait()
 
-	// Prefer the scanner error if present -- it describes the read failure.
+	// Join both errors when present: the scanner error describes the read
+	// failure, the wait error preserves the process exit status.
 	if scanErr != nil {
-		return stdoutBuf.Bytes(), stderrBuf.Bytes(), scanErr
+		return stdoutBuf.Bytes(), stderrBuf.Bytes(), errors.Join(scanErr, waitErr)
 	}
 	return stdoutBuf.Bytes(), stderrBuf.Bytes(), waitErr
 }

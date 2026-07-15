@@ -86,8 +86,11 @@ func TestExecRunner_StreamHandlesLongLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v (stderr %q)", err, stderr)
 	}
-	if len(lines) != 1 || len(lines[0]) != 100000 {
-		t.Fatalf("expected one 100000-char line, got %d lines (first %d chars)", len(lines), len(lines[0]))
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly one streamed line, got %d", len(lines))
+	}
+	if len(lines[0]) != 100000 {
+		t.Fatalf("expected a 100000-char line, got %d chars", len(lines[0]))
 	}
 	if len(stdout) != 100001 { // line + newline
 		t.Errorf("stdout length = %d, want 100001", len(stdout))
