@@ -271,7 +271,7 @@ func TestBuildPeriodicCITriagePrompt(t *testing.T) {
 			"</user-provided-content>",
 			"untrusted input",
 			buildLog,
-			"CLAUDE.md",
+			"AGENTS.md",
 			"FLAKY_TEST",
 			"INFRASTRUCTURE",
 			"CODE_BUG",

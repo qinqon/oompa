@@ -46,8 +46,6 @@ pkg/agent/
   triage.go            -- ProcessTriageJobs, periodic CI investigation
   git_ops.go           -- git push, amend, squash, rebase helpers
   loop_test.go         -- integration tests with all interfaces mocked
-specs/
-  *.md                 -- design specifications for each component
 ```
 
 ## Main Loop

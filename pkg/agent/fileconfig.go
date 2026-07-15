@@ -121,7 +121,7 @@ func validateFileConfig(cfg *FileConfig) error {
 
 	if cfg.AgentModel != "" {
 		// agent-model is only valid with opencode. When agent is omitted in the
-		// file config, it defaults to the global config (typically claudecode),
+		// file config, it defaults to the global config (typically opencode),
 		// so we require agent to be explicitly set to opencode.
 		if cfg.Agent == "" {
 			return fmt.Errorf("agent-model requires agent to be explicitly set to opencode")

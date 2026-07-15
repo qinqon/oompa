@@ -36,7 +36,7 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 	flag.StringVar(&cfg.Label, "label", envOrDefault("OOMPA_LABEL", "good-for-ai"), "Issue label to watch")
 	flag.StringVar(&cfg.CloneDir, "clone-dir", envOrDefault("OOMPA_CLONE_DIR", "/tmp/oompa-work"), "Base directory for clones (owner/repo appended automatically)")
 	flag.DurationVar(&cfg.PollInterval, "poll-interval", parseDuration(envOrDefault("OOMPA_POLL_INTERVAL", "2m")), "Poll frequency")
-	flag.StringVar(&cfg.Agent, "agent", envOrDefault("OOMPA_AGENT", "claudecode"), "Coding agent backend: claudecode or opencode")
+	flag.StringVar(&cfg.Agent, "agent", envOrDefault("OOMPA_AGENT", "opencode"), "Coding agent backend: claudecode or opencode")
 	flag.StringVar(&cfg.AgentModel, "agent-model", envOrDefault("OOMPA_AGENT_MODEL", ""), "Model override for OpenCode (ignored for Claude Code)")
 	flag.StringVar(&cfg.LogLevel, "log-level", envOrDefault("OOMPA_LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 	flag.BoolVar(&cfg.DryRun, "dry-run", false, "Log what would be done without executing")
