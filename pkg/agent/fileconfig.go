@@ -121,12 +121,9 @@ func validateFileConfig(cfg *FileConfig) error {
 
 	if cfg.AgentModel != "" {
 		// agent-model is only valid with opencode. When agent is omitted in the
-		// file config, it defaults to the global config (typically opencode),
-		// so we require agent to be explicitly set to opencode.
-		if cfg.Agent == "" {
-			return fmt.Errorf("agent-model requires agent to be explicitly set to opencode")
-		}
-		if cfg.Agent != "opencode" {
+		// file config, it inherits the global config; the resolved combination
+		// is validated when the code agent is selected.
+		if cfg.Agent != "" && cfg.Agent != "opencode" {
 			return fmt.Errorf("agent-model can only be used with agent: opencode")
 		}
 	}
@@ -172,12 +169,11 @@ func validateFileConfig(cfg *FileConfig) error {
 			}
 		}
 
-		// Validate project-level agent-model: requires agent: opencode
+		// Validate project-level agent-model: incompatible with claudecode.
+		// When agent is omitted it inherits the global config; the resolved
+		// combination is validated when the code agent is selected.
 		if p.AgentModel != "" {
-			if cfg.Agent == "" {
-				return fmt.Errorf("project %d (%s): agent-model requires agent to be explicitly set to opencode at the global level", i, p.Repo)
-			}
-			if cfg.Agent != "opencode" {
+			if cfg.Agent != "" && cfg.Agent != "opencode" {
 				return fmt.Errorf("project %d (%s): agent-model can only be used with agent: opencode", i, p.Repo)
 			}
 		}

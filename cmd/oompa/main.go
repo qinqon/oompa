@@ -451,6 +451,10 @@ func setupAuth(cfg *agent.Config, logger *slog.Logger) (ghClient *agent.GoGitHub
 func selectCodeAgent(cfg agent.Config, logger *slog.Logger) agent.CodeAgent {
 	switch cfg.Agent {
 	case "claudecode":
+		if cfg.AgentModel != "" {
+			logger.Error("agent-model can only be used with agent: opencode", "model", cfg.AgentModel)
+			os.Exit(1)
+		}
 		return &agent.ClaudeCodeAgent{}
 	case "opencode":
 		return &agent.OpenCodeAgent{Model: cfg.AgentModel}

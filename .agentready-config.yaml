@@ -4,7 +4,7 @@
 excluded_attributes:
   # Go uses cmd/ + pkg/ layout, not src/ + tests/
   - standard_layout
-  # Go uses ADR-equivalent specs/ directory (see CLAUDE.md)
+  # Design invariants are documented in AGENTS.md; no separate ADR directory
   - architecture_decisions
   # Go compiler enforces import cycles; no additional lint rule needed
   - architectural_boundaries

@@ -212,7 +212,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		}
 
 		// Treat comment-only changes as a failed fix: no functional code changed,
-		// so opening a PR would waste reviewer time (see specs/error-handling.md).
+		// so opening a PR would waste reviewer time.
 		if a.isCommentOnlyDiff(ctx, task.worktreePath) {
 			a.logger.Warn("claude produced comment-only changes, treating as failed fix", "issue", task.issue.Number)
 			a.markIssueFailed(ctx, task.issue.Number, task.work)
