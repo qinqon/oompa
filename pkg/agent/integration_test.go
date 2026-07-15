@@ -788,10 +788,14 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 		t.Errorf("expected 3 CI fix attempts, got %d", agent.state.ActiveIssues[IssueKey("owner", "repo", 77)].CIFixAttempts)
 	}
 
-	// Fourth attempt — should be blocked, comment posted
+	// Fourth attempt — should be blocked, no agent call, no comment
 	runner.mu.Lock()
 	callsBefore := len(runner.calls)
 	runner.mu.Unlock()
+
+	gh.mu.Lock()
+	commentsBefore := len(gh.postedComments)
+	gh.mu.Unlock()
 
 	agent.ProcessCIFailures(ctx)
 
@@ -808,17 +812,14 @@ func TestIntegration_CIFailureFixAndRetryLimit(t *testing.T) {
 		t.Error("should not invoke claude after max retries")
 	}
 
+	// The max-retries guard skips silently (log-only); it must not post
+	// any comment on the blocked cycle.
 	gh.mu.Lock()
-	hasComment := false
-	for _, c := range gh.postedComments {
-		if strings.Contains(c, "3 fix attempts") {
-			hasComment = true
-		}
-	}
+	commentsAfter := len(gh.postedComments)
 	gh.mu.Unlock()
 
-	if hasComment {
-		t.Error("should not post comment about exhausted CI fix attempts")
+	if commentsAfter != commentsBefore {
+		t.Errorf("expected no new comments on the blocked cycle, got %d new", commentsAfter-commentsBefore)
 	}
 
 	// CI passes — verify no further action is taken
