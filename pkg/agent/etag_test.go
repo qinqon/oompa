@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -220,4 +222,78 @@ func TestCachingTransport_ConcurrentAccess(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestCachingTransport_EvictsLeastRecentlyUsed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"e-`+r.URL.Path+`"`)
+		_, _ = w.Write([]byte(`{"path":"` + r.URL.Path + `"}`))
+	}))
+	defer server.Close()
+
+	transport := NewCachingTransport(http.DefaultTransport)
+	client := &http.Client{Transport: transport}
+
+	get := func(path string) {
+		resp, err := client.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+
+	// Fill the cache to capacity, then touch the first entry to make it
+	// recently used, and insert one more to force an eviction.
+	for i := range maxCacheEntries {
+		get(fmt.Sprintf("/item-%d", i))
+	}
+	get("/item-0") // touch: /item-0 becomes most recently used
+	get("/one-more")
+
+	transport.mu.Lock()
+	size := len(transport.cache)
+	_, item0Alive := transport.cache[server.URL+"/item-0"]
+	_, item1Alive := transport.cache[server.URL+"/item-1"]
+	transport.mu.Unlock()
+
+	if size != maxCacheEntries {
+		t.Fatalf("expected cache bounded at %d entries, got %d", maxCacheEntries, size)
+	}
+	if !item0Alive {
+		t.Error("expected recently-touched /item-0 to survive eviction")
+	}
+	if item1Alive {
+		t.Error("expected least-recently-used /item-1 to be evicted")
+	}
+}
+
+func TestCachingTransport_OversizedBodyNotCached(t *testing.T) {
+	big := bytes.Repeat([]byte("x"), maxCachedBodyBytes+1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"big"`)
+		_, _ = w.Write(big)
+	}))
+	defer server.Close()
+
+	transport := NewCachingTransport(http.DefaultTransport)
+	client := &http.Client{Transport: transport}
+
+	resp, err := client.Get(server.URL + "/big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if len(body) != len(big) {
+		t.Fatalf("expected full %d-byte body passthrough, got %d", len(big), len(body))
+	}
+
+	transport.mu.Lock()
+	_, ok := transport.cache[server.URL+"/big"]
+	transport.mu.Unlock()
+	if ok {
+		t.Fatal("oversized body should not be cached")
+	}
 }
