@@ -257,6 +257,12 @@ func (m *mockWorktreeManager) RemoveWorktree(_ context.Context, worktreePath str
 	return nil
 }
 
+func (m *mockWorktreeManager) DefaultBranch() string { return "main" }
+
+func (m *mockWorktreeManager) OriginDefaultBranch() string { return "origin/main" }
+
+func (m *mockWorktreeManager) PushRemote() string { return "origin" }
+
 func newTestAgent(gh *mockGitHubClient, runner CommandRunner, wt *mockWorktreeManager) *Agent {
 	return &Agent{
 		gh:        gh,

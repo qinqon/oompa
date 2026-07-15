@@ -105,7 +105,7 @@ func TestParseGitHubActionsURL(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			source, err := parseGitHubActionsURL(tc.url, mockGH)
+			source, err := parseGitHubActionsURL(tc.url, mockGH, 0)
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("expected error, got nil")
@@ -170,7 +170,7 @@ func TestParseGCSDirectoryURL(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			source, err := ParseCIJobURL(tc.url, nil)
+			source, err := ParseCIJobURL(tc.url, nil, 0)
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("expected error, got nil")
@@ -214,7 +214,7 @@ func TestParseGCSDirectoryURL_DetectedByParseCIJobURL(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			source, err := ParseCIJobURL(tc.url, nil)
+			source, err := ParseCIJobURL(tc.url, nil, 0)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -226,7 +226,7 @@ func TestParseGCSDirectoryURL_DetectedByParseCIJobURL(t *testing.T) {
 
 	// Non-directory GCS URLs should still route to GCSJobSource
 	nonDirURL := "https://prow.ci.kubevirt.io/view/gs/kubevirt-prow/logs/periodic-job/"
-	source, err := ParseCIJobURL(nonDirURL, nil)
+	source, err := ParseCIJobURL(nonDirURL, nil, 0)
 	if err != nil {
 		t.Fatalf("unexpected error for non-directory URL: %v", err)
 	}

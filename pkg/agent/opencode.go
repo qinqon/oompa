@@ -68,11 +68,7 @@ func logOpencodeEvent(logger *slog.Logger, line []byte) {
 			logger.Debug("opencode using tool", "tool", event.Part.Tool, "status", status)
 		}
 	case "text":
-		text := event.Part.Text
-		if len(text) > 200 {
-			text = text[:200] + "..."
-		}
-		if text != "" {
+		if text := previewText(event.Part.Text); text != "" {
 			logger.Debug("opencode", "text", text)
 		}
 	case "step_finish":
@@ -163,11 +159,8 @@ func parseOpencodeResult(stdout []byte) (AgentResult, error) {
 }
 
 // Run invokes OpenCode CLI with JSON output and parses the result.
-// If resume is true, --continue is passed to resume the most recent session in workDir.
-// The prompt is passed via stdin to avoid hitting the OS ARG_MAX limit for large prompts.
-// On invocation failure the partial stream output is still parsed so any cost
-// it reports (OpenCode bills per step) can be billed against session budgets
-// alongside the error.
+// If resume is true, --continue resumes the most recent session in workDir.
+// See runCLIAgent for the shared invocation semantics.
 func (o *OpenCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir, prompt string,
 	logger *slog.Logger, resume bool) (AgentResult, error) {
 	args := []string{"run", "--format", "json", "--dangerously-skip-permissions"}
@@ -177,24 +170,10 @@ func (o *OpenCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir, 
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}
-
-	var stdout, stderr []byte
-	var err error
-
-	if sr, ok := runner.(StreamingRunner); ok && logger != nil {
-		stdout, stderr, err = sr.RunStreamWithStdin(ctx, workDir, prompt, func(line []byte) {
-			logOpencodeEvent(logger, line)
-		}, "opencode", args...)
-	} else {
-		stdout, stderr, err = runner.RunWithStdin(ctx, workDir, prompt, "opencode", args...)
-	}
-
-	if err != nil {
-		// Best-effort cost salvage: sum the step costs emitted before the
-		// failure — the failed run still billed those steps.
-		salvaged, _ := parseOpencodeResult(stdout)
-		return AgentResult{CostUSD: salvaged.CostUSD}, fmt.Errorf("opencode invocation failed: %w (stderr: %s)", err, string(stderr))
-	}
-
-	return parseOpencodeResult(stdout)
+	return runCLIAgent(ctx, runner, workDir, prompt, logger, cliAgentSpec{
+		binary:  "opencode",
+		args:    args,
+		logLine: logOpencodeEvent,
+		parse:   parseOpencodeResult,
+	})
 }
