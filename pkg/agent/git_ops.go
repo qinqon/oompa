@@ -110,25 +110,41 @@ func (a *Agent) hasUncommittedChanges(ctx context.Context, worktreePath string) 
 }
 
 // isCommentOnlyDiff returns true if the diff between the origin default branch
-// and HEAD is non-empty and every added/removed line is blank or a comment.
+// and HEAD is non-empty and every added/removed line is blank or a comment,
+// or when the diff is whitespace-only (empty under `git diff -w`).
 // Detection is conservative: any changed line that is not clearly a comment or
 // whitespace means the diff is treated as a real (functional) change.
 func (a *Agent) isCommentOnlyDiff(ctx context.Context, worktreePath string) bool {
-	out, _, err := a.runner.Run(ctx, worktreePath, "git", "diff", a.originDefaultBranch()+"...HEAD")
+	base := a.originDefaultBranch() + "...HEAD"
+	out, stderr, err := a.runner.Run(ctx, worktreePath, "git", "diff", base)
 	if err != nil {
+		a.logger.Warn("git diff failed, skipping comment-only check", "worktree", worktreePath, "error", err, "stderr", string(stderr))
 		return false
 	}
-	return isCommentOnlyDiffText(string(out))
+	if strings.TrimSpace(string(out)) == "" {
+		return false
+	}
+	if isCommentOnlyDiffText(string(out)) {
+		return true
+	}
+	// Whitespace-only reformatting: the diff is non-empty but disappears when
+	// whitespace changes are ignored.
+	wOut, wStderr, err := a.runner.Run(ctx, worktreePath, "git", "diff", "-w", base)
+	if err != nil {
+		a.logger.Warn("git diff -w failed, skipping whitespace-only check", "worktree", worktreePath, "error", err, "stderr", string(wStderr))
+		return false
+	}
+	return strings.TrimSpace(string(wOut)) == ""
 }
 
 // isCommentOnlyDiffText parses a unified diff and reports whether all changed
 // lines are comments or whitespace. An empty diff returns false.
 func isCommentOnlyDiffText(diff string) bool {
 	hasChangedLine := false
-	for _, line := range strings.Split(diff, "\n") {
+	for line := range strings.SplitSeq(diff, "\n") {
 		var content string
 		switch {
-		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
 			continue // file headers
 		case strings.HasPrefix(line, "+"):
 			content = line[1:]
@@ -145,12 +161,22 @@ func isCommentOnlyDiffText(diff string) bool {
 	return hasChangedLine
 }
 
+// nonCommentDirectives are line prefixes that look like comments but change
+// tooling or execution behavior, so they must count as functional changes.
+var nonCommentDirectives = []string{"#!", "//nolint", "// nolint", "//go:", "// +build"}
+
 // isCommentOrBlankLine returns true if the line is whitespace-only or starts
-// with a common comment marker.
+// with a common comment marker. Directive-style lines (shebangs, linter or
+// compiler directives) are NOT considered comments.
 func isCommentOrBlankLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
 		return true
+	}
+	for _, directive := range nonCommentDirectives {
+		if strings.HasPrefix(trimmed, directive) {
+			return false
+		}
 	}
 	for _, marker := range []string{"#", "//", "/*", "*/", "* "} {
 		if strings.HasPrefix(trimmed, marker) {

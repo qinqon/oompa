@@ -7202,10 +7202,11 @@ func (r *changeSummaryRunner) Run(ctx context.Context, workDir, name string, arg
 }
 
 // commentOnlyDiffRunner simulates Claude producing commits whose diff contains
-// only comment additions.
+// only comment additions. diffW is returned for `git diff -w` (whitespace-ignoring).
 type commentOnlyDiffRunner struct {
 	*mockCommandRunner
-	diff string
+	diff  string
+	diffW string
 }
 
 func (r *commentOnlyDiffRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
@@ -7216,6 +7217,9 @@ func (r *commentOnlyDiffRunner) Run(ctx context.Context, workDir, name string, a
 			return []byte("abc123 add comments\n"), nil, nil
 		case "diff":
 			r.mockCommandRunner.Run(ctx, workDir, name, args...) //nolint:errcheck // recording call for test assertions
+			if len(args) >= 2 && args[1] == "-w" {
+				return []byte(r.diffW), nil, nil
+			}
 			return []byte(r.diff), nil, nil
 		}
 	}
@@ -7300,6 +7304,36 @@ func TestIsCommentOnlyDiff(t *testing.T) {
 			"+++ b/f.go\n+x := 1\n",
 			false,
 		},
+		{
+			"added line starting with plus signs is not a header",
+			"+++ b/f.c\n++++i;\n",
+			false,
+		},
+		{
+			"removed line starting with minus signs is not a header",
+			"+++ b/f.c\n----i;\n",
+			false,
+		},
+		{
+			"shebang is not a comment",
+			"+++ b/f.sh\n+#!/bin/bash\n",
+			false,
+		},
+		{
+			"nolint directive is not a comment",
+			"+++ b/f.go\n+//nolint:errcheck\n",
+			false,
+		},
+		{
+			"go directive is not a comment",
+			"+++ b/f.go\n+//go:generate stringer\n",
+			false,
+		},
+		{
+			"build tag is not a comment",
+			"+++ b/f.go\n+// +build linux\n",
+			false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -7307,5 +7341,31 @@ func TestIsCommentOnlyDiff(t *testing.T) {
 				t.Errorf("isCommentOnlyDiffText(%q) = %v, want %v", tc.diff, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestProcessNewIssues_WhitespaceOnlyDiffMarksFailed(t *testing.T) {
+	// A diff that only reindents code is non-empty, but empty under
+	// `git diff -w`, so it must be treated as a failed fix.
+	claudeResult := streamResultJSON(AgentResult{Result: "Reformatted"})
+	gh := &mockGitHubClient{
+		issues: []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+	}
+	runner := &commentOnlyDiffRunner{
+		mockCommandRunner: &mockCommandRunner{stdout: claudeResult},
+		diff:              "+++ b/f.go\n-\tx := 1\n+    x := 1\n",
+		diffW:             "",
+	}
+	wt := &mockWorktreeManager{}
+
+	agent := newTestAgent(gh, runner, wt)
+	agent.ProcessNewIssues(context.Background())
+
+	if len(gh.addedLabels) != 1 || gh.addedLabels[0] != "ai-failed" {
+		t.Errorf("expected 'ai-failed' label, got %v", gh.addedLabels)
+	}
+	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work == nil || work.Status != "failed" {
+		t.Error("expected issue status to be 'failed'")
 	}
 }
