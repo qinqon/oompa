@@ -37,6 +37,8 @@ When `--watch-prs` is set, `BootstrapWatchedPRs` runs instead of `ProcessNewIssu
   - Both guards **fail closed**: on GitHub API error the issue is deferred to the next poll cycle (see specs/error-handling.md), never processed blindly
 - Cleans up stale worktrees/branches before creating new ones
 - After Claude finishes, the agent pushes the branch and creates the PR (Claude does NOT push or create PRs)
+- If Claude produced no commits, the issue is marked failed (`ai-failed` label), no PR is created
+- If Claude's commits contain only comment or whitespace changes (comment-only diff), the issue is likewise marked failed and no PR is created. Detection is conservative: a diff counts as comment-only when every added/removed line is blank or starts with a comment marker (`#`, `//`, `/*`, `*`, `*/`), or when the diff is whitespace-only (empty under `git diff -w`). Directive-style lines (`#!`, `//nolint`, `//go:`, `// +build`) count as functional changes; any ambiguity means the fix is treated as real
 
 ### ProcessReviewComments behavior
 - Filters comments through the reviewers whitelist
@@ -58,6 +60,9 @@ All interfaces mocked:
 - `TestProcessNewIssues_SkipsAlreadyTracked` -- issue in state is not re-processed
 - `TestProcessNewIssues_HappyPath` -- creates worktree, runs claude, agent pushes and creates PR, updates state
 - `TestProcessNewIssues_ClaudeFailure` -- adds `ai-failed` label, comments on issue
+- `TestProcessNewIssues_CommentOnlyDiffMarksFailed` -- commits exist but diff is comment-only: adds `ai-failed` label, no push, no PR
+- `TestProcessNewIssues_WhitespaceOnlyDiffMarksFailed` -- non-empty diff that is empty under `git diff -w`: adds `ai-failed` label, no PR
+- `TestIsCommentOnlyDiff` -- table-driven: comment-only, whitespace-only, mixed comment+code, empty diff, various comment styles, directives and header-like lines are not comments
 - `TestProcessReviewComments_NoNewComments` -- no action taken
 - `TestProcessReviewComments_AddressesHumanComments` -- runs agent call, updates lastCommentID, verifies no agent-posted replies (skill owns replies)
 - `TestProcessNewIssues_RechecksForPR` -- re-checks for PR when prNumber is 0
