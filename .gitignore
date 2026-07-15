@@ -1,10 +1,12 @@
 # Binary
 /oompa
+/ai-agent
 oompa-linux-*
 
 # Scripts with local config
 kubernetes-nmstate.sh
 openperouter.sh
+ovnk-prs.sh
 run.sh
 
 # Go

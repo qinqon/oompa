@@ -130,13 +130,13 @@ type newIssueTask struct {
 }
 
 type reviewTask struct {
-	work               *IssueWork
-	humanComments      []ReviewComment
-	humanReviews       []PRReview
-	prComments         []ReviewComment // PR conversation comments matching /oompa prefix
-	maxCommentID       int64           // max ID across ALL fetched review comments (including filtered ones)
-	maxReviewID        int64           // max ID across ALL fetched reviews (including filtered ones)
-	maxIssueCommentID  int64           // max ID across ALL fetched PR conversation comments (including filtered ones)
+	work              *IssueWork
+	humanComments     []ReviewComment
+	humanReviews      []PRReview
+	prComments        []ReviewComment // PR conversation comments matching /oompa prefix
+	maxCommentID      int64           // max ID across ALL fetched review comments (including filtered ones)
+	maxReviewID       int64           // max ID across ALL fetched reviews (including filtered ones)
+	maxIssueCommentID int64           // max ID across ALL fetched PR conversation comments (including filtered ones)
 }
 
 type ciTask struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"time"
 )
 
 func TestNewState(t *testing.T) {
@@ -402,5 +403,96 @@ func TestBuildStateFromGitHub_CursorRecoveryAllUnprocessed(t *testing.T) {
 	}
 	if work.LastIssueCommentID != 0 {
 		t.Errorf("expected LastIssueCommentID 0 (no processed issue comments), got %d", work.LastIssueCommentID)
+	}
+}
+
+func TestBuildStateFromGitHub_RecoverLastRebaseTime(t *testing.T) {
+	// On restart, LastRebaseTime should be recovered from the PR head commit date.
+	headDate := time.Now().Add(-2 * time.Hour) // head commit was 2h ago
+	gh := &mockGitHubClient{
+		prs: []PR{
+			{Number: 123, Title: "Fix login", State: "open", Head: "fix-login"},
+		},
+		headCommitDate: headDate,
+	}
+
+	cfg := Config{
+		Owner:           "owner",
+		Repo:            "repo",
+		WatchPRs:        []int{123},
+		GitHubHeadOwner: "owner",
+	}
+
+	state := BuildStateFromGitHub(context.Background(), gh, cfg, "/tmp/work", slog.Default())
+
+	work := state.ActiveIssues[IssueKey("owner", "repo", 123)]
+	if work == nil {
+		t.Fatal("expected PR 123 to be tracked")
+	}
+	if work.LastRebaseTime.IsZero() {
+		t.Error("expected LastRebaseTime to be recovered from head commit date")
+	}
+	if !work.LastRebaseTime.Equal(headDate) {
+		t.Errorf("expected LastRebaseTime %v, got %v", headDate, work.LastRebaseTime)
+	}
+}
+
+func TestBuildStateFromGitHub_RecoverLastRebaseTimeIssueDiscovered(t *testing.T) {
+	// Issue-discovered PR path: LastRebaseTime should be recovered from head commit date.
+	headDate := time.Now().Add(-2 * time.Hour)
+	gh := &mockGitHubClient{
+		issues:         []Issue{{Number: 42, Title: "Fix bug", Labels: []string{"good-for-ai"}}},
+		prs:            []PR{{Number: 100, State: "open", Head: "ai/issue-42"}},
+		headCommitDate: headDate,
+	}
+
+	cfg := Config{
+		Owner:           "owner",
+		Repo:            "repo",
+		Label:           "good-for-ai",
+		GitHubHeadOwner: "owner",
+	}
+
+	state := BuildStateFromGitHub(context.Background(), gh, cfg, "/tmp/work", slog.Default())
+
+	work := state.ActiveIssues[IssueKey("owner", "repo", 42)]
+	if work == nil {
+		t.Fatal("expected issue 42 to be tracked")
+	}
+	if work.PRNumber != 100 {
+		t.Errorf("expected PR 100, got %d", work.PRNumber)
+	}
+	if work.LastRebaseTime.IsZero() {
+		t.Error("expected LastRebaseTime to be recovered from head commit date")
+	}
+	if !work.LastRebaseTime.Equal(headDate) {
+		t.Errorf("expected LastRebaseTime %v, got %v", headDate, work.LastRebaseTime)
+	}
+}
+
+func TestBuildStateFromGitHub_NoHeadCommitDate(t *testing.T) {
+	// On restart with no head commit date available → LastRebaseTime = zero → rebase allowed (fail-open)
+	gh := &mockGitHubClient{
+		prs: []PR{
+			{Number: 123, Title: "Fix login", State: "open", Head: "fix-login"},
+		},
+		// headCommitDate is zero value
+	}
+
+	cfg := Config{
+		Owner:           "owner",
+		Repo:            "repo",
+		WatchPRs:        []int{123},
+		GitHubHeadOwner: "owner",
+	}
+
+	state := BuildStateFromGitHub(context.Background(), gh, cfg, "/tmp/work", slog.Default())
+
+	work := state.ActiveIssues[IssueKey("owner", "repo", 123)]
+	if work == nil {
+		t.Fatal("expected PR 123 to be tracked")
+	}
+	if !work.LastRebaseTime.IsZero() {
+		t.Errorf("expected LastRebaseTime to be zero when no head commit date, got %v", work.LastRebaseTime)
 	}
 }

@@ -227,5 +227,3 @@ func (g *GitWorktreeManager) isWorktreeHealthy(ctx context.Context, worktreePath
 	_, _, err = g.runner.Run(ctx, worktreePath, "git", "status")
 	return err == nil
 }
-
-

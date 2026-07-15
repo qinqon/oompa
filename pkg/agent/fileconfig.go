@@ -38,8 +38,8 @@ type ProjectConfig struct {
 	Reactions         []string `yaml:"reactions"`
 	Label             string   `yaml:"label"`
 	OnlyAssigned      *bool    `yaml:"only-assigned"`
-	Reviewers         []string `yaml:"reviewers"`         // whitelist of users/bots whose reviews to address
-	RebaseInterval    string   `yaml:"rebase-interval"`   // e.g. "24h", "12h" — minimum time between rebases
+	Reviewers         []string `yaml:"reviewers"`       // whitelist of users/bots whose reviews to address
+	RebaseInterval    string   `yaml:"rebase-interval"` // e.g. "24h", "12h" — minimum time between rebases
 
 	// Role arrays
 	PRs    []PRsRoleConfig    `yaml:"prs"`
@@ -75,9 +75,9 @@ type IssuesRoleConfig struct {
 
 // TriageRoleConfig represents a single Triage role entry.
 type TriageRoleConfig struct {
-	Jobs              []string `yaml:"jobs"`               // existing: full URLs for Prow/GCS/cross-repo
-	Workflow          string   `yaml:"workflow"`            // GHA workflow file (relative to project repo)
-	Lanes             []string `yaml:"lanes"`               // glob patterns for matrix job names
+	Jobs              []string `yaml:"jobs"`     // existing: full URLs for Prow/GCS/cross-repo
+	Workflow          string   `yaml:"workflow"` // GHA workflow file (relative to project repo)
+	Lanes             []string `yaml:"lanes"`    // glob patterns for matrix job names
 	Schedule          string   `yaml:"schedule"`
 	Lookback          string   `yaml:"lookback"`
 	CreateFlakyIssues *bool    `yaml:"create-flaky-issues"`
@@ -381,18 +381,18 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			ForkOwner:    projForkOwner,
 			ForkRepo:     projForkRepo,
 			// These are inherited from the global config (set by main from auth)
-			GitHubToken:     globalCfg.GitHubToken,
-			GitHubUser:      globalCfg.GitHubUser,
-			GitHubHeadOwner: globalCfg.GitHubHeadOwner,
-			GitAuthorName:   globalCfg.GitAuthorName,
-			GitAuthorEmail:  globalCfg.GitAuthorEmail,
-			SignedOffBy:     globalCfg.SignedOffBy,
-			AssistedBy:     globalCfg.AssistedBy,
-			Reviewers:          projReviewers,
-			Version:            globalCfg.Version,
-			MaxReviewNoOps:     globalCfg.MaxReviewNoOps,
-			MaxPRSessionCost:   globalCfg.MaxPRSessionCost,
-			SlackWebhookURL:    globalCfg.SlackWebhookURL,
+			GitHubToken:      globalCfg.GitHubToken,
+			GitHubUser:       globalCfg.GitHubUser,
+			GitHubHeadOwner:  globalCfg.GitHubHeadOwner,
+			GitAuthorName:    globalCfg.GitAuthorName,
+			GitAuthorEmail:   globalCfg.GitAuthorEmail,
+			SignedOffBy:      globalCfg.SignedOffBy,
+			AssistedBy:       globalCfg.AssistedBy,
+			Reviewers:        projReviewers,
+			Version:          globalCfg.Version,
+			MaxReviewNoOps:   globalCfg.MaxReviewNoOps,
+			MaxPRSessionCost: globalCfg.MaxPRSessionCost,
+			SlackWebhookURL:  globalCfg.SlackWebhookURL,
 			// GitHub App auth (shared)
 			GitHubAppID:             globalCfg.GitHubAppID,
 			GitHubAppPrivateKey:     globalCfg.GitHubAppPrivateKey,

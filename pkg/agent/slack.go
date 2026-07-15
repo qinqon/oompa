@@ -74,9 +74,9 @@ type SlackReporter struct {
 	lastReportedAt time.Time    // when findings were last successfully flushed to Slack
 	stateFilePath  string       // path to the persisted last-report-at file
 
-	flushMu  sync.Mutex     // serializes Flush calls (protects reported map)
-	mu       sync.Mutex     // protects pending
-	pending  []SlackFinding // findings collected since last Flush
+	flushMu sync.Mutex     // serializes Flush calls (protects reported map)
+	mu      sync.Mutex     // protects pending
+	pending []SlackFinding // findings collected since last Flush
 }
 
 // NewSlackReporter creates a new reporter. If webhookURL is empty, IsEnabled() returns false.
@@ -434,11 +434,11 @@ func formatSlackMessage(findings []SlackFinding, version string) []byte {
 		messages []string
 	}
 	type projectGroup struct {
-		owner    string
-		repo     string
-		prs      map[int]*prGroup
-		prOrder  []int
-		prCount  int
+		owner   string
+		repo    string
+		prs     map[int]*prGroup
+		prOrder []int
+		prCount int
 	}
 
 	projects := make(map[string]*projectGroup)

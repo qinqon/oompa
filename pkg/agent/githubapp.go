@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
-	"github.com/google/go-github/v84/github"
+	"github.com/google/go-github/v88/github"
 )
 
 // GitHubAppAuth holds the GitHub App authentication state.
@@ -28,7 +28,10 @@ func NewGitHubAppAuth(appID, installationID int64, privateKey []byte) (*GitHubAp
 		return nil, fmt.Errorf("creating app transport: %w", err)
 	}
 
-	appClient := github.NewClient(&http.Client{Transport: appTransport})
+	appClient, err := github.NewClient(github.WithTransport(appTransport))
+	if err != nil {
+		return nil, fmt.Errorf("creating app client: %w", err)
+	}
 	app, _, err := appClient.Apps.Get(context.Background(), "")
 	if err != nil {
 		return nil, fmt.Errorf("getting app info: %w", err)
@@ -40,7 +43,10 @@ func NewGitHubAppAuth(appID, installationID int64, privateKey []byte) (*GitHubAp
 		return nil, fmt.Errorf("creating installation transport: %w", err)
 	}
 
-	client := NewGoGitHubClientFromHTTPClient(&http.Client{Transport: itr})
+	client, err := NewGoGitHubClientFromHTTPClient(&http.Client{Transport: itr})
+	if err != nil {
+		return nil, fmt.Errorf("creating installation client: %w", err)
+	}
 
 	slug := app.GetSlug()
 	login := fmt.Sprintf("%s[bot]", slug)
@@ -49,7 +55,11 @@ func NewGitHubAppAuth(appID, installationID int64, privateKey []byte) (*GitHubAp
 	// Look up the bot's actual user ID for the noreply email.
 	// The App ID != the bot user ID; using the App ID would attribute
 	// commits to the wrong GitHub user.
-	botUser, _, err := github.NewClient(&http.Client{Transport: itr}).Users.Get(context.Background(), login)
+	installClient, err := github.NewClient(github.WithTransport(itr))
+	if err != nil {
+		return nil, fmt.Errorf("creating bot lookup client: %w", err)
+	}
+	botUser, _, err := installClient.Users.Get(context.Background(), login)
 	if err != nil {
 		return nil, fmt.Errorf("getting bot user info for %s: %w", login, err)
 	}

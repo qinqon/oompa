@@ -27,6 +27,13 @@ issues:
   max-issues-per-linter: 50
   max-same-issues: 10
 formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/qinqon/oompa
   exclusions:
     generated: lax
     paths:

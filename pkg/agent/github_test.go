@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-github/v84/github"
+	"github.com/google/go-github/v88/github"
 )
 
 func setupTestClient(t *testing.T, mux *http.ServeMux) *GoGitHubClient {
@@ -17,12 +17,13 @@ func setupTestClient(t *testing.T, mux *http.ServeMux) *GoGitHubClient {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := github.NewClient(nil).WithAuthToken("test-token")
 	baseURL := server.URL + "/"
-	var err error
-	client, err = client.WithEnterpriseURLs(baseURL, baseURL)
+	client, err := github.NewClient(
+		github.WithAuthToken("test-token"),
+		github.WithEnterpriseURLs(baseURL, baseURL),
+	)
 	if err != nil {
-		t.Fatalf("failed to set base URL: %v", err)
+		t.Fatalf("failed to create client: %v", err)
 	}
 
 	return &GoGitHubClient{client: client}
@@ -1048,7 +1049,10 @@ func TestNewGoGitHubClient_EnvOverridesBaseURL(t *testing.T) {
 	defer server.Close()
 
 	t.Setenv("OOMPA_GITHUB_API_URL", server.URL+"/")
-	gh := NewGoGitHubClient("test-token")
+	gh, err := NewGoGitHubClient("test-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	issues, err := gh.ListLabeledIssues(context.Background(), "owner", "repo", "test")
 	if err != nil {

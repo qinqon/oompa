@@ -4,7 +4,7 @@ TAG ?= latest
 IMAGE = $(REGISTRY)/$(REPO):$(TAG)
 CONTAINER_CMD ?= podman
 
-.PHONY: build test lint fix check-fix image push clean
+.PHONY: build test lint fmt check-fmt fix check-fix image push clean
 
 build:
 	go build -o oompa ./cmd/oompa
@@ -14,6 +14,13 @@ test:
 
 lint:
 	go vet ./...
+	golangci-lint run
+
+fmt:
+	golangci-lint fmt
+
+check-fmt:
+	golangci-lint fmt --diff
 
 fix:
 	go fix ./...

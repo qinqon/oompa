@@ -155,5 +155,3 @@ func (d *DryRunGitHubClient) GetWorkflowJobLogs(ctx context.Context, owner, repo
 func (d *DryRunGitHubClient) CountCommitsSince(ctx context.Context, owner, repo string, since time.Time) (int, error) {
 	return d.inner.CountCommitsSince(ctx, owner, repo, since)
 }
-
-

@@ -448,3 +448,88 @@ func TestBuildReviewResponsePrompt_ScopeConstraint(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildTriageMatchPrompt(t *testing.T) {
+	existingIssues := []Issue{
+		{Number: 1501, Title: "CI Failure: periodic-e2e / VLAN test timeout",
+			Body: "VLAN configuration test failed with timeout."},
+	}
+
+	prompt := buildTriageMatchPrompt("periodic-e2e", "CRI-O mirror HTTP 404 error", existingIssues, nil)
+
+	checks := []string{
+		"periodic-e2e",
+		"CRI-O mirror HTTP 404 error",
+		"Issue #1501",
+		"CI Failure: periodic-e2e / VLAN test timeout",
+		"ROOT CAUSE",
+		"not error message",
+		"same underlying problem",
+		"MATCH",
+		"NONE",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+
+	// Without concurrent failures, the prompt should NOT contain cycle context
+	if strings.Contains(prompt, "Concurrent failure context") {
+		t.Error("prompt should NOT contain concurrent failure context when cycleFailedJobs is nil")
+	}
+}
+
+func TestBuildTriageMatchPrompt_ConcurrentFailures(t *testing.T) {
+	existingIssues := []Issue{
+		{Number: 2761, Title: "CI Failure: kubevirt-ipam-controller / setup timeout",
+			Body: "Setup phase timed out waiting for cluster."},
+	}
+
+	cycleFailedJobs := []string{
+		"kubevirt-ipam-controller",
+		"workflow-k8s-s390x",
+		"unit-test-release-0.102",
+		"monitoring-k8s",
+	}
+
+	prompt := buildTriageMatchPrompt("workflow-k8s-s390x", "cluster setup failed", existingIssues, cycleFailedJobs)
+
+	checks := []string{
+		// Concurrent failure context section
+		"Concurrent failure context",
+		"4 CI jobs failed concurrently",
+		"kubevirt-ipam-controller",
+		"workflow-k8s-s390x",
+		"unit-test-release-0.102",
+		"monitoring-k8s",
+		"STRONG signal",
+		"common root cause",
+		// Instructions about concurrent failures
+		"Multiple CI jobs failed concurrently",
+		"Bias toward MATCH",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+func TestBuildTriageMatchPrompt_SingleJobNoConcurrentContext(t *testing.T) {
+	existingIssues := []Issue{
+		{Number: 100, Title: "CI Failure: unit-test / nil pointer",
+			Body: "nil pointer dereference in handler.go"},
+	}
+
+	// A single failing job should not produce concurrent context
+	cycleFailedJobs := []string{"unit-test"}
+
+	prompt := buildTriageMatchPrompt("unit-test", "nil pointer in handler", existingIssues, cycleFailedJobs)
+
+	if strings.Contains(prompt, "Concurrent failure context") {
+		t.Error("prompt should NOT contain concurrent failure context when only 1 job failed")
+	}
+}

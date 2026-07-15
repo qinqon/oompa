@@ -4,13 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/google/go-github/v84/github"
+	"github.com/google/go-github/v88/github"
 )
 
 // GitHubClient defines all GitHub operations needed by the agent.
@@ -56,31 +55,33 @@ type GoGitHubClient struct {
 // NewGoGitHubClient creates a new client authenticated with the given token.
 // If OOMPA_GITHUB_API_URL is set, the client uses it as the GitHub Enterprise
 // base URL (for testing with a fake GitHub server).
-func NewGoGitHubClient(token string) *GoGitHubClient {
-	httpClient := &http.Client{Transport: NewCachingTransport(http.DefaultTransport)}
-	client := github.NewClient(httpClient).WithAuthToken(token)
-	if base := os.Getenv("OOMPA_GITHUB_API_URL"); base != "" {
-		enterpriseClient, err := client.WithEnterpriseURLs(base, base)
-		if err != nil {
-			slog.Warn("invalid OOMPA_GITHUB_API_URL, falling back to api.github.com", "url", base, "error", err)
-		} else {
-			client = enterpriseClient
-		}
+func NewGoGitHubClient(token string) (*GoGitHubClient, error) {
+	opts := []github.ClientOptionsFunc{
+		github.WithTransport(NewCachingTransport(http.DefaultTransport)),
+		github.WithAuthToken(token),
 	}
-	return &GoGitHubClient{client: client}
+	if base := os.Getenv("OOMPA_GITHUB_API_URL"); base != "" {
+		opts = append(opts, github.WithEnterpriseURLs(base, base))
+	}
+	client, err := github.NewClient(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub client: %w", err)
+	}
+	return &GoGitHubClient{client: client}, nil
 }
 
 // NewGoGitHubClientFromHTTPClient creates a new client using a custom HTTP client
 // (e.g., one with a GitHub App installation transport).
-func NewGoGitHubClientFromHTTPClient(httpClient *http.Client) *GoGitHubClient {
+func NewGoGitHubClientFromHTTPClient(httpClient *http.Client) (*GoGitHubClient, error) {
 	transport := httpClient.Transport
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	cachedClient := &http.Client{Transport: NewCachingTransport(transport)}
-	return &GoGitHubClient{
-		client: github.NewClient(cachedClient),
+	client, err := github.NewClient(github.WithTransport(NewCachingTransport(transport)))
+	if err != nil {
+		return nil, fmt.Errorf("creating GitHub client: %w", err)
 	}
+	return &GoGitHubClient{client: client}, nil
 }
 
 func (g *GoGitHubClient) ListLabeledIssues(ctx context.Context, owner, repo, label string) ([]Issue, error) {

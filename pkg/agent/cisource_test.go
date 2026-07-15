@@ -13,11 +13,11 @@ import (
 
 func TestParseGCSJobURL(t *testing.T) {
 	testCases := []struct {
-		name        string
-		url         string
-		wantBucket  string
-		wantPrefix  string
-		wantErr     bool
+		name       string
+		url        string
+		wantBucket string
+		wantPrefix string
+		wantErr    bool
 	}{
 		{
 			name:       "valid GCS URL",
@@ -545,11 +545,11 @@ func TestGCSDirectoryJobSource_FetchLog(t *testing.T) {
 
 func TestMatchLanePattern(t *testing.T) {
 	tests := []struct {
-		name       string
-		jobName    string
-		patterns   []string
-		wantMatch  bool
-		wantLane   string
+		name      string
+		jobName   string
+		patterns  []string
+		wantMatch bool
+		wantLane  string
 	}{
 		{
 			name:      "wildcard match prefix",
@@ -845,4 +845,3 @@ func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	req.URL.Host = t.base[len("http://"):]
 	return http.DefaultTransport.RoundTrip(req)
 }
-

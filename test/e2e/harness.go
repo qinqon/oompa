@@ -167,10 +167,10 @@ func (h *Harness) writeGitConfig() {
 
 // RunOompaOpts configures optional arguments for RunOompa.
 type RunOompaOpts struct {
-	ExtraArgs []string            // additional CLI flags
-	ExtraEnv  []string            // additional environment variables
-	WatchPRs  []int               // --watch-prs values
-	Reactions []string            // --reactions values
+	ExtraArgs []string // additional CLI flags
+	ExtraEnv  []string // additional environment variables
+	WatchPRs  []int    // --watch-prs values
+	Reactions []string // --reactions values
 }
 
 // RunOompa executes the oompa binary with the given FakeGitHub server URL.
