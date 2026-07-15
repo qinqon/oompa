@@ -3,14 +3,14 @@
 package worktree
 
 import (
-	"github.com/qinqon/oompa/internal/execx"
-
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/qinqon/oompa/internal/execx"
 )
 
 // Manager manages git worktrees, one per issue branch.
@@ -38,8 +38,13 @@ type GitManager struct {
 	forkURL        string     // fork repo URL (added as "fork" remote for pushing)
 	gitAuthorName  string     // override git user.name in worktrees
 	gitAuthorEmail string     // override git user.email in worktrees
-	defaultBranch  string     // detected from origin HEAD (e.g. "main", "master")
 	mu             sync.Mutex // serializes git operations that modify .git state
+
+	// defaultBranchMu guards defaultBranch separately: DefaultBranch is
+	// called from methods that already hold mu, so reusing mu would
+	// deadlock.
+	defaultBranchMu sync.Mutex
+	defaultBranch   string // detected from origin HEAD (e.g. "main", "master")
 }
 
 // NewGitManager creates a new worktree manager.
@@ -57,6 +62,8 @@ func NewGitManager(runner execx.CommandRunner, cloneDir, repoURL, forkURL string
 // DefaultBranch returns the detected default branch of the upstream repo (e.g. "main", "master").
 // Falls back to "main" if not yet detected.
 func (g *GitManager) DefaultBranch() string {
+	g.defaultBranchMu.Lock()
+	defer g.defaultBranchMu.Unlock()
 	if g.defaultBranch != "" {
 		return g.defaultBranch
 	}
@@ -77,7 +84,9 @@ func (g *GitManager) detectDefaultBranch(ctx context.Context) {
 	// Output is like "refs/remotes/origin/master"
 	ref := strings.TrimSpace(string(out))
 	if branch, ok := strings.CutPrefix(ref, "refs/remotes/origin/"); ok {
+		g.defaultBranchMu.Lock()
 		g.defaultBranch = branch
+		g.defaultBranchMu.Unlock()
 	}
 }
 
@@ -125,6 +134,8 @@ func (g *GitManager) EnsureRepoCloned(ctx context.Context) error {
 // When set, git user.name and user.email are written to the local git config
 // of every clone and worktree, overriding the global git config.
 func (g *GitManager) SetGitIdentity(name, email string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.gitAuthorName = name
 	g.gitAuthorEmail = email
 }

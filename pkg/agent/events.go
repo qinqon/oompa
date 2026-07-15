@@ -1,6 +1,10 @@
 package agent
 
-import "github.com/qinqon/oompa/internal/events"
+import (
+	"log/slog"
+
+	"github.com/qinqon/oompa/internal/events"
+)
 
 // The event model and socket server/client live in internal/events; these
 // aliases keep the package-local names used by the agent and cmd/oompa.
@@ -53,12 +57,30 @@ const (
 )
 
 // Function re-exports; see the internal/events documentation.
-var (
-	DefaultEventCategories = events.DefaultEventCategories
-	AllEventCategories     = events.AllEventCategories
-	ParseEventCategories   = events.ParseEventCategories
-	NewRingBuffer          = events.NewRingBuffer
-	DefaultSocketPath      = events.DefaultSocketPath
-	NewSocketEventServer   = events.NewSocketEventServer
-	NewEventClient         = events.NewEventClient
-)
+
+// DefaultEventCategories returns the categories shown by default.
+func DefaultEventCategories() map[EventCategory]bool { return events.DefaultEventCategories() }
+
+// AllEventCategories returns every known category, enabled.
+func AllEventCategories() map[EventCategory]bool { return events.AllEventCategories() }
+
+// ParseEventCategories parses a comma-separated category list.
+func ParseEventCategories(s string) (map[EventCategory]bool, error) {
+	return events.ParseEventCategories(s)
+}
+
+// NewRingBuffer creates a ring buffer retaining the last size events.
+func NewRingBuffer(size int) *RingBuffer { return events.NewRingBuffer(size) }
+
+// DefaultSocketPath returns the per-user default event socket path.
+func DefaultSocketPath() string { return events.DefaultSocketPath() }
+
+// NewSocketEventServer creates an event server listening on socketPath.
+func NewSocketEventServer(socketPath string, bufferSize int, logger *slog.Logger) *SocketEventServer {
+	return events.NewSocketEventServer(socketPath, bufferSize, logger)
+}
+
+// NewEventClient connects to the event server at socketPath.
+func NewEventClient(socketPath string) (*EventClient, error) {
+	return events.NewEventClient(socketPath)
+}

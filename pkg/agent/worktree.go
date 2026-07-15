@@ -13,4 +13,6 @@ type (
 
 // NewGitWorktreeManager constructs a git-backed WorktreeManager; see
 // internal/worktree for details.
-var NewGitWorktreeManager = worktree.NewGitManager
+func NewGitWorktreeManager(runner CommandRunner, cloneDir, repoURL, forkURL string) *GitWorktreeManager {
+	return worktree.NewGitManager(runner, cloneDir, repoURL, forkURL)
+}
