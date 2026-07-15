@@ -7260,7 +7260,7 @@ index 1234567..89abcde 100644
 	if work != nil && work.PRNumber != 0 {
 		t.Errorf("expected no PR, got PR %d", work.PRNumber)
 	}
-	for _, call := range runner.mockCommandRunner.calls {
+	for _, call := range runner.calls {
 		if call.Name == "git" && len(call.Args) > 0 && call.Args[0] == "push" {
 			t.Error("expected no git push for comment-only diff")
 		}
