@@ -55,13 +55,12 @@ func (a *Agent) autoRebasePR(ctx context.Context, work *IssueWork, mergeState, c
 
 	a.logger.Info("PR needs rebase, attempting", "pr", work.PRNumber, "mergeable_state", mergeState)
 
+	// ensureWorktreeReady fetches all remotes with a fatal error check
+	// (SyncWorktree), so the rebase below runs against fresh upstream refs.
 	if err := a.ensureWorktreeReady(ctx, work); err != nil {
 		a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
 		return nil
 	}
-
-	// Fetch all remotes and try automatic rebase against the upstream default branch
-	a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all") //nolint:errcheck // best-effort
 
 	// Try automatic rebase (with retry on unstaged changes)
 	stderr, rebaseErr := a.gitRebaseWithRetry(ctx, work.WorktreePath, work.PRNumber)
