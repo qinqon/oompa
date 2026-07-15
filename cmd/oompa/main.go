@@ -418,7 +418,12 @@ func setupAuth(cfg *agent.Config, logger *slog.Logger) (ghClient *agent.GoGitHub
 		cfg.GitHubToken = token
 		os.Setenv("GH_TOKEN", token)
 
-		ghClient = agent.NewGoGitHubClient(token)
+		var err error
+		ghClient, err = agent.NewGoGitHubClient(token)
+		if err != nil {
+			logger.Error("failed to create GitHub client", "error", err)
+			os.Exit(1)
+		}
 		if cfg.GitHubUser != "" && cfg.GitAuthorName != "" && cfg.GitAuthorEmail != "" {
 			if cfg.ForkOwner != "" {
 				cfg.GitHubHeadOwner = cfg.ForkOwner

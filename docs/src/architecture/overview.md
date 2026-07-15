@@ -74,7 +74,7 @@ LOOP (every poll-interval):
 
 ## Dependencies
 
-- `github.com/google/go-github/v84` -- GitHub API client (behind `GitHubClient` interface)
+- `github.com/google/go-github/v88` -- GitHub API client (behind `GitHubClient` interface)
 - Go standard library for everything else
 
 ## Error Strategy
