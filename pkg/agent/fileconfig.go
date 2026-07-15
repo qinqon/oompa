@@ -381,7 +381,6 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			ForkOwner:    projForkOwner,
 			ForkRepo:     projForkRepo,
 			// These are inherited from the global config (set by main from auth)
-			GitHubToken:      globalCfg.GitHubToken,
 			GitHubUser:       globalCfg.GitHubUser,
 			GitHubHeadOwner:  globalCfg.GitHubHeadOwner,
 			GitAuthorName:    globalCfg.GitAuthorName,

@@ -394,7 +394,6 @@ func setupAuth(cfg *agent.Config, logger *slog.Logger) (ghClient *agent.GoGitHub
 			logger.Error("failed to get initial installation token", "error", err)
 			os.Exit(1)
 		}
-		cfg.GitHubToken = token
 		os.Setenv("GH_TOKEN", token)
 
 		logger.Info("authenticated as GitHub App", "login", appAuth.Login, "signed-off-by", cfg.SignedOffBy)
@@ -415,7 +414,6 @@ func setupAuth(cfg *agent.Config, logger *slog.Logger) (ghClient *agent.GoGitHub
 			logger.Error("GITHUB_TOKEN is required, or run 'gh auth login' (or configure GitHub App auth with --github-app-id, --github-app-private-key/GITHUB_APP_PRIVATE_KEY, --github-app-installation-id)")
 			os.Exit(1) //nolint:gocritic // exitAfterDefer: intentional early exit in CLI startup
 		}
-		cfg.GitHubToken = token
 		os.Setenv("GH_TOKEN", token)
 
 		var err error

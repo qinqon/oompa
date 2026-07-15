@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -89,6 +88,9 @@ func (a *Agent) SetTokenFunc(fn func(context.Context) (string, error)) {
 
 // RefreshToken updates the GitHub token if a token function is set.
 // Call this before each poll cycle to ensure the token is fresh.
+// The fresh token is propagated to subprocesses via the runner's
+// environment (GH_TOKEN); the process-wide environment is never
+// mutated here because multiple role goroutines refresh concurrently.
 func (a *Agent) RefreshToken(ctx context.Context) error {
 	if a.tokenFunc == nil {
 		return nil
@@ -97,8 +99,6 @@ func (a *Agent) RefreshToken(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("refreshing GitHub token: %w", err)
 	}
-	a.cfg.GitHubToken = token
-	os.Setenv("GH_TOKEN", token)
 
 	// Update the runner's GH_TOKEN environment variable
 	if execRunner, ok := a.runner.(*ExecRunner); ok {
