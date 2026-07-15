@@ -551,7 +551,7 @@ func TestShouldRebaseNow_Interval(t *testing.T) {
 			if allowed != tt.wantAllow {
 				t.Errorf("allowed = %v, want %v (reason %q)", allowed, tt.wantAllow, reason)
 			}
-			if !tt.wantAllow && reason != tt.wantReason {
+			if reason != tt.wantReason {
 				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
 			}
 		})

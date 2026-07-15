@@ -440,11 +440,11 @@ func TestProcessNewIssues_SquashCommitMessage(t *testing.T) {
 
 			subject := strings.SplitN(commitMsg, "\n", 2)[0]
 			if tt.longTitle {
-				if len(subject) > 72 {
-					t.Errorf("subject line exceeds 72 chars (%d): %q", len(subject), subject)
-				}
-				if !strings.HasSuffix(subject, "...") {
-					t.Errorf("truncated subject should end with '...', got: %q", subject)
+				// truncateSubject breaks at the last word boundary before
+				// 72 runes and appends an ellipsis.
+				want := "CI Failure: pull-e2e-cluster-network-addons-operator-monitoring-k8s..."
+				if subject != want {
+					t.Errorf("subject = %q, want %q", subject, want)
 				}
 			} else if subject != tt.wantSubject {
 				t.Errorf("subject = %q, want %q", subject, tt.wantSubject)
@@ -458,8 +458,8 @@ func TestProcessNewIssues_SquashCommitMessage(t *testing.T) {
 			if want := fmt.Sprintf("Related-to: #%d", tt.issue.Number); !strings.Contains(commitMsg, want) {
 				t.Errorf("expected commit body to contain %q, got: %s", want, commitMsg)
 			}
-			if !strings.Contains(commitMsg, "Signed-off-by") {
-				t.Errorf("expected commit message to contain 'Signed-off-by', got: %s", commitMsg)
+			if !strings.Contains(commitMsg, "Signed-off-by: Test User <test@example.com>") {
+				t.Errorf("expected commit message to contain the configured sign-off, got: %s", commitMsg)
 			}
 		})
 	}

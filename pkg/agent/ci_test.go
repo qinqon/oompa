@@ -505,7 +505,7 @@ func TestWriteStructuredBody(t *testing.T) {
 		},
 		{
 			name:            "empty emits no sections",
-			wantNotContains: []string{"### Error", "### Root Cause"},
+			wantNotContains: []string{"### Error", "### Root Cause", "### Recommendation"},
 		},
 	}
 	for _, tt := range tests {
@@ -532,37 +532,34 @@ func TestWriteStructuredBody(t *testing.T) {
 // fence longer than its longest run so the content cannot break out.
 func TestWriteFenced(t *testing.T) {
 	tests := []struct {
-		name         string
-		body         string
-		wantContains []string
+		name string
+		body string
+		want string // exact output: heading plus opening and closing fence
 	}{
 		{
-			name:         "no backticks uses standard fence",
-			body:         "plain error text",
-			wantContains: []string{"```\nplain error text\n```"},
+			name: "no backticks uses standard fence",
+			body: "plain error text",
+			want: "\n### Error\n```\nplain error text\n```\n",
 		},
 		{
 			// A 4-backtick fence avoids breakout and the body is preserved unchanged.
-			name:         "triple backticks in body use longer fence",
-			body:         "Error in ```yaml\nkey: value\n```",
-			wantContains: []string{"````", "Error in ```yaml\nkey: value\n```"},
+			name: "triple backticks in body use longer fence",
+			body: "Error in ```yaml\nkey: value\n```",
+			want: "\n### Error\n````\nError in ```yaml\nkey: value\n```\n````\n",
 		},
 		{
 			// Fence must be longer than 5, the longest backtick run in the body.
-			name:         "long backtick run uses even longer fence",
-			body:         "Some `````long````` backtick run",
-			wantContains: []string{"``````"},
+			name: "long backtick run uses even longer fence",
+			body: "Some `````long````` backtick run",
+			want: "\n### Error\n``````\nSome `````long````` backtick run\n``````\n",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var b strings.Builder
 			writeFenced(&b, "### Error", tt.body)
-			output := b.String()
-			for _, want := range tt.wantContains {
-				if !strings.Contains(output, want) {
-					t.Errorf("output missing %q, got: %s", want, output)
-				}
+			if got := b.String(); got != tt.want {
+				t.Errorf("writeFenced output = %q, want %q", got, tt.want)
 			}
 		})
 	}
