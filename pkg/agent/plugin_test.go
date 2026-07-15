@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -135,7 +133,7 @@ func TestCheckPluginVersion_BestEffortNpmUnavailable(t *testing.T) {
 	// Override HOME so readInstalledPluginVersion finds our fake directory
 	t.Setenv("HOME", fakeHome)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 
 	// We can't easily mock npm view in a unit test, so we test the components
 	// directly and test CheckPluginVersion integration only when npm is available.
@@ -163,7 +161,7 @@ func TestCheckPluginVersion_BestEffortNpmUnavailable(t *testing.T) {
 func TestCheckPluginVersion_BestEffortPluginNotInstalled(t *testing.T) {
 	// When the plugin is not installed (package.json missing), CheckPluginVersion
 	// should silently return nil (best-effort).
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 
 	t.Setenv("HOME", t.TempDir())
 	finding := CheckPluginVersion(context.Background(), logger)
@@ -200,7 +198,7 @@ func TestCheckPluginVersion_OutdatedWithFakeNpm(t *testing.T) {
 	}
 	t.Setenv("PATH", fakeBin)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	finding := CheckPluginVersion(context.Background(), logger)
 
 	if finding == nil {
@@ -252,7 +250,7 @@ func TestCheckPluginVersion_SameVersionWithFakeNpm(t *testing.T) {
 	}
 	t.Setenv("PATH", fakeBin)
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	finding := CheckPluginVersion(context.Background(), logger)
 
 	if finding != nil {
@@ -303,7 +301,7 @@ func TestCheckPluginVersion_FindingFormat(t *testing.T) {
 }
 
 func TestStartPluginVersionChecker_DisabledWithoutSlack(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 
 	// Should return nil and not panic with nil Slack reporter
 	ch := StartPluginVersionChecker(context.Background(), nil, logger)
@@ -331,7 +329,7 @@ func TestStartPluginVersionChecker_RunsAndStops(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 

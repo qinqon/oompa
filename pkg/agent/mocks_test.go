@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 )
@@ -263,16 +264,64 @@ func (m *mockWorktreeManager) OriginDefaultBranch() string { return "origin/main
 
 func (m *mockWorktreeManager) PushRemote() string { return "origin" }
 
-func newTestAgent(gh *mockGitHubClient, runner CommandRunner, wt *mockWorktreeManager) *Agent {
-	return &Agent{
-		gh:        gh,
-		runner:    runner,
-		worktrees: wt,
-		state:     NewState(),
-		cfg:       Config{Owner: "owner", Repo: "repo", Label: "good-for-ai", FlakyLabel: "flaky-test", GitHubUser: "test-bot"},
-		logger:    slog.Default(),
-		codeAgent: &ClaudeCodeAgent{},
+// discardLogger returns a logger that drops all output, keeping tests quiet.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// agentOpt customizes an Agent built by newTestAgent.
+type agentOpt func(*Agent)
+
+// withCfg mutates the canonical test Config before the test runs.
+func withCfg(mutate func(*Config)) agentOpt {
+	return func(a *Agent) { mutate(&a.cfg) }
+}
+
+// withCodeAgent replaces the default code agent.
+func withCodeAgent(ca CodeAgent) agentOpt {
+	return func(a *Agent) { a.codeAgent = ca }
+}
+
+// newTestAgent builds an Agent through the production constructor with
+// canonical test doubles: owner/repo config, fresh state, and a discard
+// logger. Options apply after construction.
+func newTestAgent(gh *mockGitHubClient, runner CommandRunner, wt WorktreeManager, opts ...agentOpt) *Agent {
+	cfg := Config{Owner: "owner", Repo: "repo", Label: "good-for-ai", FlakyLabel: "flaky-test", GitHubUser: "test-bot"}
+	a := NewAgent(gh, runner, wt, NewState(), cfg, discardLogger(), &ClaudeCodeAgent{})
+	for _, opt := range opts {
+		opt(a)
 	}
+	return a
+}
+
+// trackWork registers the canonical in-flight fixture (issue 42 with PR 100
+// open on branch ai/issue-42) in the agent state, applies any mutations, and
+// returns the tracked work for later assertions.
+func trackWork(a *Agent, mutate ...func(*IssueWork)) *IssueWork {
+	w := &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       StatusPROpen,
+		WorktreePath: "/tmp/worktree",
+	}
+	for _, m := range mutate {
+		m(w)
+	}
+	a.state.ActiveIssues[IssueKey(a.cfg.Owner, a.cfg.Repo, w.IssueNumber)] = w
+	return w
+}
+
+// countCalls returns how many recorded commands invoked the named binary.
+func countCalls(calls []commandCall, name string) int {
+	count := 0
+	for _, c := range calls {
+		if c.Name == name {
+			count++
+		}
+	}
+	return count
 }
 
 // sequentialMockCodeAgent returns different results for sequential calls.

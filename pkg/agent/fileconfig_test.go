@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+// loadConfig writes yaml to a temp config file and loads it.
+func loadConfig(t *testing.T, yaml string) (*FileConfig, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return LoadFileConfig(path)
+}
+
 func TestLoadFileConfig_Valid(t *testing.T) {
 	yaml := `
 agent: opencode
@@ -26,13 +36,7 @@ projects:
     issues:
       - label: good-for-ai
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	fc, err := LoadFileConfig(path)
+	fc, err := loadConfig(t, yaml)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,9 +107,7 @@ func TestLoadFileConfig_ValidationErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.yaml")
-			os.WriteFile(path, []byte(tt.yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-			_, err := LoadFileConfig(path)
+			_, err := loadConfig(t, tt.yaml)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -503,13 +505,7 @@ projects:
       - jobs: [https://ci.example.com/job]
         reviewers: [eve]
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	fc, err := LoadFileConfig(path)
+	fc, err := loadConfig(t, yaml)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -568,11 +564,7 @@ projects:
     prs:
       - watch: [1]
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for invalid skip-comment")
 	}
@@ -586,11 +578,7 @@ func TestLoadFileConfig_FileNotFound(t *testing.T) {
 }
 
 func TestLoadFileConfig_InvalidYAML(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte("{{invalid yaml"), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, "{{invalid yaml")
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
 	}
@@ -605,11 +593,7 @@ projects:
     issues:
       - label: test
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for agent-model with claudecode")
 	}
@@ -623,14 +607,10 @@ projects:
     issues:
       - label: test
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
 	// agent-model without an explicit agent is valid: the agent is inherited
 	// from the global config and the resolved combination is validated when
 	// the code agent is selected.
-	if _, err := LoadFileConfig(path); err != nil {
+	if _, err := loadConfig(t, yaml); err != nil {
 		t.Fatalf("unexpected error for agent-model without explicit agent: %v", err)
 	}
 }
@@ -643,11 +623,7 @@ projects:
       - jobs: [https://ci.example.com/job]
         schedule: "09:00 Invalid/Timezone"
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for invalid schedule timezone")
 	}
@@ -661,11 +637,7 @@ projects:
       - jobs: [https://ci.example.com/job]
         schedule: "09:00 UTC"
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err != nil {
 		t.Fatalf("unexpected error for valid schedule: %v", err)
 	}
@@ -679,11 +651,7 @@ projects:
       - jobs: [https://ci.example.com/job]
         lookback: "not-a-duration"
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for invalid lookback duration")
 	}
@@ -697,11 +665,7 @@ projects:
       - jobs: [https://ci.example.com/job]
         lookback: "-1h"
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for negative lookback duration")
 	}
@@ -715,11 +679,7 @@ projects:
       - jobs: [https://ci.example.com/job]
         lookback: 24h
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	fc, err := LoadFileConfig(path)
+	fc, err := loadConfig(t, yaml)
 	if err != nil {
 		t.Fatalf("unexpected error for valid lookback: %v", err)
 	}
@@ -873,11 +833,7 @@ projects:
         skip-checks:
           - lint-check
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	cfg, err := LoadFileConfig(path)
+	cfg, err := loadConfig(t, yaml)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -939,11 +895,7 @@ projects:
     issues:
       - label: test
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for unknown YAML key")
 	}
@@ -958,11 +910,7 @@ projects:
       - watch: [1]
         rebase-interval: 8h
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
-
-	fc, err := LoadFileConfig(path)
+	fc, err := loadConfig(t, yaml)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -982,11 +930,7 @@ projects:
     prs:
       - watch: [1]
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for invalid project rebase-interval")
 	}
@@ -1000,11 +944,7 @@ projects:
     prs:
       - watch: [1]
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for negative project rebase-interval")
 	}
@@ -1018,11 +958,7 @@ projects:
     prs:
       - watch: [1]
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for zero project rebase-interval")
 	}
@@ -1036,11 +972,7 @@ projects:
       - watch: [1]
         rebase-interval: "-2h"
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for negative PR rebase-interval")
 	}
@@ -1054,11 +986,7 @@ projects:
       - watch: [1]
         rebase-interval: bad
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for invalid PR rebase-interval")
 	}
@@ -1171,11 +1099,7 @@ projects:
     prs:
       - watch: [1]
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
-
-	fc, err := LoadFileConfig(path)
+	fc, err := loadConfig(t, yaml)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1193,11 +1117,7 @@ projects:
     prs:
       - watch: [1]
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
-
-	_, err := LoadFileConfig(path)
+	_, err := loadConfig(t, yaml)
 	if err == nil {
 		t.Fatal("expected error for project agent-model with claudecode")
 	}
@@ -1211,14 +1131,10 @@ projects:
     prs:
       - watch: [1]
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
-
 	// Project-level agent-model without an explicit agent is valid: the agent
 	// is inherited from the global config and the resolved combination is
 	// validated when the code agent is selected.
-	if _, err := LoadFileConfig(path); err != nil {
+	if _, err := loadConfig(t, yaml); err != nil {
 		t.Fatalf("unexpected error for project agent-model without explicit agent: %v", err)
 	}
 }
@@ -1258,13 +1174,7 @@ projects:
       - watch: [6466]
         reactions: []
 `
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yamlStr), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	fc, err := LoadFileConfig(path)
+	fc, err := loadConfig(t, yamlStr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

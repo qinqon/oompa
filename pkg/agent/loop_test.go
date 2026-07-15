@@ -11,12 +11,7 @@ func TestCleanupDone_MergedPR(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.CleanupDone(context.Background())
 
@@ -34,12 +29,7 @@ func TestCleanupDone_ClosedPR(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.CleanupDone(context.Background())
 
@@ -57,12 +47,7 @@ func TestCleanupDone_OpenPR(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.CleanupDone(context.Background())
 
@@ -246,14 +231,7 @@ func TestReportOnlyMode_EmptyReactionsGatesAndChecks(t *testing.T) {
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.Reactions = []string{}                           // report-only mode
 	agent.cfg.SlackWebhookURL = "https://hooks.slack.com/test" // enable Slack
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	// All reactions should be skipped
 	if agent.ShouldRunReaction("reviews") {

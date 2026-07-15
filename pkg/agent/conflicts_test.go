@@ -18,13 +18,7 @@ func TestProcessConflicts_SkipsWhenBehind(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessConflicts(context.Background())
 
@@ -48,13 +42,7 @@ func TestProcessRebase_RebasesWhenBehind(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -85,13 +73,7 @@ func TestProcessRebase_RebasesWhenUnstableButBehind(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -115,13 +97,7 @@ func TestProcessConflicts_SkipsUnstableNotBehind(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessConflicts(context.Background())
 
@@ -141,13 +117,7 @@ func TestProcessRebase_SkipsUnstableNotBehind(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -166,13 +136,7 @@ func TestProcessRebase_SkipsDirty(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -198,13 +162,7 @@ func TestProcessRebase_InvokesConflictResolutionWhenRebaseFails(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.codeAgent = codeAgent
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -281,13 +239,7 @@ func TestProcessConflicts_SkipsCleanPR(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessConflicts(context.Background())
 
@@ -308,13 +260,7 @@ func TestProcessRebase_SkipCommentRebase(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.SkipComments = []string{"rebase"}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -344,13 +290,7 @@ func TestProcessConflicts_SkipCommentConflict(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.SkipComments = []string{"conflict"}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessConflicts(context.Background())
 
@@ -373,13 +313,7 @@ func TestProcessRebase_CleansUnstagedChangesAndRetries(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -427,13 +361,7 @@ func TestProcessConflicts_CleansUnstagedChangesAndRetries(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessConflicts(context.Background())
 
@@ -503,13 +431,7 @@ func TestProcessRebase_DefersWhenMainIsActive(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -531,13 +453,7 @@ func TestProcessRebase_ProceedsWhenMainIsQuiet(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -563,14 +479,9 @@ func TestProcessRebase_DefersWhenMinIntervalNotReached(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:    42,
-		PRNumber:       100,
-		BranchName:     "ai/issue-42",
-		Status:         "pr-open",
-		WorktreePath:   "/tmp/worktree",
-		LastRebaseTime: time.Now().Add(-1 * time.Hour), // rebased 1h ago
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastRebaseTime = time.Now().Add(-1 * time.Hour) // rebased 1h ago
+	})
 
 	agent.ProcessRebase(context.Background())
 
@@ -592,14 +503,9 @@ func TestProcessRebase_ProceedsWhenMinIntervalExpired(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:    42,
-		PRNumber:       100,
-		BranchName:     "ai/issue-42",
-		Status:         "pr-open",
-		WorktreePath:   "/tmp/worktree",
-		LastRebaseTime: time.Now().Add(-5 * time.Hour), // rebased 5h ago
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastRebaseTime = time.Now().Add(-5 * time.Hour) // rebased 5h ago
+	})
 
 	agent.ProcessRebase(context.Background())
 
@@ -624,13 +530,7 @@ func TestProcessRebase_FailOpenOnAPIError(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -655,14 +555,7 @@ func TestProcessRebase_FirstRebaseNoIntervalGuard(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-		// LastRebaseTime is zero — first rebase
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
@@ -687,13 +580,7 @@ func TestProcessRebase_SetsLastRebaseTimeOnSuccess(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	before := time.Now()
 	agent.ProcessRebase(context.Background())
@@ -717,13 +604,7 @@ func TestProcessRebase_ExactThresholdAllowsRebase(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		BranchName:   "ai/issue-42",
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessRebase(context.Background())
 
