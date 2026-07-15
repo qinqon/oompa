@@ -194,10 +194,27 @@ func (g *GitWorktreeManager) SyncWorktree(ctx context.Context, worktreePath stri
 
 	// Pull latest from the push remote, rebasing to preserve external contributions
 	pushRemote := g.PushRemote()
-	_, _, err = g.runner.Run(ctx, worktreePath, "git", "pull", "--rebase", pushRemote, branch)
+	_, stderr, err = g.runner.Run(ctx, worktreePath, "git", "pull", "--rebase", pushRemote, branch)
 	if err != nil {
-		// Branch may not exist on the push remote yet, that's OK
-		return nil
+		if strings.Contains(strings.ToLower(string(stderr)), "couldn't find remote ref") {
+			// Branch doesn't exist on the push remote yet (never pushed, or
+			// deleted after merge) — nothing to sync.
+			return nil
+		}
+		// The pull can conflict (worktrees are created from the origin default
+		// branch, so a PR branch based on an older default conflicts at sync
+		// time) or trip over leftover local state from an interrupted run.
+		// Swallowing the error here used to hand downstream flows a
+		// rebase-in-progress worktree. Instead, abort the rebase and hard-reset
+		// to the remote branch: the remote is the source of truth for a PR
+		// branch, and conflict handling needs the worktree at that state to
+		// reproduce the conflict in the right direction (branch onto default).
+		g.runner.Run(ctx, worktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
+		_, resetStderr, resetErr := g.runner.Run(ctx, worktreePath, "git", "reset", "--hard", pushRemote+"/"+branch)
+		if resetErr != nil {
+			return fmt.Errorf("git pull --rebase %s %s: %w (stderr: %s); recovery reset failed (stderr: %s)",
+				pushRemote, branch, err, string(stderr), string(resetStderr))
+		}
 	}
 	return nil
 }
