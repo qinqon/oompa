@@ -2,28 +2,108 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 )
 
-func TestProcessNewIssues_SkipsAlreadyTracked(t *testing.T) {
-	gh := &mockGitHubClient{
-		issues: []Issue{{Number: 42, Title: "Fix bug"}},
+// TestProcessNewIssues_SkipsAndDefers covers every reason a labeled issue is
+// not picked up: it is already tracked, a PR for its branch or a linked PR
+// already exists (open or merged), or a pre-flight GitHub call fails and the
+// issue is deferred to the next poll.
+func TestProcessNewIssues_SkipsAndDefers(t *testing.T) {
+	tests := []struct {
+		name     string
+		gh       *mockGitHubClient
+		preTrack bool // issue 42 already in state before the poll
+		// wantStatus is the expected tracked status afterwards; empty means
+		// the issue must not be tracked (so the next poll retries it).
+		wantStatus string
+		wantPR     int
+	}{
+		{
+			name:       "skips issue already tracked",
+			gh:         &mockGitHubClient{issues: []Issue{{Number: 42, Title: "Fix bug"}}},
+			preTrack:   true,
+			wantStatus: StatusPROpen,
+		},
+		{
+			name: "adopts existing open PR for the branch",
+			gh: &mockGitHubClient{
+				issues: []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+				prs:    []PR{{Number: 100, State: "open", Head: "ai/issue-42"}},
+			},
+			wantStatus: StatusPROpen,
+			wantPR:     100,
+		},
+		{
+			name: "skips issue with linked PR",
+			gh: &mockGitHubClient{
+				issues:   []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+				linkedPR: true, // an open PR (e.g. human-created) already references the issue
+			},
+		},
+		{
+			name: "defers when PR listing fails",
+			gh: &mockGitHubClient{
+				issues:     []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+				listPRsErr: &mockError{msg: "boom"},
+			},
+		},
+		{
+			name: "defers when linked PR check fails",
+			gh: &mockGitHubClient{
+				issues:      []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+				linkedPRErr: &mockError{msg: "boom"},
+			},
+		},
+		{
+			name: "skips issue whose fix PR was merged",
+			gh: &mockGitHubClient{
+				issues: []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
+				prs:    []PR{{Number: 100, State: "closed", Merged: true, Head: "ai/issue-42"}},
+			},
+		},
 	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &mockCommandRunner{}
+			wt := &mockWorktreeManager{}
+			agent := newTestAgent(tt.gh, runner, wt)
+			if tt.preTrack {
+				agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{IssueNumber: 42, Status: StatusPROpen}
+			}
 
-	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{IssueNumber: 42, Status: "pr-open"}
+			agent.ProcessNewIssues(context.Background())
 
-	agent.ProcessNewIssues(context.Background())
+			if len(runner.calls) != 0 {
+				t.Error("should not invoke the code agent")
+			}
+			if len(wt.createdBranches) != 0 {
+				t.Error("should not create a worktree")
+			}
+			if len(tt.gh.addedComments) != 0 {
+				t.Errorf("should not comment on the issue, got %v", tt.gh.addedComments)
+			}
 
-	if len(wt.createdBranches) != 0 {
-		t.Error("should not create worktree for already tracked issue")
-	}
-	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude for already tracked issue")
+			work, tracked := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+			if tt.wantStatus == "" {
+				if tracked {
+					t.Error("issue should not be tracked so the next poll retries it")
+				}
+				return
+			}
+			if !tracked {
+				t.Fatal("issue 42 should be tracked")
+			}
+			if work.Status != tt.wantStatus {
+				t.Errorf("status = %q, want %q", work.Status, tt.wantStatus)
+			}
+			if work.PRNumber != tt.wantPR {
+				t.Errorf("PRNumber = %d, want %d", work.PRNumber, tt.wantPR)
+			}
+		})
 	}
 }
 
@@ -108,128 +188,6 @@ func TestProcessNewIssues_SkipCommentIssueInProgress(t *testing.T) {
 		if strings.Contains(comment, "working on this issue") {
 			t.Errorf("expected issue-in-progress comment to be suppressed, got: %q", comment)
 		}
-	}
-}
-
-func TestProcessNewIssues_SkipsWhenPRExists(t *testing.T) {
-	gh := &mockGitHubClient{
-		issues: []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
-		prs:    []PR{{Number: 100, State: "open", Head: "ai/issue-42"}},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.ProcessNewIssues(context.Background())
-
-	// Should not invoke Claude
-	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude when PR already exists")
-	}
-	if len(wt.createdBranches) != 0 {
-		t.Error("should not create worktree when PR already exists")
-	}
-
-	work, ok := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if !ok {
-		t.Fatal("issue 42 should be tracked")
-	}
-	if work.PRNumber != 100 {
-		t.Errorf("expected PR 100, got %d", work.PRNumber)
-	}
-	if work.Status != "pr-open" {
-		t.Errorf("expected status 'pr-open', got %q", work.Status)
-	}
-}
-
-func TestProcessNewIssues_SkipsLinkedPR(t *testing.T) {
-	gh := &mockGitHubClient{
-		issues:   []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
-		linkedPR: true, // an open PR (e.g. human-created) already references the issue
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.ProcessNewIssues(context.Background())
-
-	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude when a linked PR exists")
-	}
-	if len(wt.createdBranches) != 0 {
-		t.Error("should not create worktree when a linked PR exists")
-	}
-	if len(gh.addedComments) != 0 {
-		t.Errorf("should not comment on issue with linked PR, got %v", gh.addedComments)
-	}
-	if _, ok := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]; ok {
-		t.Error("issue with linked PR should not be tracked")
-	}
-}
-
-func TestProcessNewIssues_DefersOnListPRsError(t *testing.T) {
-	gh := &mockGitHubClient{
-		issues:     []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
-		listPRsErr: &mockError{msg: "boom"},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.ProcessNewIssues(context.Background())
-
-	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude when PR listing fails")
-	}
-	if len(wt.createdBranches) != 0 {
-		t.Error("should not create worktree when PR listing fails")
-	}
-	if _, ok := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]; ok {
-		t.Error("deferred issue should not be tracked so the next poll retries it")
-	}
-}
-
-func TestProcessNewIssues_DefersOnLinkedPRCheckError(t *testing.T) {
-	gh := &mockGitHubClient{
-		issues:      []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
-		linkedPRErr: &mockError{msg: "boom"},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.ProcessNewIssues(context.Background())
-
-	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude when linked PR check fails")
-	}
-	if len(wt.createdBranches) != 0 {
-		t.Error("should not create worktree when linked PR check fails")
-	}
-	if _, ok := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]; ok {
-		t.Error("deferred issue should not be tracked so the next poll retries it")
-	}
-}
-
-func TestProcessNewIssues_SkipsMergedPR(t *testing.T) {
-	gh := &mockGitHubClient{
-		issues: []Issue{{Number: 42, Title: "Fix bug", Body: "broken"}},
-		prs:    []PR{{Number: 100, State: "closed", Merged: true, Head: "ai/issue-42"}},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.ProcessNewIssues(context.Background())
-
-	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude when the fix PR was merged")
-	}
-	if len(wt.createdBranches) != 0 {
-		t.Error("should not create worktree when the fix PR was merged")
-	}
-	if _, ok := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]; ok {
-		t.Error("issue with merged PR should not be tracked")
 	}
 }
 
@@ -431,123 +389,79 @@ func TestProcessNewIssues_SquashesCommits(t *testing.T) {
 	}
 }
 
-func TestProcessNewIssues_SquashesCommits_ConventionalCommitTitle(t *testing.T) {
-	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
-	gh := &mockGitHubClient{
-		issues: []Issue{{Number: 1532, Title: "build: consolidate multi-arch container build scripts", Body: "Consolidate build scripts"}},
-	}
-	runner := &mockCommandRunner{stdout: claudeResult}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.cfg.SignedOffBy = "Test User <test@example.com>"
-	agent.ProcessNewIssues(context.Background())
-
-	// Verify the commit message uses the issue title as the subject
-	// and puts "Related-to: #N" in the body (no auto-close keywords)
-	for _, c := range runner.calls {
-		if c.Name != "git" || len(c.Args) < 3 || c.Args[0] != "commit" || c.Args[1] != "-m" {
-			continue
-		}
-		commitMsg := c.Args[2]
-		// The subject line should be the issue title as-is
-		lines := strings.SplitN(commitMsg, "\n", 2)
-		if lines[0] != "build: consolidate multi-arch container build scripts" {
-			t.Errorf("expected subject line to be the conventional commit title, got: %q", lines[0])
-		}
-		// Should NOT contain auto-close keywords
-		if strings.Contains(commitMsg, "Fix #1532") || strings.Contains(commitMsg, "Fixes #1532") || strings.Contains(commitMsg, "Closes #1532") {
-			t.Errorf("commit message should not contain auto-close keywords, got: %s", commitMsg)
-		}
-		// Should contain "Related-to: #1532" in the body
-		if !strings.Contains(commitMsg, "Related-to: #1532") {
-			t.Errorf("expected commit body to contain 'Related-to: #1532', got: %s", commitMsg)
-		}
-		// Should still have trailers
-		if !strings.Contains(commitMsg, "Signed-off-by") {
-			t.Errorf("expected commit message to contain 'Signed-off-by', got: %s", commitMsg)
-		}
-		return
-	}
-	t.Error("expected git commit -m to be called")
-}
-
-func TestProcessNewIssues_SquashesCommits_NonConventionalTitle(t *testing.T) {
-	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
-	gh := &mockGitHubClient{
-		issues: []Issue{{Number: 42, Title: "implement feature X", Body: "broken"}},
-	}
-	runner := &mockCommandRunner{stdout: claudeResult}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.cfg.SignedOffBy = "Test User <test@example.com>"
-	agent.ProcessNewIssues(context.Background())
-
-	// Verify the commit message uses the issue title as subject and
-	// references the issue in the body with "Related-to:" (no auto-close keywords)
-	for _, c := range runner.calls {
-		if c.Name != "git" || len(c.Args) < 3 || c.Args[0] != "commit" || c.Args[1] != "-m" {
-			continue
-		}
-		commitMsg := c.Args[2]
-		lines := strings.SplitN(commitMsg, "\n", 2)
-		if lines[0] != "implement feature X" {
-			t.Errorf("expected subject line to be 'implement feature X', got: %q", lines[0])
-		}
-		// Should NOT contain auto-close keywords
-		if strings.Contains(commitMsg, "Fix #42") || strings.Contains(commitMsg, "Fixes #42") || strings.Contains(commitMsg, "Closes #42") {
-			t.Errorf("commit message should not contain auto-close keywords, got: %s", commitMsg)
-		}
-		// Should contain "Related-to: #42" in the body
-		if !strings.Contains(commitMsg, "Related-to: #42") {
-			t.Errorf("expected commit body to contain 'Related-to: #42', got: %s", commitMsg)
-		}
-		if !strings.Contains(commitMsg, "Signed-off-by") {
-			t.Errorf("expected commit message to contain 'Signed-off-by', got: %s", commitMsg)
-		}
-		return
-	}
-	t.Error("expected git commit -m to be called")
-}
-
-func TestProcessNewIssues_SquashesCommits_LongTitle(t *testing.T) {
-	claudeResult := streamResultJSON(AgentResult{Result: "Fixed it"})
+// TestProcessNewIssues_SquashCommitMessage covers how the squash commit
+// message is built from the issue title: the title becomes the subject
+// (truncated at 72 chars), the body references the issue with Related-to
+// instead of auto-close keywords, and configured trailers are appended.
+func TestProcessNewIssues_SquashCommitMessage(t *testing.T) {
 	longTitle := "CI Failure: pull-e2e-cluster-network-addons-operator-monitoring-k8s / The pull-e2e-cluster-network-addons-operator-monitoring-k8s"
-	gh := &mockGitHubClient{
-		issues: []Issue{{Number: 2799, Title: longTitle, Body: "CI is failing"}},
+	tests := []struct {
+		name        string
+		issue       Issue
+		wantSubject string // empty: checked by the long-title rules instead
+		longTitle   bool
+	}{
+		{
+			name:        "conventional commit title used as-is",
+			issue:       Issue{Number: 1532, Title: "build: consolidate multi-arch container build scripts", Body: "Consolidate build scripts"},
+			wantSubject: "build: consolidate multi-arch container build scripts",
+		},
+		{
+			name:        "non-conventional title used as-is",
+			issue:       Issue{Number: 42, Title: "implement feature X", Body: "broken"},
+			wantSubject: "implement feature X",
+		},
+		{
+			name:      "long title truncated to 72 chars with ellipsis",
+			issue:     Issue{Number: 2799, Title: longTitle, Body: "CI is failing"},
+			longTitle: true,
+		},
 	}
-	runner := &mockCommandRunner{stdout: claudeResult}
-	wt := &mockWorktreeManager{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &mockGitHubClient{issues: []Issue{tt.issue}}
+			runner := &mockCommandRunner{stdout: streamResultJSON(AgentResult{Result: "Fixed it"})}
+			agent := newTestAgent(gh, runner, &mockWorktreeManager{})
+			agent.cfg.SignedOffBy = "Test User <test@example.com>"
 
-	agent := newTestAgent(gh, runner, wt)
-	agent.ProcessNewIssues(context.Background())
+			agent.ProcessNewIssues(context.Background())
 
-	// Verify the commit subject is truncated to 72 characters
-	for _, c := range runner.calls {
-		if c.Name != "git" || len(c.Args) < 3 || c.Args[0] != "commit" || c.Args[1] != "-m" {
-			continue
-		}
-		commitMsg := c.Args[2]
-		lines := strings.SplitN(commitMsg, "\n", 2)
-		subject := lines[0]
-		if len(subject) > 72 {
-			t.Errorf("subject line exceeds 72 chars (%d): %q", len(subject), subject)
-		}
-		if !strings.HasSuffix(subject, "...") {
-			t.Errorf("truncated subject should end with '...', got: %q", subject)
-		}
-		// Should NOT contain auto-close keywords
-		if strings.Contains(commitMsg, "Fix #2799") || strings.Contains(commitMsg, "Fixes #2799") {
-			t.Errorf("commit message should not contain auto-close keywords, got: %s", commitMsg)
-		}
-		// Should contain "Related-to: #2799" in the body
-		if !strings.Contains(commitMsg, "Related-to: #2799") {
-			t.Errorf("expected commit body to contain 'Related-to: #2799', got: %s", commitMsg)
-		}
-		return
+			var commitMsg string
+			for _, c := range runner.calls {
+				if c.Name == "git" && len(c.Args) >= 3 && c.Args[0] == "commit" && c.Args[1] == "-m" {
+					commitMsg = c.Args[2]
+					break
+				}
+			}
+			if commitMsg == "" {
+				t.Fatal("expected git commit -m to be called")
+			}
+
+			subject := strings.SplitN(commitMsg, "\n", 2)[0]
+			if tt.longTitle {
+				if len(subject) > 72 {
+					t.Errorf("subject line exceeds 72 chars (%d): %q", len(subject), subject)
+				}
+				if !strings.HasSuffix(subject, "...") {
+					t.Errorf("truncated subject should end with '...', got: %q", subject)
+				}
+			} else if subject != tt.wantSubject {
+				t.Errorf("subject = %q, want %q", subject, tt.wantSubject)
+			}
+
+			for _, keyword := range []string{"Fix #", "Fixes #", "Closes #"} {
+				if strings.Contains(commitMsg, fmt.Sprintf("%s%d", keyword, tt.issue.Number)) {
+					t.Errorf("commit message should not contain auto-close keyword %q: %s", keyword, commitMsg)
+				}
+			}
+			if want := fmt.Sprintf("Related-to: #%d", tt.issue.Number); !strings.Contains(commitMsg, want) {
+				t.Errorf("expected commit body to contain %q, got: %s", want, commitMsg)
+			}
+			if !strings.Contains(commitMsg, "Signed-off-by") {
+				t.Errorf("expected commit message to contain 'Signed-off-by', got: %s", commitMsg)
+			}
+		})
 	}
-	t.Error("expected git commit -m to be called")
 }
 
 // commentOnlyDiffRunner simulates Claude producing commits whose diff contains
