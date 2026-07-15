@@ -325,8 +325,7 @@ func (a *Agent) classifyCIInfrastructure(_ context.Context, task ciTask, cleaned
 		Action:    fmt.Sprintf("CI infrastructure: %s", task.failures[0].Name),
 		PRNumbers: []int{task.work.PRNumber},
 	})
-	idx := strings.Index(cleaned, "INFRASTRUCTURE")
-	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "INFRASTRUCTURE"), " :—–-"))
+	explanation := extractKeywordExplanation(cleaned, "INFRASTRUCTURE")
 
 	// Always mark as checked in memory to prevent re-investigation on next poll.
 	// Comment markers serve as a secondary dedup mechanism but can be lost
@@ -363,8 +362,7 @@ func (a *Agent) classifyCIUnrelated(ctx context.Context, task ciTask, cleaned st
 		Action:    fmt.Sprintf("CI unrelated: %s", task.failures[0].Name),
 		PRNumbers: []int{task.work.PRNumber},
 	})
-	idx := strings.Index(cleaned, "UNRELATED")
-	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "UNRELATED"), " :—–-"))
+	explanation := extractKeywordExplanation(cleaned, "UNRELATED")
 
 	// Always mark as checked in memory to prevent re-investigation on next poll.
 	// Comment markers serve as a secondary dedup mechanism but can be lost
@@ -644,6 +642,17 @@ func parseCIStructuredFields(text string) (errorSummary, rootCause, evidence, re
 	return errorSummary, rootCause, evidence, recommendation, failingTest
 }
 
+// extractKeywordExplanation returns the text following the classification
+// keyword in the agent's response, stripped of separator punctuation the
+// models like to insert after the keyword (colons, dashes, markdown).
+func extractKeywordExplanation(cleaned, keyword string) string {
+	idx := strings.Index(cleaned, keyword)
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], keyword), " :—–-"))
+}
+
 // classifyCIRelated handles a CI failure classified as related to PR changes.
 // Returns a ciResult for consolidation; does NOT post a comment.
 func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned string) ciResult {
@@ -656,8 +665,7 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 		PRNumbers: []int{task.work.PRNumber},
 	})
 
-	idx := strings.Index(cleaned, "RELATED")
-	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "RELATED"), " :—–-"))
+	explanation := extractKeywordExplanation(cleaned, "RELATED")
 
 	errorSummary, rootCause, evidence, recommendation, failingTest := parseCIStructuredFields(explanation)
 
