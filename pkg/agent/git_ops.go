@@ -283,6 +283,10 @@ func truncateSubject(subject string, maxLen int) string {
 
 // gitSquashCommits squashes all commits since the origin default branch into a single commit.
 func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issueNumber int, issueTitle string) error {
+	if a.cfg.DryRun {
+		a.logger.Info("[dry-run] would squash commits", "worktree", worktreePath, "issue", issueNumber)
+		return nil
+	}
 	// Get all commit messages since origin default branch
 	logOut, _, err := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%B")
 	if err != nil {
@@ -332,6 +336,10 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 
 // deleteRemoteBranch removes a branch from the push remote.
 func (a *Agent) deleteRemoteBranch(ctx context.Context, worktreePath, branchName string) {
+	if a.cfg.DryRun {
+		a.logger.Info("[dry-run] would delete remote branch", "branch", branchName)
+		return
+	}
 	pushRemote := a.pushRemote()
 	_, stderr, err := a.runner.Run(ctx, worktreePath, "git", "push", pushRemote, "--delete", branchName)
 	if err != nil {
