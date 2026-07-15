@@ -437,13 +437,8 @@ func TestIntegration_FullIssueLifecycle(t *testing.T) {
 	}
 
 	// Verify Claude was invoked
-	var claudeCalls int
 	runner.mu.Lock()
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	runner.mu.Unlock()
 	if claudeCalls != 1 {
 		t.Errorf("expected 1 claude call, got %d", claudeCalls)
@@ -474,12 +469,7 @@ func TestIntegration_FullIssueLifecycle(t *testing.T) {
 
 	// Verify Claude was invoked again
 	runner.mu.Lock()
-	claudeCalls = 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls = countCalls(runner.calls, "claude")
 	runner.mu.Unlock()
 	// 1 for implementation + 1 for review + 1 for change summary
 	if claudeCalls != 3 {

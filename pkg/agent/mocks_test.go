@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 )
@@ -263,16 +264,45 @@ func (m *mockWorktreeManager) OriginDefaultBranch() string { return "origin/main
 
 func (m *mockWorktreeManager) PushRemote() string { return "origin" }
 
-func newTestAgent(gh *mockGitHubClient, runner CommandRunner, wt *mockWorktreeManager) *Agent {
-	return &Agent{
-		gh:        gh,
-		runner:    runner,
-		worktrees: wt,
-		state:     NewState(),
-		cfg:       Config{Owner: "owner", Repo: "repo", Label: "good-for-ai", FlakyLabel: "flaky-test", GitHubUser: "test-bot"},
-		logger:    slog.Default(),
-		codeAgent: &ClaudeCodeAgent{},
+// discardLogger returns a logger that drops all output, keeping tests quiet.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// agentOpt customizes an Agent built by newTestAgent.
+type agentOpt func(*Agent)
+
+// withCfg mutates the canonical test Config before the test runs.
+func withCfg(mutate func(*Config)) agentOpt {
+	return func(a *Agent) { mutate(&a.cfg) }
+}
+
+// withCodeAgent replaces the default code agent.
+func withCodeAgent(ca CodeAgent) agentOpt {
+	return func(a *Agent) { a.codeAgent = ca }
+}
+
+// newTestAgent builds an Agent through the production constructor with
+// canonical test doubles: owner/repo config, fresh state, and a discard
+// logger. Options apply after construction.
+func newTestAgent(gh *mockGitHubClient, runner CommandRunner, wt WorktreeManager, opts ...agentOpt) *Agent {
+	cfg := Config{Owner: "owner", Repo: "repo", Label: "good-for-ai", FlakyLabel: "flaky-test", GitHubUser: "test-bot"}
+	a := NewAgent(gh, runner, wt, NewState(), cfg, discardLogger(), &ClaudeCodeAgent{})
+	for _, opt := range opts {
+		opt(a)
 	}
+	return a
+}
+
+// countCalls returns how many recorded commands invoked the named binary.
+func countCalls(calls []commandCall, name string) int {
+	count := 0
+	for _, c := range calls {
+		if c.Name == name {
+			count++
+		}
+	}
+	return count
 }
 
 // sequentialMockCodeAgent returns different results for sequential calls.

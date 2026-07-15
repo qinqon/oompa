@@ -53,12 +53,7 @@ func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
 
 	agent.ProcessReviewComments(context.Background())
 
-	claudeCalls := 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	if claudeCalls != 1 {
 		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
 	}
@@ -212,12 +207,7 @@ func TestProcessReviewComments_AllowsAllWhenWhitelistEmpty(t *testing.T) {
 
 	agent.ProcessReviewComments(context.Background())
 
-	claudeCalls := 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	// One call: implementation (no triage step)
 	if claudeCalls != 1 {
 		t.Errorf("expected 1 claude call with empty whitelist, got %d", claudeCalls)
@@ -250,12 +240,7 @@ func TestProcessReviewComments_UnaddressedReviewIsProcessed(t *testing.T) {
 
 	agent.ProcessReviewComments(context.Background())
 
-	claudeCalls := 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	if claudeCalls != 1 {
 		t.Errorf("expected 1 claude call for unaddressed review, got %d", claudeCalls)
 	}
@@ -291,12 +276,7 @@ func TestProcessReviewComments_AlreadyAddressedReviewIsFilteredBySinceID(t *test
 
 	agent.ProcessReviewComments(context.Background())
 
-	claudeCalls := 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	if claudeCalls != 0 {
 		t.Errorf("expected 0 claude calls for already-addressed review, got %d", claudeCalls)
 	}
@@ -332,12 +312,7 @@ func TestProcessReviewComments_MultipleReviewersSimultaneous(t *testing.T) {
 
 	agent.ProcessReviewComments(context.Background())
 
-	claudeCalls := 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	// copilot's review should be processed — sinceID ensures it's not filtered out
 	if claudeCalls != 1 {
 		t.Errorf("expected 1 claude call for unaddressed copilot review, got %d", claudeCalls)
@@ -584,12 +559,7 @@ func TestProcessReviewComments_NoOpCountPausesReviews(t *testing.T) {
 	agent.ProcessReviewComments(context.Background())
 
 	// Should NOT invoke the agent because no-op limit is reached.
-	claudeCalls := 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	if claudeCalls != 0 {
 		t.Errorf("expected 0 claude calls when no-op limit reached, got %d", claudeCalls)
 	}
@@ -649,12 +619,7 @@ func TestProcessReviewComments_NewReviewAfterNoOpPause(t *testing.T) {
 	agent.ProcessReviewComments(context.Background())
 
 	// The new review should be processed since the counter was reset.
-	claudeCalls := 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	if claudeCalls != 1 {
 		t.Errorf("expected 1 claude call for new review after counter reset, got %d", claudeCalls)
 	}
@@ -819,12 +784,7 @@ func TestProcessReviewComments_OompaCommandProcessed(t *testing.T) {
 	agent.ProcessReviewComments(context.Background())
 
 	// Should have invoked the agent
-	claudeCalls := 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	if claudeCalls != 1 {
 		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
 	}
@@ -863,10 +823,8 @@ func TestProcessReviewComments_IgnoresNonOompaComments(t *testing.T) {
 	agent.ProcessReviewComments(context.Background())
 
 	// Should NOT invoke the agent
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			t.Error("should not invoke claude for comments without /oompa prefix")
-		}
+	if countCalls(runner.calls, "claude") != 0 {
+		t.Error("should not invoke claude for comments without /oompa prefix")
 	}
 
 	// Cursor should still advance past filtered comments
@@ -897,10 +855,8 @@ func TestProcessReviewComments_OompaCommandSkipsNonWhitelisted(t *testing.T) {
 
 	agent.ProcessReviewComments(context.Background())
 
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			t.Error("should not invoke claude for non-whitelisted user's /oompa command")
-		}
+	if countCalls(runner.calls, "claude") != 0 {
+		t.Error("should not invoke claude for non-whitelisted user's /oompa command")
 	}
 }
 
@@ -978,12 +934,7 @@ func TestProcessReviewComments_OompaCommandWithReviewComments(t *testing.T) {
 	agent.ProcessReviewComments(context.Background())
 
 	// Should have invoked the agent once (both types combined into one task)
-	claudeCalls := 0
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			claudeCalls++
-		}
-	}
+	claudeCalls := countCalls(runner.calls, "claude")
 	if claudeCalls != 1 {
 		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
 	}
@@ -1058,10 +1009,8 @@ func TestProcessReviewComments_OompaCommandIgnoresBarePrefix(t *testing.T) {
 	agent.ProcessReviewComments(context.Background())
 
 	// Should NOT invoke the agent for bare /oompa with no directive
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			t.Error("should not invoke claude for bare /oompa comment with no directive")
-		}
+	if countCalls(runner.calls, "claude") != 0 {
+		t.Error("should not invoke claude for bare /oompa comment with no directive")
 	}
 
 	// Cursor should still advance past filtered comments
@@ -1091,10 +1040,8 @@ func TestProcessReviewComments_OompaCommandIgnoresBotComments(t *testing.T) {
 
 	agent.ProcessReviewComments(context.Background())
 
-	for _, c := range runner.calls {
-		if c.Name == "claude" {
-			t.Error("should not invoke claude for bot-posted /oompa comment")
-		}
+	if countCalls(runner.calls, "claude") != 0 {
+		t.Error("should not invoke claude for bot-posted /oompa comment")
 	}
 }
 

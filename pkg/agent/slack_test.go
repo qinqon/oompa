@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +14,41 @@ import (
 	"testing"
 	"time"
 )
+
+// slackTestAgent returns an agent configured for org/repo Slack checks with
+// one open PR (#100) tracked in state.
+func slackTestAgent(gh *mockGitHubClient) *Agent {
+	a := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{}, withCfg(func(c *Config) {
+		c.Owner = "org"
+		c.SlackWebhookURL = "http://example.com/webhook"
+	}))
+	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
+		PRNumber:   100,
+		IssueTitle: "Fix test",
+		Status:     StatusPROpen,
+	}
+	return a
+}
+
+// newCountingWebhook builds a SlackReporter posting to a local test server
+// with dedup state isolated under a temp XDG_STATE_HOME. The returned func
+// reports how many webhook posts were received.
+func newCountingWebhook(t *testing.T) (reporter *SlackReporter, posts func() int) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	var mu sync.Mutex
+	count := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		count++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+	reporter = NewSlackReporter(ts.URL, "", discardLogger())
+	reporter.httpClient = ts.Client()
+	return reporter, func() int { mu.Lock(); defer mu.Unlock(); return count }
+}
 
 func TestFormatSlackMessage_GroupsByPR(t *testing.T) {
 	findings := []SlackFinding{
@@ -279,17 +313,7 @@ func TestFormatSlackMessage_HasDividersBetweenProjects(t *testing.T) {
 }
 
 func TestSlackReporter_Dedup(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	var postCount int
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		postCount++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, "", logger)
-	reporter.httpClient = ts.Client()
+	reporter, posts := newCountingWebhook(t)
 
 	findings := []SlackFinding{
 		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/100", Category: "ci", Message: "🔴 test failed", DedupKey: "ci:abc123:e2e"},
@@ -299,29 +323,19 @@ func TestSlackReporter_Dedup(t *testing.T) {
 
 	// First report should send
 	reporter.Report(ctx, findings)
-	if postCount != 1 {
-		t.Errorf("expected 1 POST, got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected 1 POST, got %d", posts())
 	}
 
 	// Second report with same DedupKey should be suppressed
 	reporter.Report(ctx, findings)
-	if postCount != 1 {
-		t.Errorf("expected still 1 POST after dedup, got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected still 1 POST after dedup, got %d", posts())
 	}
 }
 
 func TestSlackReporter_DedupReset(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	var postCount int
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		postCount++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, "", logger)
-	reporter.httpClient = ts.Client()
+	reporter, posts := newCountingWebhook(t)
 
 	ctx := context.Background()
 
@@ -329,21 +343,21 @@ func TestSlackReporter_DedupReset(t *testing.T) {
 	reporter.Report(ctx, []SlackFinding{
 		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/100", Category: "ci", Message: "🔴 test failed", DedupKey: "ci:abc123:e2e"},
 	})
-	if postCount != 1 {
-		t.Errorf("expected 1 POST, got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected 1 POST, got %d", posts())
 	}
 
 	// Different DedupKey (new SHA) should re-send
 	reporter.Report(ctx, []SlackFinding{
 		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Fix test", PRURL: "https://github.com/org/repo/pull/100", Category: "ci", Message: "🔴 test failed", DedupKey: "ci:def456:e2e"},
 	})
-	if postCount != 2 {
-		t.Errorf("expected 2 POSTs after new DedupKey, got %d", postCount)
+	if posts() != 2 {
+		t.Errorf("expected 2 POSTs after new DedupKey, got %d", posts())
 	}
 }
 
 func TestSlackReporter_Disabled(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	reporter := NewSlackReporter("", "", logger)
 
 	if reporter.IsEnabled() {
@@ -408,20 +422,7 @@ func TestCheckCIStatus_ReportsFailures(t *testing.T) {
 		prHeadSHAs: []string{"abc123"},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.CheckCIStatus(context.Background(), time.Time{})
 
@@ -448,20 +449,7 @@ func TestCheckRebaseNeeded_ReportsBehind(t *testing.T) {
 		prBehind:       true,
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.checkRebaseNeededWithStates(context.Background(), a.fetchMergeableStates(context.Background()))
 
@@ -484,20 +472,7 @@ func TestCheckConflicts_ReportsDirty(t *testing.T) {
 		mergeableState: "dirty",
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.checkConflictsWithStates(context.Background(), a.fetchMergeableStates(context.Background()))
 
@@ -523,20 +498,7 @@ func TestCheckNewReviews_ReportsComments(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.CheckNewReviews(context.Background(), time.Time{})
 
@@ -562,20 +524,7 @@ func TestCheckCIStatus_NoFailures(t *testing.T) {
 		prHeadSHAs: []string{"abc123"},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.CheckCIStatus(context.Background(), time.Time{})
 
@@ -589,20 +538,7 @@ func TestCheckRebaseNeeded_Clean(t *testing.T) {
 		mergeableState: "clean",
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.checkRebaseNeededWithStates(context.Background(), a.fetchMergeableStates(context.Background()))
 
@@ -612,17 +548,7 @@ func TestCheckRebaseNeeded_Clean(t *testing.T) {
 }
 
 func TestSlackReporter_EmptyDedupKey(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	var postCount int
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		postCount++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, "", logger)
-	reporter.httpClient = ts.Client()
+	reporter, posts := newCountingWebhook(t)
 
 	ctx := context.Background()
 
@@ -632,13 +558,13 @@ func TestSlackReporter_EmptyDedupKey(t *testing.T) {
 	}
 
 	reporter.Report(ctx, findings)
-	if postCount != 1 {
-		t.Errorf("expected 1 POST, got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected 1 POST, got %d", posts())
 	}
 
 	reporter.Report(ctx, findings)
-	if postCount != 2 {
-		t.Errorf("expected 2 POSTs (empty DedupKey never suppressed), got %d", postCount)
+	if posts() != 2 {
+		t.Errorf("expected 2 POSTs (empty DedupKey never suppressed), got %d", posts())
 	}
 }
 
@@ -655,17 +581,7 @@ func TestURLHelpers(t *testing.T) {
 }
 
 func TestSlackReporter_CollectAndFlush(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	var postCount int
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		postCount++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, "", logger)
-	reporter.httpClient = ts.Client()
+	reporter, posts := newCountingWebhook(t)
 
 	ctx := context.Background()
 
@@ -678,14 +594,14 @@ func TestSlackReporter_CollectAndFlush(t *testing.T) {
 	})
 
 	// No POST until Flush
-	if postCount != 0 {
-		t.Errorf("expected 0 POSTs before Flush, got %d", postCount)
+	if posts() != 0 {
+		t.Errorf("expected 0 POSTs before Flush, got %d", posts())
 	}
 
 	// Flush should send a single consolidated message
 	reporter.Flush(ctx)
-	if postCount != 1 {
-		t.Errorf("expected 1 POST after Flush, got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected 1 POST after Flush, got %d", posts())
 	}
 
 	// Pending should be drained
@@ -697,23 +613,13 @@ func TestSlackReporter_CollectAndFlush(t *testing.T) {
 
 	// Flushing again with no new findings should not POST
 	reporter.Flush(ctx)
-	if postCount != 1 {
-		t.Errorf("expected still 1 POST after empty Flush, got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected still 1 POST after empty Flush, got %d", posts())
 	}
 }
 
 func TestSlackReporter_CollectConcurrent(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	var postCount int
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		postCount++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, "", logger)
-	reporter.httpClient = ts.Client()
+	reporter, posts := newCountingWebhook(t)
 
 	// Simulate concurrent collection from multiple goroutines
 	var wg sync.WaitGroup
@@ -736,23 +642,13 @@ func TestSlackReporter_CollectConcurrent(t *testing.T) {
 
 	// Flush should send all as one message
 	reporter.Flush(context.Background())
-	if postCount != 1 {
-		t.Errorf("expected 1 POST after Flush, got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected 1 POST after Flush, got %d", posts())
 	}
 }
 
 func TestSlackReporter_FlushDedup(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	var postCount int
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		postCount++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reporter := NewSlackReporter(ts.URL, "", logger)
-	reporter.httpClient = ts.Client()
+	reporter, posts := newCountingWebhook(t)
 
 	ctx := context.Background()
 
@@ -761,8 +657,8 @@ func TestSlackReporter_FlushDedup(t *testing.T) {
 		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Test", Message: "test", DedupKey: "ci:abc:e2e"},
 	})
 	reporter.Flush(ctx)
-	if postCount != 1 {
-		t.Errorf("expected 1 POST, got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected 1 POST, got %d", posts())
 	}
 
 	// Second collect+flush with same DedupKey — should be suppressed
@@ -770,8 +666,8 @@ func TestSlackReporter_FlushDedup(t *testing.T) {
 		{Owner: "org", Repo: "repo", PRNumber: 100, PRTitle: "Test", Message: "test", DedupKey: "ci:abc:e2e"},
 	})
 	reporter.Flush(ctx)
-	if postCount != 1 {
-		t.Errorf("expected still 1 POST after dedup, got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected still 1 POST after dedup, got %d", posts())
 	}
 }
 
@@ -897,7 +793,7 @@ func TestSlackReporter_FlushDedup_WithinBatch(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
@@ -949,7 +845,7 @@ func TestSlackReporter_FlushDedup_DifferentFindingsSamePR(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
@@ -992,7 +888,7 @@ func TestSlackReporter_FlushDedup_EmptyDedupKeyNotDeduped(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	reporter := NewSlackReporter(ts.URL, "", logger)
 	reporter.httpClient = ts.Client()
 
@@ -1029,7 +925,7 @@ func TestLoadLastReportedAt_JSONFileExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	got, reported := loadLastReportedAt(path, logger)
 
 	if !got.Equal(expected) {
@@ -1054,7 +950,7 @@ func TestLoadLastReportedAt_PlainTextBackwardCompat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	got, reported := loadLastReportedAt(path, logger)
 
 	if !got.Equal(expected) {
@@ -1069,7 +965,7 @@ func TestLoadLastReportedAt_FileMissing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nonexistent")
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	before := time.Now()
 	got, reported := loadLastReportedAt(path, logger)
 	after := time.Now()
@@ -1089,7 +985,7 @@ func TestLoadLastReportedAt_FileCorrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	before := time.Now()
 	got, reported := loadLastReportedAt(path, logger)
 	after := time.Now()
@@ -1109,7 +1005,7 @@ func TestLoadLastReportedAt_FileEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	before := time.Now()
 	got, reported := loadLastReportedAt(path, logger)
 	after := time.Now()
@@ -1125,7 +1021,7 @@ func TestLoadLastReportedAt_FileEmpty(t *testing.T) {
 func TestPersistLastReportedAt_WritesAndReads(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subdir", "last-report-at")
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 
 	ts := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
 	reported := map[string]bool{"rebase:100": true, "conflict:200": true}
@@ -1149,7 +1045,7 @@ func TestPersistLastReportedAt_WritesAndReads(t *testing.T) {
 func TestPersistLastReportedAt_CreatesDirectory(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a", "b", "c", "last-report-at")
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 
 	ts := time.Now()
 	persistLastReportedAt(path, ts, make(map[string]bool), logger)
@@ -1192,7 +1088,7 @@ func TestSlackReporter_FlushPersistsLastReportedAt(t *testing.T) {
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "last-report-at")
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 	reporter := &SlackReporter{
 		webhookURL:     ts.URL,
 		reported:       make(map[string]bool),
@@ -1236,7 +1132,7 @@ func TestSlackReporter_LastReportedAtSurvivesRestart(t *testing.T) {
 
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "last-report-at")
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 
 	// First reporter: flush to persist timestamp
 	reporter1 := &SlackReporter{
@@ -1292,20 +1188,7 @@ func TestCheckCIStatus_FiltersStaleFailures(t *testing.T) {
 		prHeadSHAs: []string{"abc123"},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.CheckCIStatus(context.Background(), lastReportedAt)
 
@@ -1329,20 +1212,7 @@ func TestCheckCIStatus_IncludesFailuresWithZeroCompletedAt(t *testing.T) {
 		prHeadSHAs: []string{"abc123"},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.CheckCIStatus(context.Background(), lastReportedAt)
 
@@ -1363,20 +1233,7 @@ func TestCheckNewReviews_FiltersStaleComments(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.CheckNewReviews(context.Background(), lastReportedAt)
 
@@ -1398,20 +1255,7 @@ func TestCheckNewReviews_IncludesCommentsWithZeroCreatedAt(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.CheckNewReviews(context.Background(), lastReportedAt)
 
@@ -1430,7 +1274,7 @@ func TestSlackReporter_DedupKeysSurviveRestart(t *testing.T) {
 
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "last-report-at")
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 
 	// First reporter: report rebase and conflict findings
 	reporter1 := &SlackReporter{
@@ -1506,7 +1350,7 @@ func TestMigrateOldHashedFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger := discardLogger()
 		migrateOldHashedFiles(currentFile, logger)
 
 		// Old hashed files should be removed
@@ -1544,7 +1388,7 @@ func TestMigrateOldHashedFiles(t *testing.T) {
 		// Do NOT create the current file — simulate first run after upgrade
 		currentFile := filepath.Join(stateDir, "last-report-at")
 
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger := discardLogger()
 		migrateOldHashedFiles(currentFile, logger)
 
 		// Current file should now exist (renamed from the first old file)
@@ -1589,7 +1433,7 @@ func TestMigrateOldHashedFiles(t *testing.T) {
 
 		currentFile := filepath.Join(stateDir, "last-report-at")
 
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		logger := discardLogger()
 		migrateOldHashedFiles(currentFile, logger)
 
 		// .tmp file should NOT be touched (not renamed, not deleted)
@@ -1606,7 +1450,7 @@ func TestMigrateOldHashedFiles(t *testing.T) {
 func TestPersistLastReportedAt_PersistsAllKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "last-report-at")
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := discardLogger()
 
 	// Create a large set of keys — all should be persisted since the in-memory
 	// map is the bound (maxDedupEntries), not a separate persist cap.
@@ -1636,20 +1480,7 @@ func TestCheckNewReviews_AllStaleNoFindings(t *testing.T) {
 		},
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := &Agent{
-		gh:        gh,
-		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:     NewState(),
-		worktrees: &mockWorktreeManager{},
-		logger:    logger,
-	}
-
-	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
-		PRNumber:   100,
-		IssueTitle: "Fix test",
-		Status:     StatusPROpen,
-	}
+	a := slackTestAgent(gh)
 
 	findings := a.CheckNewReviews(context.Background(), lastReportedAt)
 

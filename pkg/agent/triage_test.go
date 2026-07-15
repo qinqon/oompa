@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -12,14 +11,12 @@ func TestProcessTriageJobs_NoJobsConfigured(t *testing.T) {
 	gh := &mockGitHubClient{}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:      "owner",
-		Repo:       "repo",
-		TriageJobs: []string{}, // No jobs configured
-	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), &ClaudeCodeAgent{})
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.TriageJobs = []string{} // No jobs configured
+		}),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Should not create any worktrees or run Claude
@@ -39,22 +36,18 @@ func TestProcessTriageJobs_SkipsAlreadyInvestigated(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
 
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.TriageJobs = []string{"https://github.com/owner/repo/actions/workflows/ci.yml"}
+		}),
+	)
 	// Pre-mark run as already investigated
-	state.MarkRunInvestigated("owner/repo/ci.yml", "100")
-
-	cfg := Config{
-		Owner:      "owner",
-		Repo:       "repo",
-		TriageJobs: []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
-	}
-
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), &ClaudeCodeAgent{})
+	a.state.MarkRunInvestigated("owner/repo/ci.yml", "100")
 	a.ProcessTriageJobs(context.Background())
 
 	// Should still be marked as investigated
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "100") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "100") {
 		t.Error("expected run to remain marked as investigated")
 	}
 	// Should not create any worktrees (no investigation triggered)
@@ -75,19 +68,16 @@ func TestProcessTriageJobs_SkipsSuccessfulRuns(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
 
-	cfg := Config{
-		Owner:      "owner",
-		Repo:       "repo",
-		TriageJobs: []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
-	}
-
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), &ClaudeCodeAgent{})
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.TriageJobs = []string{"https://github.com/owner/repo/actions/workflows/ci.yml"}
+		}),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Successful run should be marked as investigated
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "200") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "200") {
 		t.Error("expected successful run to be marked as investigated")
 	}
 	// Should not create any worktrees (no investigation needed for success)
@@ -110,15 +100,6 @@ func TestProcessTriageJobs_CreatesIssueWhenFlakyIssuesEnabled(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		TriageJobs:        []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
-		CreateFlakyIssues: true,
-		FlakyLabel:        "ci-flake",
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
@@ -126,7 +107,14 @@ func TestProcessTriageJobs_CreatesIssueWhenFlakyIssuesEnabled(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.TriageJobs = []string{"https://github.com/owner/repo/actions/workflows/ci.yml"}
+			c.CreateFlakyIssues = true
+			c.FlakyLabel = "ci-flake"
+		}),
+		withCodeAgent(codeAgent),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	if codeAgent.callCount != 1 {
@@ -146,7 +134,7 @@ func TestProcessTriageJobs_CreatesIssueWhenFlakyIssuesEnabled(t *testing.T) {
 		t.Errorf("expected label 'ci-flake', got %v", issue.Labels)
 	}
 
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "300") {
 		t.Error("expected run 300 to be marked as investigated")
 	}
 }
@@ -164,14 +152,6 @@ func TestProcessTriageJobs_DefaultOnlyChecksLatest(t *testing.T) {
 	}
 	runner := &mockCommandRunner{stdout: triageResult}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:      "owner",
-		Repo:       "repo",
-		FlakyLabel: "flaky-test",
-		TriageJobs: []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
-		// TriageLookback: 0 (default — only check latest)
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
@@ -179,7 +159,14 @@ func TestProcessTriageJobs_DefaultOnlyChecksLatest(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "flaky-test"
+			c.TriageJobs = []string{"https://github.com/owner/repo/actions/workflows/ci.yml"}
+			// TriageLookback: 0 (default — only check latest)
+		}),
+		withCodeAgent(codeAgent),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Should only investigate 1 run (the latest)
@@ -188,13 +175,13 @@ func TestProcessTriageJobs_DefaultOnlyChecksLatest(t *testing.T) {
 	}
 
 	// Only the latest run should be marked as investigated
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "300") {
 		t.Error("expected run 300 to be marked as investigated")
 	}
-	if state.IsRunInvestigated("owner/repo/ci.yml", "200") {
+	if a.state.IsRunInvestigated("owner/repo/ci.yml", "200") {
 		t.Error("expected run 200 to NOT be marked as investigated")
 	}
-	if state.IsRunInvestigated("owner/repo/ci.yml", "100") {
+	if a.state.IsRunInvestigated("owner/repo/ci.yml", "100") {
 		t.Error("expected run 100 to NOT be marked as investigated")
 	}
 }
@@ -211,14 +198,6 @@ func TestProcessTriageJobs_LookbackInvestigatesAllFailedRuns(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:          "owner",
-		Repo:           "repo",
-		FlakyLabel:     "flaky-test",
-		TriageJobs:     []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
-		TriageLookback: 24 * time.Hour, // look back 24 hours
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
@@ -227,7 +206,14 @@ func TestProcessTriageJobs_LookbackInvestigatesAllFailedRuns(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "flaky-test"
+			c.TriageJobs = []string{"https://github.com/owner/repo/actions/workflows/ci.yml"}
+			c.TriageLookback = 24 * time.Hour // look back 24 hours
+		}),
+		withCodeAgent(codeAgent),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Should investigate 2 runs (300 and 200 are within 24h; 100 is older)
@@ -236,14 +222,14 @@ func TestProcessTriageJobs_LookbackInvestigatesAllFailedRuns(t *testing.T) {
 	}
 
 	// Runs within window should be marked as investigated
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "300") {
 		t.Error("expected run 300 to be marked as investigated")
 	}
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "200") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "200") {
 		t.Error("expected run 200 to be marked as investigated")
 	}
 	// Run older than lookback should NOT be investigated
-	if state.IsRunInvestigated("owner/repo/ci.yml", "100") {
+	if a.state.IsRunInvestigated("owner/repo/ci.yml", "100") {
 		t.Error("expected run 100 to NOT be marked as investigated (too old)")
 	}
 }
@@ -260,14 +246,6 @@ func TestProcessTriageJobs_LookbackSkipsSuccessfulRuns(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:          "owner",
-		Repo:           "repo",
-		FlakyLabel:     "flaky-test",
-		TriageJobs:     []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
-		TriageLookback: 24 * time.Hour,
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
@@ -275,7 +253,14 @@ func TestProcessTriageJobs_LookbackSkipsSuccessfulRuns(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "flaky-test"
+			c.TriageJobs = []string{"https://github.com/owner/repo/actions/workflows/ci.yml"}
+			c.TriageLookback = 24 * time.Hour
+		}),
+		withCodeAgent(codeAgent),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Only 1 agent call for the failed run
@@ -284,10 +269,10 @@ func TestProcessTriageJobs_LookbackSkipsSuccessfulRuns(t *testing.T) {
 	}
 
 	// Both runs should be marked as investigated
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "300") {
 		t.Error("expected failed run 300 to be marked as investigated")
 	}
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "200") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "200") {
 		t.Error("expected passed run 200 to be marked as investigated")
 	}
 }
@@ -303,18 +288,6 @@ func TestProcessTriageJobs_LookbackSkipsAlreadyInvestigated(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-
-	// Pre-mark run 200 as already investigated
-	state.MarkRunInvestigated("owner/repo/ci.yml", "200")
-
-	cfg := Config{
-		Owner:          "owner",
-		Repo:           "repo",
-		FlakyLabel:     "flaky-test",
-		TriageJobs:     []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
-		TriageLookback: 24 * time.Hour,
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
@@ -322,7 +295,16 @@ func TestProcessTriageJobs_LookbackSkipsAlreadyInvestigated(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "flaky-test"
+			c.TriageJobs = []string{"https://github.com/owner/repo/actions/workflows/ci.yml"}
+			c.TriageLookback = 24 * time.Hour
+		}),
+		withCodeAgent(codeAgent),
+	)
+	// Pre-mark run 200 as already investigated
+	a.state.MarkRunInvestigated("owner/repo/ci.yml", "200")
 	a.ProcessTriageJobs(context.Background())
 
 	// Only 1 agent call (run 200 was already investigated)
@@ -330,7 +312,7 @@ func TestProcessTriageJobs_LookbackSkipsAlreadyInvestigated(t *testing.T) {
 		t.Errorf("expected 1 agent call (skip already investigated), got %d", codeAgent.callCount)
 	}
 
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "300") {
 		t.Error("expected run 300 to be marked as investigated")
 	}
 }
@@ -350,15 +332,6 @@ func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-		TriageJobs:        []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
-		TriageLookback:    24 * time.Hour,
-	}
 
 	// Both runs produce the same failure signature, so titles match exactly.
 	codeAgent := &sequentialMockCodeAgent{
@@ -368,7 +341,15 @@ func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+			c.TriageJobs = []string{"https://github.com/owner/repo/actions/workflows/ci.yml"}
+			c.TriageLookback = 24 * time.Hour
+		}),
+		withCodeAgent(codeAgent),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Should create exactly 1 issue (first run) and post a run-link comment (second run)
@@ -388,10 +369,10 @@ func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob(t *testing.T) {
 	}
 
 	// Both runs should be marked as investigated
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "300") {
 		t.Error("expected run 300 to be marked as investigated")
 	}
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "200") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "200") {
 		t.Error("expected run 200 to be marked as investigated")
 	}
 }
@@ -415,15 +396,6 @@ func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob_DifferentSignatures(t
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-		TriageJobs:        []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
-		TriageLookback:    24 * time.Hour,
-	}
 
 	// Runs produce DIFFERENT failure signatures — titles will NOT match exactly.
 	// The LLM says NONE for the second run (unreliable matching).
@@ -436,7 +408,15 @@ func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob_DifferentSignatures(t
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+			c.TriageJobs = []string{"https://github.com/owner/repo/actions/workflows/ci.yml"}
+			c.TriageLookback = 24 * time.Hour
+		}),
+		withCodeAgent(codeAgent),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Should create exactly 1 issue (first run) and post a run-link comment (second run)
@@ -456,10 +436,10 @@ func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob_DifferentSignatures(t
 	}
 
 	// Both runs should be marked as investigated
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "300") {
 		t.Error("expected run 300 to be marked as investigated")
 	}
-	if !state.IsRunInvestigated("owner/repo/ci.yml", "200") {
+	if !a.state.IsRunInvestigated("owner/repo/ci.yml", "200") {
 		t.Error("expected run 200 to be marked as investigated")
 	}
 
@@ -487,17 +467,6 @@ func TestProcessTriageJobs_DeduplicatesDifferentJobsSameRootCause(t *testing.T) 
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-		TriageJobs: []string{
-			"https://github.com/owner/repo/actions/workflows/unit.yml",
-			"https://github.com/owner/repo/actions/workflows/e2e.yml",
-		},
-	}
 
 	// First job: analysis + no match (NONE) → creates issue
 	// Second job: analysis + LLM match → deduplicates
@@ -509,7 +478,17 @@ func TestProcessTriageJobs_DeduplicatesDifferentJobsSameRootCause(t *testing.T) 
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+			c.TriageJobs = []string{
+				"https://github.com/owner/repo/actions/workflows/unit.yml",
+				"https://github.com/owner/repo/actions/workflows/e2e.yml",
+			}
+		}),
+		withCodeAgent(codeAgent),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Should create exactly 1 issue (first job) and post a run-link (second job)
@@ -534,10 +513,10 @@ func TestProcessTriageJobs_DeduplicatesDifferentJobsSameRootCause(t *testing.T) 
 	}
 
 	// Both runs should be investigated
-	if !state.IsRunInvestigated("owner/repo/unit.yml", "100") {
+	if !a.state.IsRunInvestigated("owner/repo/unit.yml", "100") {
 		t.Error("expected unit.yml run to be marked as investigated")
 	}
-	if !state.IsRunInvestigated("owner/repo/e2e.yml", "100") {
+	if !a.state.IsRunInvestigated("owner/repo/e2e.yml", "100") {
 		t.Error("expected e2e.yml run to be marked as investigated")
 	}
 }
@@ -613,20 +592,19 @@ func TestTriageDedup_DifferentFailuresSameJob_MatchesByJobName(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-		TriageJobs:        []string{},
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{}, // Should NOT be called — same-job match fires first
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+			c.TriageJobs = []string{}
+		}),
+		withCodeAgent(codeAgent),
+	)
 
 	// Different failure signature from the same job
 	title := "CI Failure: periodic-knmstate-e2e-handler-k8s-latest / CRI-O mirror returned HTTP 404"
@@ -736,13 +714,6 @@ func TestTriageDedup_SameJobCycleIssue_MatchesBeforeLLM(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
@@ -751,7 +722,13 @@ func TestTriageDedup_SameJobCycleIssue_MatchesBeforeLLM(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+		}),
+		withCodeAgent(codeAgent),
+	)
 
 	cycleIssues := []Issue{
 		{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Compile error in main.go line 42"},
@@ -794,19 +771,18 @@ func TestTriageDedup_SameFailureSameJob_MatchesExistingIssue(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{}, // Should NOT be called — same-job match fires first
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+		}),
+		withCodeAgent(codeAgent),
+	)
 
 	// New failure is also a DNS issue, but slightly different title
 	title := "CI Failure: periodic-e2e-test / DNS lookup timed out for registry.k8s.io"
@@ -843,19 +819,18 @@ func TestTriageDedup_ExactTitleMatch_SkipsLLM(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{}, // No results — should NOT be called
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+		}),
+		withCodeAgent(codeAgent),
+	)
 
 	title := "CI Failure: periodic-e2e-test / CRI-O mirror HTTP 404"
 	analysis := "## Summary\nCRI-O mirror HTTP 404\n\n## Root Cause\nMirror outage"
@@ -894,19 +869,18 @@ func TestTriageDedup_SameJobDifferentSignature_MatchesAcrossDays(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{}, // Should NOT be called — same-job match fires first
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+		}),
+		withCodeAgent(codeAgent),
+	)
 
 	// Next day: same job, different failure signature from LLM
 	title := "CI Failure: kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml / IPAM controller pod CrashLoopBackOff"
@@ -944,19 +918,18 @@ func TestTriageDedup_SameJobNoSignature_MatchesAcrossDays(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+		}),
+		withCodeAgent(codeAgent),
+	)
 
 	title := "CI Failure: owner/repo/ci.yml / New failure signature"
 	analysis := "## Summary\nNew failure"
@@ -989,13 +962,6 @@ func TestTriageDedup_DifferentJob_DoesNotSameJobMatch(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
@@ -1003,7 +969,13 @@ func TestTriageDedup_DifferentJob_DoesNotSameJobMatch(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+		}),
+		withCodeAgent(codeAgent),
+	)
 
 	// Different job name
 	title := "CI Failure: owner/repo/ci.yml / Compile error"
@@ -1110,19 +1082,18 @@ func TestTriageDedup_NoExistingIssues_ReturnsZero(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-	}
 
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+		}),
+		withCodeAgent(codeAgent),
+	)
 
 	matchedIssue := a.matchExistingTriageIssue(context.Background(),
 		"periodic-e2e-test",
@@ -1147,13 +1118,8 @@ func TestTriageDedup_AddRunLinkComment(t *testing.T) {
 	gh := &mockGitHubClient{}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner: "owner",
-		Repo:  "repo",
-	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), &ClaudeCodeAgent{})
+	a := newTestAgent(gh, runner, wtm)
 
 	run := JobRun{
 		ID:     "12345",
@@ -1255,18 +1221,6 @@ func TestProcessTriageJobs_DeterministicFallbackWhenLLMSaysNone(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-		TriageJobs: []string{
-			"https://github.com/owner/repo/actions/workflows/unit.yml",
-			"https://github.com/owner/repo/actions/workflows/e2e.yml",
-			"https://github.com/owner/repo/actions/workflows/lint.yml",
-		},
-	}
 
 	// First job: analysis → no match → creates issue
 	// Second job: analysis + LLM says NONE → deterministic fallback should match
@@ -1281,7 +1235,18 @@ func TestProcessTriageJobs_DeterministicFallbackWhenLLMSaysNone(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+			c.TriageJobs = []string{
+				"https://github.com/owner/repo/actions/workflows/unit.yml",
+				"https://github.com/owner/repo/actions/workflows/e2e.yml",
+				"https://github.com/owner/repo/actions/workflows/lint.yml",
+			}
+		}),
+		withCodeAgent(codeAgent),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Should create exactly 1 issue (first job); jobs 2 and 3 use deterministic fallback
@@ -1311,13 +1276,6 @@ func TestTriageDedup_DeterministicFallbackWithCycleIssuesMerged(t *testing.T) {
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-	}
 
 	// LLM says NONE — deterministic fallback should fire after LLM
 	codeAgent := &sequentialMockCodeAgent{
@@ -1326,7 +1284,13 @@ func TestTriageDedup_DeterministicFallbackWithCycleIssuesMerged(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+		}),
+		withCodeAgent(codeAgent),
+	)
 
 	title := "CI Failure: job-b / DNS timeout"
 	analysis := "## Summary\nDNS timeout"
@@ -1379,17 +1343,6 @@ func TestTriageDedup_DeterministicFallbackWithMultiLineNone(t *testing.T) {
 
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
-	state := NewState()
-	cfg := Config{
-		Owner:             "owner",
-		Repo:              "repo",
-		FlakyLabel:        "ci-flake",
-		CreateFlakyIssues: true,
-		TriageJobs: []string{
-			"https://github.com/owner/repo/actions/workflows/unit.yml",
-			"https://github.com/owner/repo/actions/workflows/e2e.yml",
-		},
-	}
 
 	// First job: analysis → creates issue
 	// Second job: analysis + LLM says NONE → deterministic fallback
@@ -1401,7 +1354,17 @@ func TestTriageDedup_DeterministicFallbackWithMultiLineNone(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a := newTestAgent(gh, runner, wtm,
+		withCfg(func(c *Config) {
+			c.FlakyLabel = "ci-flake"
+			c.CreateFlakyIssues = true
+			c.TriageJobs = []string{
+				"https://github.com/owner/repo/actions/workflows/unit.yml",
+				"https://github.com/owner/repo/actions/workflows/e2e.yml",
+			}
+		}),
+		withCodeAgent(codeAgent),
+	)
 	a.ProcessTriageJobs(context.Background())
 
 	// Should create exactly 1 issue; second job uses deterministic fallback
