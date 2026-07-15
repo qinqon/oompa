@@ -1,145 +1,32 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
-	"strings"
-	"sync"
+	"unicode/utf8"
 )
 
-const (
-	// scannerInitBufSize is the initial buffer size for the bufio.Scanner
-	// used when streaming command output (64 KB).
-	scannerInitBufSize = 64 * 1024
-	// scannerMaxBufSize is the maximum buffer size the scanner will grow to
-	// when reading long lines from command output (10 MB).
-	scannerMaxBufSize = 10 * 1024 * 1024
-)
+// ClaudeCodeAgent implements CodeAgent for Claude Code CLI.
+type ClaudeCodeAgent struct{}
 
-// CommandRunner executes external commands.
-type CommandRunner interface {
-	Run(ctx context.Context, workDir string, name string, args ...string) (stdout []byte, stderr []byte, err error)
-	RunWithStdin(ctx context.Context, workDir string, stdin string, name string, args ...string) (stdout []byte, stderr []byte, err error)
-}
-
-// StreamingRunner extends CommandRunner with line-by-line stdout streaming.
-type StreamingRunner interface {
-	CommandRunner
-	RunStreamWithStdin(ctx context.Context, workDir string, stdin string, onLine func(line []byte), name string, args ...string) (stdout []byte, stderr []byte, err error)
-}
-
-// ExecRunner is the concrete CommandRunner using os/exec.
-type ExecRunner struct {
-	// Env holds additional environment variables to set on commands.
-	Env []string
-	mu  sync.RWMutex // protects Env
-}
-
-// SetGHToken updates the GH_TOKEN environment variable in a thread-safe manner.
-func (r *ExecRunner) SetGHToken(token string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Update existing GH_TOKEN or append if not found
-	ghTokenKey := "GH_TOKEN="
-	found := false
-	for i, env := range r.Env {
-		if len(env) >= len(ghTokenKey) && env[:len(ghTokenKey)] == ghTokenKey {
-			r.Env[i] = ghTokenKey + token
-			found = true
-			break
-		}
+// Run invokes Claude Code in headless mode with streaming output and parses
+// the result. If resume is true, --continue resumes the most recent session
+// in workDir. See runCLIAgent for the shared invocation semantics.
+func (c *ClaudeCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir, prompt string,
+	logger *slog.Logger, resume bool) (AgentResult, error) {
+	args := []string{"-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"}
+	if resume {
+		args = append(args, "--continue")
 	}
-	if !found {
-		r.Env = append(r.Env, ghTokenKey+token)
-	}
-}
-
-func (r *ExecRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = workDir
-	r.mu.RLock()
-	if len(r.Env) > 0 {
-		cmd.Env = append(cmd.Environ(), r.Env...)
-	}
-	r.mu.RUnlock()
-
-	stdout, err = cmd.Output()
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		stderr = exitErr.Stderr
-	}
-	return stdout, stderr, err
-}
-
-func (r *ExecRunner) RunWithStdin(ctx context.Context, workDir, stdin, name string, args ...string) (stdout, stderr []byte, err error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = workDir
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
-	r.mu.RLock()
-	if len(r.Env) > 0 {
-		cmd.Env = append(cmd.Environ(), r.Env...)
-	}
-	r.mu.RUnlock()
-
-	stdout, err = cmd.Output()
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		stderr = exitErr.Stderr
-	}
-	return stdout, stderr, err
-}
-
-func (r *ExecRunner) RunStreamWithStdin(ctx context.Context, workDir, stdin string, onLine func(line []byte), name string, args ...string) (stdout, stderr []byte, err error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = workDir
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
-	r.mu.RLock()
-	if len(r.Env) > 0 {
-		cmd.Env = append(cmd.Environ(), r.Env...)
-	}
-	r.mu.RUnlock()
-
-	pipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
-
-	if err := cmd.Start(); err != nil {
-		return nil, nil, err
-	}
-
-	var stdoutBuf bytes.Buffer
-	scanner := bufio.NewScanner(pipe)
-	scanner.Buffer(make([]byte, 0, scannerInitBufSize), scannerMaxBufSize)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		stdoutBuf.Write(line)
-		stdoutBuf.WriteByte('\n')
-		if onLine != nil {
-			onLine(append([]byte{}, line...))
-		}
-	}
-	scanErr := scanner.Err()
-
-	// Always call Wait to release child process resources and avoid zombies.
-	waitErr := cmd.Wait()
-
-	// Prefer the scanner error if present -- it describes the read failure.
-	if scanErr != nil {
-		return stdoutBuf.Bytes(), stderrBuf.Bytes(), scanErr
-	}
-	return stdoutBuf.Bytes(), stderrBuf.Bytes(), waitErr
+	return runCLIAgent(ctx, runner, workDir, prompt, logger, cliAgentSpec{
+		binary:  "claude",
+		args:    args,
+		logLine: logStreamEvent,
+		parse:   parseStreamResult,
+	})
 }
 
 // streamEvent represents a single event in Claude's stream-json output.
@@ -164,6 +51,21 @@ type streamContent struct {
 	Name string `json:"name,omitempty"` // for tool_use
 }
 
+// logPreviewLen caps agent text output in debug logs.
+const logPreviewLen = 200
+
+// previewText truncates s for log output without splitting a UTF-8 sequence.
+func previewText(s string) string {
+	if len(s) <= logPreviewLen {
+		return s
+	}
+	cut := logPreviewLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
+
 // logStreamEvent logs a stream-json event at appropriate levels.
 func logStreamEvent(logger *slog.Logger, line []byte) {
 	var event streamEvent
@@ -181,11 +83,7 @@ func logStreamEvent(logger *slog.Logger, line []byte) {
 			case "tool_use":
 				logger.Debug("claude using tool", "tool", c.Name)
 			case "text":
-				text := c.Text
-				if len(text) > 200 {
-					text = text[:200] + "..."
-				}
-				logger.Debug("claude", "text", text)
+				logger.Debug("claude", "text", previewText(c.Text))
 			}
 		}
 	case "result":
@@ -221,25 +119,4 @@ func parseStreamResult(stdout []byte) (AgentResult, error) {
 		}
 	}
 	return AgentResult{}, fmt.Errorf("no result event found in stream output (stdout: %s)", string(stdout))
-}
-
-// BuildAgentEnv builds the environment variable slice for agent invocations.
-// Only passes through git identity; other variables (like GH_TOKEN) are
-// inherited from the system environment. This allows subprocesses to use
-// system-level authentication or credential helpers (e.g. gh auth git-credential).
-func BuildAgentEnv(cfg Config) []string {
-	var env []string
-	if cfg.GitAuthorName != "" {
-		env = append(env,
-			fmt.Sprintf("GIT_AUTHOR_NAME=%s", cfg.GitAuthorName),
-			fmt.Sprintf("GIT_COMMITTER_NAME=%s", cfg.GitAuthorName),
-		)
-	}
-	if cfg.GitAuthorEmail != "" {
-		env = append(env,
-			fmt.Sprintf("GIT_AUTHOR_EMAIL=%s", cfg.GitAuthorEmail),
-			fmt.Sprintf("GIT_COMMITTER_EMAIL=%s", cfg.GitAuthorEmail),
-		)
-	}
-	return env
 }
