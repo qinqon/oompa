@@ -18,6 +18,8 @@ type ClaudeCodeAgent struct{}
 // Run invokes Claude Code in headless mode with streaming output and parses the result.
 // If resume is true, --continue is passed to resume the most recent session in workDir.
 // The prompt is passed via stdin to avoid hitting the OS ARG_MAX limit for large prompts.
+// On invocation failure the partial stream output is still parsed so any cost
+// it reports can be billed against session budgets alongside the error.
 func (c *ClaudeCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir, prompt string,
 	logger *slog.Logger, resume bool) (AgentResult, error) {
 	args := []string{"-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"}
@@ -37,7 +39,10 @@ func (c *ClaudeCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir
 	}
 
 	if err != nil {
-		return AgentResult{}, fmt.Errorf("claude invocation failed: %w (stderr: %s)", err, string(stderr))
+		// Best-effort cost salvage: a run that failed after emitting its
+		// result event still consumed tokens.
+		salvaged, _ := parseStreamResult(stdout)
+		return AgentResult{CostUSD: salvaged.CostUSD}, fmt.Errorf("claude invocation failed: %w (stderr: %s)", err, string(stderr))
 	}
 
 	return parseStreamResult(stdout)

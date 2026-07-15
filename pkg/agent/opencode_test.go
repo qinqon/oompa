@@ -209,3 +209,55 @@ func TestOpenCodeAgent_Run_Failure(t *testing.T) {
 		t.Errorf("expected stderr in error message, got: %v", err)
 	}
 }
+
+// TestOpenCodeAgent_ParseResult_CostKeptOnErrorEvent verifies that step costs
+// accumulated before an error event survive into the failed result.
+func TestOpenCodeAgent_ParseResult_CostKeptOnErrorEvent(t *testing.T) {
+	stdout := `{"type":"step_finish","timestamp":1767036064100,"sessionID":"ses_XXX","part":{"type":"step-finish","reason":"tool-calls","cost":0.003}}
+{"type":"error","timestamp":1767036064400,"sessionID":"ses_XXX","error":{"name":"CommandFailed","data":{"message":"command not found"}}}
+`
+	result, err := parseOpencodeResult([]byte(stdout))
+	if err == nil {
+		t.Fatal("expected error from error event")
+	}
+	if result.CostUSD != 0.003 {
+		t.Errorf("expected salvaged cost 0.003, got %f", result.CostUSD)
+	}
+}
+
+// TestOpenCodeAgent_ParseResult_CostKeptOnMissingFinalStep verifies that step
+// costs survive when the stream is truncated before the final step_finish.
+func TestOpenCodeAgent_ParseResult_CostKeptOnMissingFinalStep(t *testing.T) {
+	stdout := `{"type":"step_finish","timestamp":1767036064100,"sessionID":"ses_XXX","part":{"type":"step-finish","reason":"tool-calls","cost":0.001}}
+{"type":"step_finish","timestamp":1767036064200,"sessionID":"ses_XXX","part":{"type":"step-finish","reason":"tool-calls","cost":0.002}}
+`
+	result, err := parseOpencodeResult([]byte(stdout))
+	if err == nil {
+		t.Fatal("expected error for missing final step")
+	}
+	if result.CostUSD != 0.003 {
+		t.Errorf("expected salvaged cost 0.003, got %f", result.CostUSD)
+	}
+}
+
+// TestOpenCodeAgent_Run_SalvagesCostOnInvocationFailure verifies that a
+// non-zero exit still bills the steps that completed before the failure.
+func TestOpenCodeAgent_Run_SalvagesCostOnInvocationFailure(t *testing.T) {
+	stdout := `{"type":"step_finish","timestamp":1767036064100,"sessionID":"ses_XXX","part":{"type":"step-finish","reason":"tool-calls","cost":0.005}}
+{"type":"step_finish","timestamp":1767036064200,"sessionID":"ses_XXX","part":{"type":"step-finish","reason":"tool-calls","cost":0.005}}
+`
+	runner := &mockCommandRunner{
+		stdout: []byte(stdout),
+		err:    &mockError{msg: "exit status 1"},
+		stderr: []byte("killed"),
+	}
+	agent := &OpenCodeAgent{}
+
+	result, err := agent.Run(context.Background(), runner, "/tmp/work", "task", nil, false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if result.CostUSD != 0.01 {
+		t.Errorf("expected salvaged cost 0.01, got %f", result.CostUSD)
+	}
+}

@@ -150,19 +150,20 @@ func parseOpencodeResult(stdout []byte) (AgentResult, error) {
 				foundFinalStep = true
 			}
 		case "error":
-			// Return error if OpenCode reported one
+			// Return error if OpenCode reported one, keeping the cost
+			// accumulated so far — the failed run still billed those steps.
 			if event.Error != nil {
 				msg := event.Error.Name
 				if event.Error.Data != nil && event.Error.Data.Message != "" {
 					msg = event.Error.Data.Message
 				}
-				return AgentResult{}, fmt.Errorf("opencode error: %s", msg)
+				return AgentResult{CostUSD: totalCost}, fmt.Errorf("opencode error: %s", msg)
 			}
 		}
 	}
 
 	if !foundFinalStep {
-		return AgentResult{}, fmt.Errorf("no final step_finish event (reason=stop) found in OpenCode output (stdout: %s)", string(stdout))
+		return AgentResult{CostUSD: totalCost}, fmt.Errorf("no final step_finish event (reason=stop) found in OpenCode output (stdout: %s)", string(stdout))
 	}
 
 	// Join accumulated text
@@ -180,6 +181,9 @@ func parseOpencodeResult(stdout []byte) (AgentResult, error) {
 // Run invokes OpenCode CLI with JSON output and parses the result.
 // If resume is true, --continue is passed to resume the most recent session in workDir.
 // The prompt is passed via stdin to avoid hitting the OS ARG_MAX limit for large prompts.
+// On invocation failure the partial stream output is still parsed so any cost
+// it reports (OpenCode bills per step) can be billed against session budgets
+// alongside the error.
 func (o *OpenCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir, prompt string,
 	logger *slog.Logger, resume bool) (AgentResult, error) {
 	args := []string{"run", "--format", "json", "--dangerously-skip-permissions"}
@@ -202,7 +206,10 @@ func (o *OpenCodeAgent) Run(ctx context.Context, runner CommandRunner, workDir, 
 	}
 
 	if err != nil {
-		return AgentResult{}, fmt.Errorf("opencode invocation failed: %w (stderr: %s)", err, string(stderr))
+		// Best-effort cost salvage: sum the step costs emitted before the
+		// failure — the failed run still billed those steps.
+		salvaged, _ := parseOpencodeResult(stdout)
+		return AgentResult{CostUSD: salvaged.CostUSD}, fmt.Errorf("opencode invocation failed: %w (stderr: %s)", err, string(stderr))
 	}
 
 	return parseOpencodeResult(stdout)
