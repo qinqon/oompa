@@ -771,9 +771,6 @@ func (m *laneTestMockGH) AddIssueComment(context.Context, string, string, int, s
 func (m *laneTestMockGH) AddLabel(context.Context, string, string, int, string) error {
 	return nil
 }
-func (m *laneTestMockGH) RemoveLabel(context.Context, string, string, int, string) error {
-	return nil
-}
 func (m *laneTestMockGH) ListPRsByHead(context.Context, string, string, string, string) ([]PR, error) {
 	return nil, nil
 }
@@ -794,9 +791,6 @@ func (m *laneTestMockGH) GetPRHeadSHA(context.Context, string, string, int) (str
 }
 func (m *laneTestMockGH) HasPRCommentReaction(context.Context, string, string, int64, string, string) (bool, error) {
 	return false, nil
-}
-func (m *laneTestMockGH) ReplyToPRComment(context.Context, string, string, int, int64, string) error {
-	return nil
 }
 func (m *laneTestMockGH) AssignIssue(context.Context, string, string, int, string) error {
 	return nil

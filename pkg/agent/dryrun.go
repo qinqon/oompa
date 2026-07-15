@@ -30,11 +30,6 @@ func (d *DryRunGitHubClient) AddLabel(_ context.Context, _, _ string, issueNumbe
 	return nil
 }
 
-func (d *DryRunGitHubClient) RemoveLabel(_ context.Context, _, _ string, issueNumber int, label string) error {
-	d.logger.Info("[dry-run] would remove label", "issue", issueNumber, "label", label)
-	return nil
-}
-
 func (d *DryRunGitHubClient) AssignIssue(_ context.Context, _, _ string, issueNumber int, user string) error {
 	d.logger.Info("[dry-run] would assign issue", "issue", issueNumber, "user", user)
 	return nil
@@ -62,11 +57,6 @@ func (d *DryRunGitHubClient) AddPRCommentReaction(_ context.Context, _, _ string
 
 func (d *DryRunGitHubClient) AddIssueCommentReaction(_ context.Context, _, _ string, commentID int64, reaction string) error {
 	d.logger.Info("[dry-run] would add issue comment reaction", "comment", commentID, "reaction", reaction)
-	return nil
-}
-
-func (d *DryRunGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, prNumber int, commentID int64, body string) error {
-	d.logger.Info("[dry-run] would reply to comment", "pr", prNumber, "comment", commentID, "body", truncateString(body, 100))
 	return nil
 }
 

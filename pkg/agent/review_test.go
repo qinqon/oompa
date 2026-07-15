@@ -66,14 +66,6 @@ func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
 	if agent.state.ActiveIssues[IssueKey("owner", "repo", 42)].LastCommentID != 60 {
 		t.Errorf("expected lastCommentID 60, got %d", agent.state.ActiveIssues[IssueKey("owner", "repo", 42)].LastCommentID)
 	}
-
-	// Oompa does NOT post its own replies — the skill handles all per-comment
-	// communication. Verify no reply comments were posted by the agent.
-	for _, comment := range gh.addedComments {
-		if strings.HasPrefix(comment, "reply:") {
-			t.Errorf("expected no agent-posted replies (skill owns replies), got: %s", comment)
-		}
-	}
 }
 
 func TestProcessReviewComments_PushFailureDoesNotAdvanceCursor(t *testing.T) {
@@ -164,13 +156,6 @@ func TestProcessReviewComments_AgentErrorStillAdvancesCursor(t *testing.T) {
 	}
 
 	agent.ProcessReviewComments(context.Background())
-
-	// Oompa does NOT post its own replies — the skill handles all per-comment communication.
-	for _, comment := range gh.addedComments {
-		if strings.HasPrefix(comment, "reply:") {
-			t.Errorf("expected no agent-posted replies (skill owns replies), got: %s", comment)
-		}
-	}
 
 	// Cursor should still advance (to avoid infinite retry loops)
 	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]

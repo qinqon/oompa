@@ -258,24 +258,6 @@ func TestAddLabel(t *testing.T) {
 	}
 }
 
-func TestRemoveLabel(t *testing.T) {
-	var called bool
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v3/repos/owner/repo/issues/42/labels/good-for-ai", func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	gh := setupTestClient(t, mux)
-	err := gh.RemoveLabel(context.Background(), "owner", "repo", 42, "good-for-ai")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !called {
-		t.Error("expected remove label endpoint to be called")
-	}
-}
-
 func TestListPRsByHead(t *testing.T) {
 	var closedRequests int
 	mux := http.NewServeMux()

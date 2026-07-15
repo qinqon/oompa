@@ -30,7 +30,6 @@ type CommandRunner interface {
 // StreamingRunner extends CommandRunner with line-by-line stdout streaming.
 type StreamingRunner interface {
 	CommandRunner
-	RunStream(ctx context.Context, workDir string, onLine func(line []byte), name string, args ...string) (stdout []byte, stderr []byte, err error)
 	RunStreamWithStdin(ctx context.Context, workDir string, stdin string, onLine func(line []byte), name string, args ...string) (stdout []byte, stderr []byte, err error)
 }
 
@@ -94,10 +93,6 @@ func (r *ExecRunner) RunWithStdin(ctx context.Context, workDir, stdin, name stri
 		stderr = exitErr.Stderr
 	}
 	return stdout, stderr, err
-}
-
-func (r *ExecRunner) RunStream(ctx context.Context, workDir string, onLine func(line []byte), name string, args ...string) (stdout, stderr []byte, err error) {
-	return r.RunStreamWithStdin(ctx, workDir, "", onLine, name, args...)
 }
 
 func (r *ExecRunner) RunStreamWithStdin(ctx context.Context, workDir, stdin string, onLine func(line []byte), name string, args ...string) (stdout, stderr []byte, err error) {
