@@ -145,15 +145,13 @@ func (r *ExecRunner) RunStreamWithStdin(ctx context.Context, workDir, stdin stri
 // streamEvent represents a single event in Claude's stream-json output.
 type streamEvent struct {
 	Type    string         `json:"type"`
-	Subtype string         `json:"subtype,omitempty"`
 	Message *streamMessage `json:"message,omitempty"`
 	// Result fields (only present when Type == "result")
-	Result        string  `json:"result,omitempty"`
-	CostUSD       float64 `json:"cost_usd,omitempty"`
-	TotalCostUSD  float64 `json:"total_cost_usd,omitempty"`
-	NumTurns      int     `json:"num_turns,omitempty"`
-	DurationMs    int64   `json:"duration_ms,omitempty"`
-	DurationAPIMs int64   `json:"duration_api_ms,omitempty"`
+	Result       string  `json:"result,omitempty"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
+	TotalCostUSD float64 `json:"total_cost_usd,omitempty"`
+	NumTurns     int     `json:"num_turns,omitempty"`
+	DurationMs   int64   `json:"duration_ms,omitempty"`
 }
 
 type streamMessage struct {

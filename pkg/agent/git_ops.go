@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -62,7 +61,7 @@ func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumbe
 	}
 
 	// Fallback: construct from git log body only (skip subject to avoid duplication).
-	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%b---")
+	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%b")
 	rawBody := strings.TrimSpace(string(logOut))
 
 	body := fmt.Sprintf("Fixes #%d\n\n", issueNumber)
@@ -245,15 +244,6 @@ func (a *Agent) gitSquashInto(ctx context.Context, worktreePath, targetSHA strin
 		}
 	}
 	return nil
-}
-
-// conventionalCommitRe matches issue titles that start with a conventional commit prefix.
-// Supports standard prefixes with optional scope and breaking change indicator.
-var conventionalCommitRe = regexp.MustCompile(`^(feat|fix|build|refactor|docs|chore|test|ci|perf|style|revert)(\([^)]+\))?!?:`)
-
-// isConventionalCommitTitle returns true if the title starts with a conventional commit prefix.
-func isConventionalCommitTitle(title string) bool {
-	return conventionalCommitRe.MatchString(title)
 }
 
 // maxSubjectLen is the maximum length of a commit subject line.

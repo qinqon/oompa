@@ -7,56 +7,6 @@ import (
 	"testing"
 )
 
-func TestIsConventionalCommitTitle(t *testing.T) {
-	tests := []struct {
-		name     string
-		title    string
-		expected bool
-	}{
-		// Conventional commit prefixes — should match
-		{"feat prefix", "feat: add new feature", true},
-		{"fix prefix", "fix: resolve crash on startup", true},
-		{"build prefix", "build: consolidate multi-arch container build scripts", true},
-		{"refactor prefix", "refactor: simplify handler logic", true},
-		{"docs prefix", "docs: update README", true},
-		{"chore prefix", "chore: bump dependencies", true},
-		{"test prefix", "test: add unit tests for parser", true},
-		{"ci prefix", "ci: fix GitHub Actions workflow", true},
-		{"perf prefix", "perf: optimize database queries", true},
-		{"style prefix", "style: fix formatting", true},
-		{"revert prefix", "revert: undo previous change", true},
-
-		// With scope
-		{"feat with scope", "feat(api): add pagination support", true},
-		{"fix with scope", "fix(auth): handle expired tokens", true},
-		{"refactor with scope", "refactor(build): consolidate scripts", true},
-
-		// With breaking change indicator
-		{"breaking without scope", "feat!: remove deprecated API", true},
-		{"breaking with scope", "feat(api)!: change response format", true},
-
-		// Non-conventional titles — should NOT match
-		{"capitalized word", "Fix the bug", false},
-		{"lowercase no prefix", "implement feature X", false},
-		{"sentence case", "Update README with new instructions", false},
-		{"issue ref prefix", "Fix #42: something", false},
-		{"invalid prefix word", "feature: this is not a valid prefix", false},
-		{"uppercase prefix", "FEAT: uppercase doesn't match", false},
-		{"missing colon", "feat - missing colon", false},
-		{"no space after colon", "feat:missing space is fine", true},
-		{"empty string", "", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isConventionalCommitTitle(tt.title)
-			if got != tt.expected {
-				t.Errorf("isConventionalCommitTitle(%q) = %v, want %v", tt.title, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestTruncateSubject(t *testing.T) {
 	tests := []struct {
 		name     string

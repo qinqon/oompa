@@ -423,7 +423,6 @@ func (a *Agent) BootstrapWatchedPRs(ctx context.Context) {
 			BranchName:   branchName,
 			PRNumber:     prNumber,
 			Status:       "pr-open",
-			CreatedAt:    time.Now(),
 		}
 
 		a.state.ActiveIssues[IssueKey(a.cfg.Owner, a.cfg.Repo, prNumber)] = work
@@ -638,14 +637,6 @@ func (a *Agent) CheckCIStatus(ctx context.Context, lastReportedAt time.Time) []S
 	return findings
 }
 
-// CheckRebaseNeeded is a lightweight report-only check that inspects PR mergeable state
-// and returns findings for PRs that are behind the base branch.
-// Fetches mergeable states from GitHub. Use checkRebaseNeededWithStates when states
-// are already available to avoid redundant API calls.
-func (a *Agent) CheckRebaseNeeded(ctx context.Context) []SlackFinding {
-	return a.checkRebaseNeededWithStates(ctx, a.fetchMergeableStates(ctx))
-}
-
 // checkRebaseNeededWithStates checks for outdated PRs using precomputed mergeable states.
 // Includes dynamic rebase deferral context when the main branch is active.
 func (a *Agent) checkRebaseNeededWithStates(ctx context.Context, states map[int]string) []SlackFinding {
@@ -693,14 +684,6 @@ func (a *Agent) checkRebaseNeededWithStates(ctx context.Context, states map[int]
 	}
 
 	return findings
-}
-
-// CheckConflicts is a lightweight report-only check that inspects PR mergeable state
-// and returns findings for PRs with merge conflicts.
-// Fetches mergeable states from GitHub. Use checkConflictsWithStates when states
-// are already available to avoid redundant API calls.
-func (a *Agent) CheckConflicts(ctx context.Context) []SlackFinding {
-	return a.checkConflictsWithStates(ctx, a.fetchMergeableStates(ctx))
 }
 
 // checkConflictsWithStates checks for merge conflicts using precomputed mergeable states.

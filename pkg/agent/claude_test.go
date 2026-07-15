@@ -63,7 +63,6 @@ func (m *mockCommandRunner) RunWithStdin(_ context.Context, workDir, stdin, name
 func streamResultJSON(r AgentResult) []byte {
 	event := streamEvent{
 		Type:    "result",
-		Subtype: "success",
 		Result:  r.Result,
 		CostUSD: r.CostUSD,
 	}

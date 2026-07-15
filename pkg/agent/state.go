@@ -170,7 +170,6 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 				IssueTitle:   issue.Title,
 				WorktreePath: worktreePath,
 				BranchName:   branchName,
-				CreatedAt:    time.Now(),
 			}
 
 			// Check if a PR already exists for this branch
@@ -244,7 +243,6 @@ func BuildStateFromGitHub(ctx context.Context, gh GitHubClient, cfg Config, clon
 			BranchName:   pr.Head,
 			PRNumber:     prNumber,
 			Status:       StatusPROpen,
-			CreatedAt:    time.Now(),
 		}
 
 		recoverCommentCursors(ctx, gh, cfg, work, prNumber, logger)

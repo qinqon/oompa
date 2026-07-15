@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // ProcessNewIssues finds labeled issues and spawns Claude to implement fixes.
@@ -85,7 +84,6 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 					BranchName:  branchName,
 					PRNumber:    openPR.Number,
 					Status:      StatusPROpen,
-					CreatedAt:   time.Now(),
 				}
 				continue
 			} else if hasMerged {
@@ -137,7 +135,6 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			WorktreePath: worktreePath,
 			BranchName:   branchName,
 			Status:       StatusImplementing,
-			CreatedAt:    time.Now(),
 		}
 
 		// Insert into state map before parallel phase
