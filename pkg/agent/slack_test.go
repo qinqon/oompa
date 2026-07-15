@@ -1265,9 +1265,13 @@ func TestCheckNewReviews_IncludesCommentsWithZeroCreatedAt(t *testing.T) {
 }
 
 func TestSlackReporter_DedupKeysSurviveRestart(t *testing.T) {
-	var postCount int
+	var mu sync.Mutex
+	postCount := 0
+	posts := func() int { mu.Lock(); defer mu.Unlock(); return postCount }
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
 		postCount++
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer ts.Close()
@@ -1291,8 +1295,8 @@ func TestSlackReporter_DedupKeysSurviveRestart(t *testing.T) {
 		{Owner: "org", Repo: "repo", PRNumber: 8380, PRTitle: "Add feature", PRURL: "https://github.com/org/repo/pull/8380", Category: "conflict", Message: "merge conflicts", DedupKey: "conflict:8380"},
 	})
 	reporter1.Flush(context.Background())
-	if postCount != 1 {
-		t.Fatalf("expected 1 POST, got %d", postCount)
+	if posts() != 1 {
+		t.Fatalf("expected 1 POST, got %d", posts())
 	}
 
 	// Simulate restart: create new reporter from persisted state
@@ -1312,8 +1316,8 @@ func TestSlackReporter_DedupKeysSurviveRestart(t *testing.T) {
 		{Owner: "org", Repo: "repo", PRNumber: 8380, PRTitle: "Add feature", PRURL: "https://github.com/org/repo/pull/8380", Category: "conflict", Message: "merge conflicts", DedupKey: "conflict:8380"},
 	})
 	reporter2.Flush(context.Background())
-	if postCount != 1 {
-		t.Errorf("expected still 1 POST after restart (dedup keys survived), got %d", postCount)
+	if posts() != 1 {
+		t.Errorf("expected still 1 POST after restart (dedup keys survived), got %d", posts())
 	}
 
 	// New finding should still be reported
@@ -1321,8 +1325,8 @@ func TestSlackReporter_DedupKeysSurviveRestart(t *testing.T) {
 		{Owner: "org", Repo: "repo", PRNumber: 9000, PRTitle: "New PR", PRURL: "https://github.com/org/repo/pull/9000", Category: "rebase", Message: "behind main", DedupKey: "rebase:9000"},
 	})
 	reporter2.Flush(context.Background())
-	if postCount != 2 {
-		t.Errorf("expected 2 POSTs (new finding after restart), got %d", postCount)
+	if posts() != 2 {
+		t.Errorf("expected 2 POSTs (new finding after restart), got %d", posts())
 	}
 }
 
