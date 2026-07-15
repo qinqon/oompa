@@ -529,26 +529,17 @@ func (a *Agent) markCIChecked(work *IssueWork, sha, checkName string) {
 
 // originDefaultBranch returns "origin/<default-branch>" (e.g. "origin/main", "origin/master").
 func (a *Agent) originDefaultBranch() string {
-	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
-		return wtm.OriginDefaultBranch()
-	}
-	return "origin/main"
+	return a.worktrees.OriginDefaultBranch()
 }
 
 // defaultBranch returns the default branch name (e.g. "main", "master").
 func (a *Agent) defaultBranch() string {
-	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
-		return wtm.DefaultBranch()
-	}
-	return "main"
+	return a.worktrees.DefaultBranch()
 }
 
 // pushRemote returns the name of the push remote (e.g. "origin", "fork").
 func (a *Agent) pushRemote() string {
-	if wtm, ok := a.worktrees.(*GitWorktreeManager); ok {
-		return wtm.PushRemote()
-	}
-	return "origin"
+	return a.worktrees.PushRemote()
 }
 
 // issueAssignedTo returns true if the given user is among the issue's assignees.

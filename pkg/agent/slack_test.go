@@ -410,10 +410,11 @@ func TestCheckCIStatus_ReportsFailures(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -449,10 +450,11 @@ func TestCheckRebaseNeeded_ReportsBehind(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -484,10 +486,11 @@ func TestCheckConflicts_ReportsDirty(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -522,10 +525,11 @@ func TestCheckNewReviews_ReportsComments(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -560,10 +564,11 @@ func TestCheckCIStatus_NoFailures(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -586,10 +591,11 @@ func TestCheckRebaseNeeded_Clean(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -1288,10 +1294,11 @@ func TestCheckCIStatus_FiltersStaleFailures(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -1324,10 +1331,11 @@ func TestCheckCIStatus_IncludesFailuresWithZeroCompletedAt(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -1357,10 +1365,11 @@ func TestCheckNewReviews_FiltersStaleComments(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -1391,10 +1400,11 @@ func TestCheckNewReviews_IncludesCommentsWithZeroCreatedAt(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{
@@ -1628,10 +1638,11 @@ func TestCheckNewReviews_AllStaleNoFindings(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := &Agent{
-		gh:     gh,
-		cfg:    Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
-		state:  NewState(),
-		logger: logger,
+		gh:        gh,
+		cfg:       Config{Owner: "org", Repo: "repo", SlackWebhookURL: "http://example.com/webhook"},
+		state:     NewState(),
+		worktrees: &mockWorktreeManager{},
+		logger:    logger,
 	}
 
 	a.state.ActiveIssues["org/repo#100"] = &IssueWork{

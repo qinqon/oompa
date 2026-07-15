@@ -15,6 +15,13 @@ type WorktreeManager interface {
 	CreateWorktree(ctx context.Context, branchName string) (worktreePath string, err error)
 	RemoveWorktree(ctx context.Context, worktreePath string) error
 	SyncWorktree(ctx context.Context, worktreePath string) error
+	// DefaultBranch returns the default branch name of the upstream repo
+	// (e.g. "main", "master").
+	DefaultBranch() string
+	// OriginDefaultBranch returns "origin/<default-branch>".
+	OriginDefaultBranch() string
+	// PushRemote returns the git remote name to push to ("fork" or "origin").
+	PushRemote() string
 }
 
 // GitWorktreeManager implements WorktreeManager using git commands.
