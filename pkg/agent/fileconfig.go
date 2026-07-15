@@ -371,7 +371,6 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 		baseCfg := Config{
 			Owner:        owner,
 			Repo:         repo,
-			CloneDir:     fmt.Sprintf("%s/%s/%s", baseCloneDir, owner, repo),
 			PollInterval: pollInterval,
 			LogLevel:     logLevel,
 			DryRun:       fc.DryRun || globalCfg.DryRun,
@@ -381,7 +380,6 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			ForkOwner:    projForkOwner,
 			ForkRepo:     projForkRepo,
 			// These are inherited from the global config (set by main from auth)
-			GitHubToken:      globalCfg.GitHubToken,
 			GitHubUser:       globalCfg.GitHubUser,
 			GitHubHeadOwner:  globalCfg.GitHubHeadOwner,
 			GitAuthorName:    globalCfg.GitAuthorName,
@@ -404,10 +402,28 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 			baseCfg.GitHubHeadOwner = projForkOwner
 		}
 
+		// Each role entry gets its own clone directory. Role goroutines run
+		// concurrently and each builds its own worktree manager whose mutex
+		// only serializes its own git operations — a shared .git across
+		// goroutines would race (including destructive recovery like
+		// re-cloning). Per-role forks also get their own "fork" remote this
+		// way instead of clashing in one clone. Entries of the same role are
+		// disambiguated by position (prs, prs-2, ...).
+		roleCounts := map[string]int{}
+		roleCloneDir := func(role string) string {
+			roleCounts[role]++
+			slug := role
+			if n := roleCounts[role]; n > 1 {
+				slug = fmt.Sprintf("%s-%d", role, n)
+			}
+			return fmt.Sprintf("%s/%s/%s/%s", baseCloneDir, owner, repo, slug)
+		}
+
 		// PRs role entries
 		for _, pr := range p.PRs {
 			cfg := baseCfg
 			cfg.Role = "prs"
+			cfg.CloneDir = roleCloneDir("prs")
 			cfg.WatchPRs = pr.Watch
 			cfg.Reactions = stringsOr(pr.Reactions, projReactions)
 			cfg.SkipComments = stringsOr(pr.SkipComment, projSkipComment)
@@ -424,6 +440,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 		for _, issue := range p.Issues {
 			cfg := baseCfg
 			cfg.Role = "issues"
+			cfg.CloneDir = roleCloneDir("issues")
 			cfg.Label = stringOr(issue.Label, projLabel)
 			cfg.OnlyAssigned = boolOr(issue.OnlyAssigned, projOnlyAssigned)
 			cfg.SkipFix = boolOr(issue.SkipFix, projSkipFix)
@@ -446,6 +463,7 @@ func BuildRoleEntries(fc *FileConfig, baseCloneDir string, globalCfg Config) []R
 		for _, triage := range p.Triage {
 			cfg := baseCfg
 			cfg.Role = "triage"
+			cfg.CloneDir = roleCloneDir("triage")
 			cfg.TriageJobs = triage.Jobs
 			cfg.TriageWorkflow = triage.Workflow
 			cfg.TriageLanePatterns = triage.Lanes

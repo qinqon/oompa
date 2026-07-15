@@ -230,12 +230,16 @@ func TestBuildRoleEntries_MultipleProjectsAndRoles(t *testing.T) {
 	if entries[2].Config.Owner != "org2" || entries[2].Config.Repo != "repo2" {
 		t.Error("entry 2 has wrong owner/repo")
 	}
-	// Check clone dirs are per-project
-	if entries[0].Config.CloneDir != "/tmp/work/org1/repo1" {
+	// Check clone dirs are per role entry — concurrent role goroutines must
+	// never share a .git directory.
+	if entries[0].Config.CloneDir != "/tmp/work/org1/repo1/prs" {
 		t.Errorf("unexpected clone dir %q", entries[0].Config.CloneDir)
 	}
-	if entries[1].Config.CloneDir != "/tmp/work/org2/repo2" {
+	if entries[1].Config.CloneDir != "/tmp/work/org2/repo2/issues" {
 		t.Errorf("unexpected clone dir %q", entries[1].Config.CloneDir)
+	}
+	if entries[2].Config.CloneDir != "/tmp/work/org2/repo2/triage" {
+		t.Errorf("unexpected clone dir %q", entries[2].Config.CloneDir)
 	}
 	// Check triage entry has schedule and Config.Role
 	if entries[2].Schedule != "09:00 UTC" {
@@ -1346,5 +1350,49 @@ func TestBuildRoleEntries_TriageWorkflowLanes(t *testing.T) {
 	// TriageJobs should be empty (workflow+lanes mode, not jobs mode)
 	if len(te.Config.TriageJobs) != 0 {
 		t.Errorf("expected empty TriageJobs, got %v", te.Config.TriageJobs)
+	}
+}
+
+func TestBuildRoleEntries_CloneDirsAreUniquePerEntry(t *testing.T) {
+	// Concurrent role goroutines each build their own worktree manager whose
+	// mutex only guards its own instance, so two entries sharing one clone
+	// dir would run unserialized git operations on the same .git.
+	fc := &FileConfig{
+		Projects: []ProjectConfig{
+			{
+				Repo: "org/repo",
+				PRs: []PRsRoleConfig{
+					{Watch: []int{1}},
+					{Watch: []int{2}},
+				},
+				Issues: []IssuesRoleConfig{{Label: "ai"}},
+				Triage: []TriageRoleConfig{{Jobs: []string{"https://ci.example.com/job"}}},
+			},
+		},
+	}
+
+	entries := BuildRoleEntries(fc, "/tmp/work", Config{Agent: "claudecode"})
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d", len(entries))
+	}
+
+	seen := map[string]string{}
+	for _, e := range entries {
+		dir := e.Config.CloneDir
+		if dir == "" {
+			t.Fatalf("entry %s has empty clone dir", e.Role)
+		}
+		if prev, dup := seen[dir]; dup {
+			t.Errorf("clone dir %q shared by %s and %s entries", dir, prev, e.Role)
+		}
+		seen[dir] = e.Role
+	}
+
+	// Same-role entries are disambiguated by position.
+	if entries[0].Config.CloneDir != "/tmp/work/org/repo/prs" {
+		t.Errorf("unexpected first prs clone dir %q", entries[0].Config.CloneDir)
+	}
+	if entries[1].Config.CloneDir != "/tmp/work/org/repo/prs-2" {
+		t.Errorf("unexpected second prs clone dir %q", entries[1].Config.CloneDir)
 	}
 }

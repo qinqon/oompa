@@ -1532,7 +1532,7 @@ func TestBuildChangeSummary(t *testing.T) {
 				results: []mockCodeAgentCall{{result: AgentResult{Result: tt.llmResult}, err: tt.llmErr}},
 			}
 
-			result := agent.buildChangeSummary(context.Background(), "/tmp/worktree", "abc", "def")
+			result := agent.buildChangeSummary(context.Background(), &IssueWork{WorktreePath: "/tmp/worktree"}, "abc", "def")
 
 			for _, s := range tt.want {
 				if !strings.Contains(result, s) {

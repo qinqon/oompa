@@ -398,7 +398,7 @@ func (a *Agent) commentChangeSummary(ctx context.Context, work *IssueWork, befor
 		return
 	}
 
-	summary := a.buildChangeSummary(ctx, work.WorktreePath, beforeSHA, afterSHA)
+	summary := a.buildChangeSummary(ctx, work, beforeSHA, afterSHA)
 
 	compareURL := fmt.Sprintf("https://github.com/%s/%s/compare/%s..%s",
 		a.cfg.Owner, a.cfg.Repo, beforeSHA, afterSHA)
@@ -414,10 +414,11 @@ func (a *Agent) commentChangeSummary(ctx context.Context, work *IssueWork, befor
 // It runs `git diff` to get the actual patch, passes it to the LLM for summarization,
 // and returns concise human-readable descriptions of each logical change.
 // Falls back to a generic message if the diff or LLM call fails.
-func (a *Agent) buildChangeSummary(ctx context.Context, worktreePath, beforeSHA, afterSHA string) string {
+// The LLM invocation cost is accumulated into the work item's session budget.
+func (a *Agent) buildChangeSummary(ctx context.Context, work *IssueWork, beforeSHA, afterSHA string) string {
 	const fallback = "- Updated code to address review feedback"
 
-	out, _, err := a.runner.Run(ctx, worktreePath, "git", "diff", "--no-color", beforeSHA, afterSHA)
+	out, _, err := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--no-color", beforeSHA, afterSHA)
 	if err != nil {
 		return fallback
 	}
@@ -428,7 +429,10 @@ func (a *Agent) buildChangeSummary(ctx context.Context, worktreePath, beforeSHA,
 	}
 
 	prompt := buildChangeSummaryPrompt(diff)
-	result, err := a.codeAgent.Run(ctx, a.runner, worktreePath, prompt, a.logger, false)
+	result, err := a.codeAgent.Run(ctx, a.runner, work.WorktreePath, prompt, a.logger, false)
+	// Track cumulative cost even on failure — failed invocations still
+	// consume tokens and count against the per-PR session budget.
+	work.SessionCostUSD += result.CostUSD
 	if err != nil {
 		a.logger.Warn("LLM summarization failed, using fallback", "error", err)
 		return fallback

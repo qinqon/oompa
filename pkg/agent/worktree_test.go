@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -451,4 +453,86 @@ func (r *worktreeHealthRunner) Run(ctx context.Context, workDir, name string, ar
 	}
 
 	return nil, nil, nil
+}
+
+// syncPullFailRunner fails `git pull --rebase` with a scripted stderr and
+// optionally fails the recovery `git reset --hard`.
+type syncPullFailRunner struct {
+	mockCommandRunner
+	pullStderr  string
+	failReset   bool
+	resetStderr string
+}
+
+func (r *syncPullFailRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
+	stdout, stderr, err = r.mockCommandRunner.Run(ctx, workDir, name, args...)
+	if name == "git" && len(args) > 0 {
+		switch args[0] {
+		case "pull":
+			return nil, []byte(r.pullStderr), fmt.Errorf("exit status 1")
+		case "reset":
+			if r.failReset {
+				return nil, []byte(r.resetStderr), fmt.Errorf("exit status 128")
+			}
+		case "rev-parse":
+			return []byte("ai/issue-42\n"), nil, nil
+		}
+	}
+	return stdout, stderr, err
+}
+
+func TestSyncWorktree_PullConflictResetsToRemote(t *testing.T) {
+	runner := &syncPullFailRunner{pullStderr: "CONFLICT (content): Merge conflict in main.go\nerror: could not apply abc123"}
+	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+
+	err := mgr.SyncWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
+	if err != nil {
+		t.Fatalf("expected recovery via reset, got error: %v", err)
+	}
+
+	// Calls: fetch, rev-parse, pull (fails), rebase --abort, reset --hard origin/ai/issue-42
+	if len(runner.calls) != 5 {
+		t.Fatalf("expected 5 calls (fetch, rev-parse, pull, abort, reset), got %d: %v", len(runner.calls), runner.calls)
+	}
+	if runner.calls[3].Args[0] != "rebase" || runner.calls[3].Args[1] != "--abort" {
+		t.Errorf("expected 'git rebase --abort' after failed pull, got %v", runner.calls[3].Args)
+	}
+	expectedReset := []string{"reset", "--hard", "origin/ai/issue-42"}
+	for i, arg := range expectedReset {
+		if i >= len(runner.calls[4].Args) || runner.calls[4].Args[i] != arg {
+			t.Fatalf("expected reset call %v, got %v", expectedReset, runner.calls[4].Args)
+		}
+	}
+}
+
+func TestSyncWorktree_MissingRemoteRefIsOK(t *testing.T) {
+	runner := &syncPullFailRunner{pullStderr: "fatal: couldn't find remote ref ai/issue-42"}
+	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+
+	err := mgr.SyncWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
+	if err != nil {
+		t.Fatalf("expected nil for missing remote ref, got: %v", err)
+	}
+
+	// No recovery commands after the failed pull: fetch, rev-parse, pull only.
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected 3 calls (no recovery for missing ref), got %d: %v", len(runner.calls), runner.calls)
+	}
+}
+
+func TestSyncWorktree_PullFailureAndResetFailureErrors(t *testing.T) {
+	runner := &syncPullFailRunner{
+		pullStderr:  "error: could not apply abc123",
+		failReset:   true,
+		resetStderr: "fatal: ambiguous argument 'origin/ai/issue-42'",
+	}
+	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+
+	err := mgr.SyncWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
+	if err == nil {
+		t.Fatal("expected error when both pull and recovery reset fail")
+	}
+	if !strings.Contains(err.Error(), "recovery reset failed") {
+		t.Errorf("expected error to mention failed recovery, got: %v", err)
+	}
 }

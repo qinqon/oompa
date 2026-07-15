@@ -189,3 +189,25 @@ type mockError struct {
 }
 
 func (e *mockError) Error() string { return e.msg }
+
+func TestClaudeCodeAgent_SalvagesCostOnInvocationFailure(t *testing.T) {
+	// A run can fail (non-zero exit) after emitting its result event; the
+	// tokens are billed regardless, so the cost must survive the error.
+	runner := &mockCommandRunner{
+		stdout: streamResultJSON(AgentResult{Result: "partial", CostUSD: 0.42}),
+		err:    &mockError{msg: "exit status 1"},
+		stderr: []byte("crashed after result"),
+	}
+	agent := &ClaudeCodeAgent{}
+
+	result, err := agent.Run(context.Background(), runner, "/tmp/work", "fix the bug", nil, false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if result.CostUSD != 0.42 {
+		t.Errorf("expected salvaged cost 0.42, got %f", result.CostUSD)
+	}
+	if result.Result != "" {
+		t.Errorf("expected cost-only salvage on failure, got result text %q", result.Result)
+	}
+}
