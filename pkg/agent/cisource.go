@@ -25,10 +25,16 @@ type CIJobSource interface {
 
 	// JobName returns the human-readable job name.
 	JobName() string
+
+	// RunLabel returns the human label for a failed run of this source in
+	// reports: "lane" for matrix-lane sources, "triage job" otherwise.
+	RunLabel() string
 }
 
 // ParseCIJobURL determines the CI backend from the URL and returns a CIJobSource.
-func ParseCIJobURL(jobURL string, ghClient GitHubClient) (CIJobSource, error) {
+// lookback bounds how far back run listing scans for sources that support
+// server-side time filtering (GitHub Actions); GCS-backed sources ignore it.
+func ParseCIJobURL(jobURL string, ghClient GitHubClient, lookback time.Duration) (CIJobSource, error) {
 	// GCS-backed CI: any URL containing /view/gs/{bucket}/{prefix}
 	if strings.Contains(jobURL, "/view/gs/") {
 		bucket, prefix := extractBucketPrefix(jobURL)
@@ -49,7 +55,7 @@ func ParseCIJobURL(jobURL string, ghClient GitHubClient) (CIJobSource, error) {
 
 	// GitHub Actions: github.com/{owner}/{repo}/actions/workflows/{workflow}
 	if strings.Contains(jobURL, "github.com/") && strings.Contains(jobURL, "/actions/workflows/") {
-		return parseGitHubActionsURL(jobURL, ghClient)
+		return parseGitHubActionsURL(jobURL, ghClient, lookback)
 	}
 
 	return nil, fmt.Errorf("unrecognized CI job URL format: %s", jobURL)
@@ -167,7 +173,7 @@ func parseDirectGCSURL(jobURL string) (CIJobSource, error) {
 
 // parseGitHubActionsURL parses a GitHub Actions workflow URL like:
 // https://github.com/nmstate/kubernetes-nmstate/actions/workflows/nightly.yml
-func parseGitHubActionsURL(jobURL string, ghClient GitHubClient) (CIJobSource, error) {
+func parseGitHubActionsURL(jobURL string, ghClient GitHubClient, lookback time.Duration) (CIJobSource, error) {
 	// Regex: github.com/{owner}/{repo}/actions/workflows/{workflow}
 	re := regexp.MustCompile(`github\.com/([^/]+)/([^/]+)/actions/workflows/([^/?#]+)`)
 	matches := re.FindStringSubmatch(jobURL)
@@ -185,6 +191,7 @@ func parseGitHubActionsURL(jobURL string, ghClient GitHubClient) (CIJobSource, e
 		workflow: workflow,
 		jobName:  fmt.Sprintf("%s/%s/%s", owner, repo, workflow),
 		gh:       ghClient,
+		lookback: lookback,
 	}, nil
 }
 
@@ -195,6 +202,8 @@ type GCSJobSource struct {
 	jobName string
 	client  *http.Client
 }
+
+func (g *GCSJobSource) RunLabel() string { return "triage job" }
 
 func (g *GCSJobSource) JobName() string {
 	return g.jobName
@@ -402,6 +411,8 @@ func newGCSDirectoryJobSource(bucket, prefix string) (*GCSDirectoryJobSource, er
 		resolvedRuns: make(map[string]gcsRef),
 	}, nil
 }
+
+func (g *GCSDirectoryJobSource) RunLabel() string { return "triage job" }
 
 func (g *GCSDirectoryJobSource) JobName() string {
 	return g.jobName
@@ -679,6 +690,15 @@ type GitHubActionsJobSource struct {
 	lanePatterns []string         // optional: glob patterns for matrix job names (lane-level filtering)
 	matchedJobs  map[string]int64 // runID → matched job ID (populated by ListRecentRuns for lane-level log fetch)
 	lookback     time.Duration    // optional: lookback window for filtering runs
+}
+
+// RunLabel distinguishes matrix-lane sources from whole-workflow sources in
+// report wording.
+func (g *GitHubActionsJobSource) RunLabel() string {
+	if len(g.lanePatterns) > 0 {
+		return "lane"
+	}
+	return "triage job"
 }
 
 func (g *GitHubActionsJobSource) JobName() string {

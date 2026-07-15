@@ -32,13 +32,10 @@ func (a *Agent) ProcessTriageJobs(ctx context.Context) {
 	for _, jobURL := range a.cfg.TriageJobs {
 		a.logger.Debug("processing triage job", "url", jobURL)
 
-		ciSource, err := ParseCIJobURL(jobURL, a.gh)
+		ciSource, err := ParseCIJobURL(jobURL, a.gh, a.cfg.TriageLookback)
 		if err != nil {
 			a.logger.Error("failed to parse CI job URL", "url", jobURL, "error", err)
 			continue
-		}
-		if ghaSource, ok := ciSource.(*GitHubActionsJobSource); ok {
-			ghaSource.lookback = a.cfg.TriageLookback
 		}
 		ciSources = append(ciSources, ciSource)
 	}
@@ -278,12 +275,7 @@ func (a *Agent) investigateTriageRun(ctx context.Context, ciSource CIJobSource, 
 	if a.SlackEnabled() {
 		failureSig := extractFailureSignature(analysis)
 
-		// Vary wording: "lane" for matrix job sources with lane patterns,
-		// "triage job" for standalone CI jobs (including workflow-level GHA)
-		label := "triage job"
-		if gha, ok := ciSource.(*GitHubActionsJobSource); ok && len(gha.lanePatterns) > 0 {
-			label = "lane"
-		}
+		label := ciSource.RunLabel()
 
 		var msg string
 		if failureSig != "" {

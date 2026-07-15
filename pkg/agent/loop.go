@@ -86,6 +86,12 @@ func (a *Agent) SetTokenFunc(fn func(context.Context) (string, error)) {
 	a.tokenFunc = fn
 }
 
+// tokenSettingRunner is the optional capability a CommandRunner implements to
+// receive refreshed GitHub tokens for its subprocess environment.
+type tokenSettingRunner interface {
+	SetGHToken(token string)
+}
+
 // RefreshToken updates the GitHub token if a token function is set.
 // Call this before each poll cycle to ensure the token is fresh.
 // The fresh token is propagated to subprocesses via the runner's
@@ -101,8 +107,8 @@ func (a *Agent) RefreshToken(ctx context.Context) error {
 	}
 
 	// Update the runner's GH_TOKEN environment variable
-	if execRunner, ok := a.runner.(*ExecRunner); ok {
-		execRunner.SetGHToken(token)
+	if r, ok := a.runner.(tokenSettingRunner); ok {
+		r.SetGHToken(token)
 	}
 
 	return nil
