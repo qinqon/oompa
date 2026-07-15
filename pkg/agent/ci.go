@@ -182,8 +182,13 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		// Get PR diff to help the agent determine if failure is related
-		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", a.originDefaultBranch())
+		// Get PR diff to help the agent determine if failure is related.
+		// Degrade gracefully on error: the investigation proceeds with an
+		// empty diff rather than being skipped.
+		diffOut, diffStderr, diffErr := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", a.originDefaultBranch())
+		if diffErr != nil {
+			a.logger.Warn("failed to get PR diff for CI context", "pr", work.PRNumber, "error", diffErr, "stderr", string(diffStderr))
+		}
 		diff := string(diffOut)
 
 		// Get commits in the PR to help the agent identify which commit introduced the failure

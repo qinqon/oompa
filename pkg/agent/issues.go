@@ -204,7 +204,14 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		}
 
 		// Check if the agent produced any commits
-		logOut, _, _ := a.runner.Run(ctx, task.worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--oneline")
+		logOut, logStderr, logErr := a.runner.Run(ctx, task.worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--oneline")
+		if logErr != nil {
+			// Distinguish a broken worktree from a genuinely empty branch so
+			// the failure log doesn't blame the agent for a git error.
+			a.logger.Error("failed to check for commits", "issue", task.issue.Number, "error", logErr, "stderr", string(logStderr))
+			a.markIssueFailed(ctx, task.issue.Number, task.work)
+			return
+		}
 		if strings.TrimSpace(string(logOut)) == "" {
 			a.logger.Warn("agent finished but produced no commits", "issue", task.issue.Number)
 			a.markIssueFailed(ctx, task.issue.Number, task.work)

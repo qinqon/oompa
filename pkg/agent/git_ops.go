@@ -61,7 +61,11 @@ func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumbe
 	}
 
 	// Fallback: construct from git log body only (skip subject to avoid duplication).
-	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%b")
+	// Degrade gracefully on error: the body is built without the log section.
+	logOut, logStderr, logErr := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%b")
+	if logErr != nil {
+		a.logger.Warn("failed to get git log for PR body", "issue", issueNumber, "error", logErr, "stderr", string(logStderr))
+	}
 	rawBody := strings.TrimSpace(string(logOut))
 
 	body := fmt.Sprintf("Fixes #%d\n\n", issueNumber)
