@@ -286,7 +286,10 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 		commitCountBefore := len(commitsBefore)
 
 		prompt := buildConflictResolutionPrompt(*task.work, a.originDefaultBranch())
-		_, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
+		result, err := a.codeAgent.Run(ctx, a.runner, task.work.WorktreePath, prompt, a.logger, true)
+		// Track cumulative cost even on failure — failed invocations still
+		// consume tokens and count against the per-PR session budget.
+		task.work.SessionCostUSD += result.CostUSD
 		if err != nil {
 			a.logger.Error("agent failed to resolve conflicts", "pr", task.work.PRNumber, "error", err)
 			a.emit(Event{

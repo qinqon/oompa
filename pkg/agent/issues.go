@@ -196,7 +196,10 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			Action:   fmt.Sprintf("Agent implementing issue #%d", task.issue.Number),
 		})
 		prompt := buildImplementationPrompt(task.issue, a.cfg.SignedOffBy, a.cfg.AssistedBy)
-		_, err := a.codeAgent.Run(ctx, a.runner, task.worktreePath, prompt, a.logger, false)
+		result, err := a.codeAgent.Run(ctx, a.runner, task.worktreePath, prompt, a.logger, false)
+		// Track cumulative cost even on failure — failed invocations still
+		// consume tokens and count against the per-PR session budget.
+		task.work.SessionCostUSD += result.CostUSD
 		if err != nil {
 			a.logger.Error("agent failed", "issue", task.issue.Number, "error", err)
 			a.markIssueFailed(ctx, task.issue.Number, task.work)
