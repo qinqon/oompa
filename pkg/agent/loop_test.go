@@ -14,36 +14,36 @@ import (
 
 // mockGitHubClient implements GitHubClient for testing.
 type mockGitHubClient struct {
-	issues          []Issue
-	prComments      []ReviewComment
-	issueComments   []ReviewComment
-	prState         string
-	prs             []PR
-	addedComments      []string
+	issues              []Issue
+	prComments          []ReviewComment
+	issueComments       []ReviewComment
+	prState             string
+	prs                 []PR
+	addedComments       []string
 	addedCommentTargets []int // issue/PR number each comment was posted to
-	addedLabels     []string
-	removedLabels   []string
-	addedReactions  []string
-	checkRuns       []CheckRun
-	commitStatuses  []CheckRun       // commit status failures (returned by GetCommitStatuses)
-	checkRunLogs    map[int64]string // maps check run ID to full log content
-	prHeadSHAs      []string         // returns these in sequence; if empty returns "abc123"
-	prsAfterNCalls  int              // only return PRs after this many ListPRsByHead calls
-	prsCallCount    int
-	listPRsErr      error // error to return from ListPRsByHead
-	linkedPR        bool  // return value for HasLinkedPR
-	linkedPRErr     error // error to return from HasLinkedPR
-	mergeableState  string        // mergeable state to return from GetPRMergeable (default: "clean")
-	prBehind        bool          // whether IsPRBehind returns true
-	createdIssues   []Issue       // tracks issues created via CreateIssue
-	nextIssueNumber int           // next issue number to return (defaults to 1)
-	searchResults   []Issue       // results to return from SearchIssues
-	workflowRuns    []WorkflowRun // workflow runs to return from ListWorkflowRuns
-	prReviews      []PRReview // reviews to return from GetPRReviews
-	headCommitDate time.Time  // date to return from GetPRHeadCommitDate
-	recentCommits   int             // number of recent commits returned by CountCommitsSince
-	countCommitsErr error           // error to return from CountCommitsSince
-	hasEyesReaction map[int64]map[string]bool // commentID -> user -> has eyes reaction
+	addedLabels         []string
+	removedLabels       []string
+	addedReactions      []string
+	checkRuns           []CheckRun
+	commitStatuses      []CheckRun       // commit status failures (returned by GetCommitStatuses)
+	checkRunLogs        map[int64]string // maps check run ID to full log content
+	prHeadSHAs          []string         // returns these in sequence; if empty returns "abc123"
+	prsAfterNCalls      int              // only return PRs after this many ListPRsByHead calls
+	prsCallCount        int
+	listPRsErr          error                     // error to return from ListPRsByHead
+	linkedPR            bool                      // return value for HasLinkedPR
+	linkedPRErr         error                     // error to return from HasLinkedPR
+	mergeableState      string                    // mergeable state to return from GetPRMergeable (default: "clean")
+	prBehind            bool                      // whether IsPRBehind returns true
+	createdIssues       []Issue                   // tracks issues created via CreateIssue
+	nextIssueNumber     int                       // next issue number to return (defaults to 1)
+	searchResults       []Issue                   // results to return from SearchIssues
+	workflowRuns        []WorkflowRun             // workflow runs to return from ListWorkflowRuns
+	prReviews           []PRReview                // reviews to return from GetPRReviews
+	headCommitDate      time.Time                 // date to return from GetPRHeadCommitDate
+	recentCommits       int                       // number of recent commits returned by CountCommitsSince
+	countCommitsErr     error                     // error to return from CountCommitsSince
+	hasEyesReaction     map[int64]map[string]bool // commentID -> user -> has eyes reaction
 
 	listIssuesCalled bool // tracks whether ListLabeledIssues was called
 	listIssuesErr    error
@@ -2083,8 +2083,8 @@ func TestProcessCIFailures_SearchAndLinkWithoutCreateFlakyIssues(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.cfg.CreateFlakyIssues = false       // Disabled — don't create new issues
-	agent.cfg.FlakyLabel = "kind/ci-flake"    // But label is set — enables search-and-link
+	agent.cfg.CreateFlakyIssues = false    // Disabled — don't create new issues
+	agent.cfg.FlakyLabel = "kind/ci-flake" // But label is set — enables search-and-link
 	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
 		IssueNumber:  42,
 		IssueTitle:   "Fix bug",
@@ -2181,7 +2181,7 @@ func TestProcessCIFailures_NoSearchWhenFlakyLabelEmpty(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.cfg.FlakyLabel = ""             // No flaky label
+	agent.cfg.FlakyLabel = "" // No flaky label
 	agent.cfg.CreateFlakyIssues = false
 	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
 		IssueNumber:  42,
@@ -2672,7 +2672,7 @@ func TestReportOnlyMode_EmptyReactionsGatesAndChecks(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.cfg.Reactions = []string{}                            // report-only mode
+	agent.cfg.Reactions = []string{}                           // report-only mode
 	agent.cfg.SlackWebhookURL = "https://hooks.slack.com/test" // enable Slack
 	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
 		IssueNumber:  42,
@@ -3881,9 +3881,9 @@ func TestProcessTriageJobs_DeduplicatesMultipleRunsSameJob_DifferentSignatures(t
 	// Without the same-job cycle dedup fix, this would create 2 issues.
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
-			{result: AgentResult{Result: "## Summary\nCompile error in main.go line 42"}},    // first run analysis
-			{result: AgentResult{Result: "## Summary\nCompile error in main.go line 99"}},    // second run analysis (different signature)
-			{result: AgentResult{Result: "NONE"}},                                             // LLM says no match (unreliable)
+			{result: AgentResult{Result: "## Summary\nCompile error in main.go line 42"}}, // first run analysis
+			{result: AgentResult{Result: "## Summary\nCompile error in main.go line 99"}}, // second run analysis (different signature)
+			{result: AgentResult{Result: "NONE"}},                                         // LLM says no match (unreliable)
 		},
 	}
 
@@ -3954,7 +3954,7 @@ func TestProcessTriageJobs_DeduplicatesDifferentJobsSameRootCause(t *testing.T) 
 	// Second job: analysis + LLM match → deduplicates
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
-			{result: AgentResult{Result: "## Summary\nDependency X broke API"}},           // first job analysis
+			{result: AgentResult{Result: "## Summary\nDependency X broke API"}},             // first job analysis
 			{result: AgentResult{Result: "## Summary\nDependency X broke API in e2e test"}}, // second job analysis
 			{result: AgentResult{Result: "MATCH #10"}},                                      // second job matches issue #10
 		},
@@ -4837,7 +4837,7 @@ func TestProcessReviewComments_NewReviewAfterNoOpPause(t *testing.T) {
 		Status:          "pr-open",
 		WorktreePath:    "/tmp/worktree",
 		LastReviewID:    250, // cursor at 250, review 300 is new
-		ReviewNoOpCount: 3,  // at limit
+		ReviewNoOpCount: 3,   // at limit
 	}
 
 	// Cycle 1: no-op limit reached → cursors advance to 300, counter resets to 0
@@ -5350,8 +5350,8 @@ func TestBuildStateFromGitHub_RecoverLastRebaseTimeIssueDiscovered(t *testing.T)
 	// Issue-discovered PR path: LastRebaseTime should be recovered from head commit date.
 	headDate := time.Now().Add(-2 * time.Hour)
 	gh := &mockGitHubClient{
-		issues: []Issue{{Number: 42, Title: "Fix bug", Labels: []string{"good-for-ai"}}},
-		prs:    []PR{{Number: 100, State: "open", Head: "ai/issue-42"}},
+		issues:         []Issue{{Number: 42, Title: "Fix bug", Labels: []string{"good-for-ai"}}},
+		prs:            []PR{{Number: 100, State: "open", Head: "ai/issue-42"}},
 		headCommitDate: headDate,
 	}
 
@@ -6808,11 +6808,11 @@ func TestProcessTriageJobs_DeterministicFallbackWhenLLMSaysNone(t *testing.T) {
 	// Third job: analysis + LLM says NONE → deterministic fallback should match
 	codeAgent := &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
-			{result: AgentResult{Result: "## Summary\nInfra outage broke CI"}},   // first job analysis
+			{result: AgentResult{Result: "## Summary\nInfra outage broke CI"}},    // first job analysis
 			{result: AgentResult{Result: "## Summary\nDNS resolution failed"}},    // second job analysis
-			{result: AgentResult{Result: "NONE"}},                                  // second job LLM says NONE
+			{result: AgentResult{Result: "NONE"}},                                 // second job LLM says NONE
 			{result: AgentResult{Result: "## Summary\nBuild timeout due to DNS"}}, // third job analysis
-			{result: AgentResult{Result: "NONE"}},                                  // third job LLM says NONE
+			{result: AgentResult{Result: "NONE"}},                                 // third job LLM says NONE
 		},
 	}
 
@@ -6974,7 +6974,7 @@ func TestProcessReviewComments_PostsChangeSummaryAfterPush(t *testing.T) {
 	agent := newTestAgent(gh, runner, wt)
 	agent.codeAgent = &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{
-			{result: AgentResult{Result: "Done"}},                                                 // review fix
+			{result: AgentResult{Result: "Done"}},                                           // review fix
 			{result: AgentResult{Result: "- Added validation logic to the review handler"}}, // change summary
 		},
 	}
@@ -7065,13 +7065,13 @@ func TestProcessReviewComments_NoChangeSummaryWhenNoPush(t *testing.T) {
 
 func TestBuildChangeSummary(t *testing.T) {
 	tests := []struct {
-		name        string
-		diff        string       // git diff output (full patch)
-		runnerErr   error        // if set, runner returns this error for git diff
-		llmResult   string       // LLM response text
-		llmErr      error        // if set, LLM call returns this error
-		want        []string     // strings that should appear in the output
-		notWant     []string     // strings that should NOT appear in the output
+		name      string
+		diff      string   // git diff output (full patch)
+		runnerErr error    // if set, runner returns this error for git diff
+		llmResult string   // LLM response text
+		llmErr    error    // if set, LLM call returns this error
+		want      []string // strings that should appear in the output
+		notWant   []string // strings that should NOT appear in the output
 	}{
 		{
 			name:      "LLM summarizes single file change",

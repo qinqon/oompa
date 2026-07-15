@@ -16,13 +16,13 @@ type commandCall struct {
 }
 
 type mockCommandRunner struct {
-	mu             sync.Mutex
-	calls          []commandCall
-	stdout         []byte
-	stderr         []byte
-	err            error
-	claudeResults  [][]byte
-	claudeIndex    int
+	mu            sync.Mutex
+	calls         []commandCall
+	stdout        []byte
+	stderr        []byte
+	err           error
+	claudeResults [][]byte
+	claudeIndex   int
 }
 
 func (m *mockCommandRunner) Run(_ context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
