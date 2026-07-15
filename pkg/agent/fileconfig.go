@@ -147,11 +147,8 @@ func validateFileConfig(cfg *FileConfig) error {
 		}
 	}
 
-	validReactions := map[string]bool{"reviews": true, "ci": true, "conflicts": true, "rebase": true}
-	validComments := map[string]bool{
-		"ci-unrelated": true, "ci-infrastructure": true, "ci-related": true,
-		"conflict": true, "rebase": true, "flaky": true, "issue-in-progress": true,
-	}
+	validReactions := ValidReactions
+	validComments := ValidCommentCategories
 
 	for i, p := range cfg.Projects {
 		if p.Repo == "" {

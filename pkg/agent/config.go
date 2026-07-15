@@ -53,6 +53,20 @@ type Config struct {
 	GitHubAppInstallationID int64
 }
 
+// ValidReactions enumerates the reaction names accepted by --reactions and
+// the YAML role configs. Single source of truth for flag parsing and file
+// validation.
+var ValidReactions = map[string]bool{
+	"reviews": true, "ci": true, "conflicts": true, "rebase": true,
+}
+
+// ValidCommentCategories enumerates the comment categories accepted by
+// --skip-comment and the YAML role configs.
+var ValidCommentCategories = map[string]bool{
+	"ci-unrelated": true, "ci-infrastructure": true, "ci-related": true,
+	"conflict": true, "rebase": true, "flaky": true, "issue-in-progress": true,
+}
+
 // DefaultAssistedBy returns the default Assisted-by trailer value.
 // When agentModel is provided, the short model name is extracted
 // (e.g. "google-vertex-anthropic/claude-opus-4-6@default" → "claude-opus-4-6")

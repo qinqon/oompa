@@ -220,7 +220,7 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 	}
 
 	if reactions != "" {
-		validReactions := map[string]bool{"reviews": true, "ci": true, "conflicts": true, "rebase": true}
+		validReactions := agent.ValidReactions
 		for r := range strings.SplitSeq(reactions, ",") {
 			r = strings.TrimSpace(r)
 			if r == "" {
@@ -235,15 +235,7 @@ func parseConfig() (cfg agent.Config, exitOnNewVersion, configPath string) {
 	}
 
 	if skipComments != "" {
-		validComments := map[string]bool{
-			"ci-unrelated":      true,
-			"ci-infrastructure": true,
-			"ci-related":        true,
-			"conflict":          true,
-			"rebase":            true,
-			"flaky":             true,
-			"issue-in-progress": true,
-		}
+		validComments := agent.ValidCommentCategories
 		for c := range strings.SplitSeq(skipComments, ",") {
 			c = strings.TrimSpace(c)
 			if c == "" {

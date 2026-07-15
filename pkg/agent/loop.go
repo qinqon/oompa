@@ -778,6 +778,21 @@ func (a *Agent) CheckNewReviews(ctx context.Context, lastReportedAt time.Time) [
 	return findings
 }
 
+// sessionCostExceeded reports whether the per-PR session cost budget is
+// exhausted for this work item, logging the skip decision when it is.
+// A zero or negative MaxPRSessionCost disables the budget.
+func (a *Agent) sessionCostExceeded(work *IssueWork, what string) bool {
+	if a.cfg.MaxPRSessionCost <= 0 || work.SessionCostUSD < a.cfg.MaxPRSessionCost {
+		return false
+	}
+	a.logger.Warn("skipping "+what+" (per-PR session cost limit reached)",
+		"pr", work.PRNumber,
+		"sessionCostUSD", work.SessionCostUSD,
+		"limit", a.cfg.MaxPRSessionCost,
+	)
+	return true
+}
+
 // markIssueFailed marks an issue as failed, unassigns the agent, and adds the ai-failed label.
 func (a *Agent) markIssueFailed(ctx context.Context, issueNumber int, work *IssueWork) {
 	work.Status = StatusFailed

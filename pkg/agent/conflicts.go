@@ -31,6 +31,80 @@ func (a *Agent) rebaseSuccessComment(headSHA, suffix string) string {
 	return fmt.Sprintf("%s on %s and pushed%s.\n\n%s", subject, a.defaultBranch(), suffix, a.botComment())
 }
 
+// autoRebasePR runs the shared per-PR rebase flow used by both
+// ProcessConflicts and ProcessRebase: comment-marker dedup, worktree
+// preparation, fetch, automatic rebase with retry, and push+comment on
+// success. It returns a conflictTask when the rebase failed and should be
+// escalated to the coding agent, or nil when the PR was handled (success,
+// dedup skip, or logged error).
+//
+// commentCategory selects the skip-comment category for the success comment
+// ("conflict" or "rebase"). When escalateAll is false, only failures that
+// look like merge conflicts are escalated; other failures are logged.
+func (a *Agent) autoRebasePR(ctx context.Context, work *IssueWork, mergeState, commentCategory string, escalateAll bool) *conflictTask {
+	// Check if we already posted a rebase comment for the current HEAD
+	headSHA, err := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+	if err != nil {
+		// Without the SHA, comment-marker dedup below is skipped, so a
+		// repeat comment is possible — but proceeding beats stalling.
+		a.logger.Warn("failed to get PR head SHA", "pr", work.PRNumber, "error", err)
+	}
+	if headSHA != "" && a.hasExistingBotComment(ctx, work.PRNumber, "rebase") && a.hasExistingBotComment(ctx, work.PRNumber, shortSHA(headSHA)) {
+		return nil
+	}
+
+	a.logger.Info("PR needs rebase, attempting", "pr", work.PRNumber, "mergeable_state", mergeState)
+
+	// ensureWorktreeReady fetches all remotes with a fatal error check
+	// (SyncWorktree), so the rebase below runs against fresh upstream refs.
+	if err := a.ensureWorktreeReady(ctx, work); err != nil {
+		a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
+		return nil
+	}
+
+	// Try automatic rebase (with retry on unstaged changes)
+	stderr, rebaseErr := a.gitRebaseWithRetry(ctx, work.WorktreePath, work.PRNumber)
+	if rebaseErr == nil {
+		// Rebase succeeded, force push
+		if pushErr := a.gitPush(ctx, work.WorktreePath, true); pushErr != nil {
+			a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr)
+			return nil
+		}
+		work.LastRebaseTime = time.Now()
+		a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
+		a.emit(Event{
+			Type:      EventActionCompleted,
+			Category:  CategoryRebase,
+			Worker:    a.workerName(),
+			State:     "idle",
+			Action:    "Rebased and pushed",
+			PRNumbers: []int{work.PRNumber},
+		})
+		if !a.ShouldSkipComment(commentCategory) {
+			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
+				a.rebaseSuccessComment(headSHA, ""))
+		}
+		return nil
+	}
+
+	// Rebase failed — abort before deciding whether to escalate
+	a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
+
+	if !escalateAll && !isConflictError(stderr) {
+		// Non-conflict rebase failure (e.g., corrupt repo state, hook failure)
+		a.logger.Error("rebase failed for non-conflict reason", "pr", work.PRNumber, "stderr", stderr)
+		return nil
+	}
+
+	a.logger.Info("automatic rebase failed, invoking coding agent to resolve conflicts", "pr", work.PRNumber, "stderr", stderr)
+	return &conflictTask{
+		work:         work,
+		headSHA:      headSHA,
+		rebaseErr:    rebaseErr,
+		rebaseStderr: stderr,
+	}
+}
+
 // ProcessConflicts checks for merge conflicts (dirty mergeable_state) and tries to resolve them.
 // For simple rebases when a PR is just behind the base branch, use ProcessRebase instead.
 func (a *Agent) ProcessConflicts(ctx context.Context) {
@@ -69,62 +143,10 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			continue
 		}
 
-		// Check if we already posted a conflict comment for the current HEAD
-		headSHA, err := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
-		if err != nil {
-			// Without the SHA, comment-marker dedup below is skipped, so a
-			// repeat comment is possible — but proceeding beats stalling.
-			a.logger.Warn("failed to get PR head SHA", "pr", work.PRNumber, "error", err)
+		// A dirty PR can never auto-rebase cleanly; escalate every failure.
+		if task := a.autoRebasePR(ctx, work, mergeState, "conflict", true); task != nil {
+			tasks = append(tasks, *task)
 		}
-		if headSHA != "" && a.hasExistingBotComment(ctx, work.PRNumber, "rebase") && a.hasExistingBotComment(ctx, work.PRNumber, shortSHA(headSHA)) {
-			continue
-		}
-
-		a.logger.Info("PR needs rebase, attempting", "pr", work.PRNumber, "mergeable_state", mergeState)
-
-		if err := a.ensureWorktreeReady(ctx, work); err != nil {
-			a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
-			continue
-		}
-
-		// Fetch all remotes and try automatic rebase against the upstream default branch
-		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all") //nolint:errcheck // best-effort
-
-		// Try automatic rebase (with retry on unstaged changes)
-		stderr, rebaseErr := a.gitRebaseWithRetry(ctx, work.WorktreePath, work.PRNumber)
-		if rebaseErr == nil {
-			// Rebase succeeded, force push
-			if pushErr := a.gitPush(ctx, work.WorktreePath, true); pushErr != nil {
-				a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr)
-			} else {
-				work.LastRebaseTime = time.Now()
-				a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
-				a.emit(Event{
-					Type:      EventActionCompleted,
-					Category:  CategoryRebase,
-					Worker:    a.workerName(),
-					State:     "idle",
-					Action:    "Rebased and pushed",
-					PRNumbers: []int{work.PRNumber},
-				})
-				if !a.ShouldSkipComment("conflict") {
-					_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-						a.rebaseSuccessComment(headSHA, ""))
-				}
-			}
-			continue
-		}
-
-		// Rebase failed — abort and let the coding agent try
-		a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
-		a.logger.Info("automatic rebase failed, invoking coding agent to resolve conflicts", "pr", work.PRNumber, "stderr", stderr)
-
-		tasks = append(tasks, conflictTask{
-			work:         work,
-			headSHA:      headSHA,
-			rebaseErr:    rebaseErr,
-			rebaseStderr: stderr,
-		})
 	}
 
 	// Agent phase: resolve collected conflicts with the coding agent
@@ -224,67 +246,27 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 			continue
 		}
 
-		headSHA, err := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
-		if err != nil {
-			// Without the SHA, comment-marker dedup below is skipped, so a
-			// repeat comment is possible — but proceeding beats stalling.
-			a.logger.Warn("failed to get PR head SHA", "pr", work.PRNumber, "error", err)
-		}
-		if headSHA != "" && a.hasExistingBotComment(ctx, work.PRNumber, "rebase") && a.hasExistingBotComment(ctx, work.PRNumber, shortSHA(headSHA)) {
-			continue
-		}
-
-		a.logger.Info("PR is behind base branch, rebasing", "pr", work.PRNumber, "mergeable_state", mergeState)
-
-		if err := a.ensureWorktreeReady(ctx, work); err != nil {
-			a.logger.Error("failed to prepare worktree", "pr", work.PRNumber, "error", err)
-			continue
-		}
-
-		a.runner.Run(ctx, work.WorktreePath, "git", "fetch", "--all") //nolint:errcheck // best-effort
-
-		stderr, rebaseErr := a.gitRebaseWithRetry(ctx, work.WorktreePath, work.PRNumber)
-		if rebaseErr != nil {
-			a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
-
-			// Check if the rebase failed due to conflicts
-			if isConflictError(stderr) {
-				a.logger.Info("rebase failed with conflicts, will invoke conflict resolution", "pr", work.PRNumber)
-				tasks = append(tasks, conflictTask{
-					work:         work,
-					headSHA:      headSHA,
-					rebaseErr:    rebaseErr,
-					rebaseStderr: stderr,
-				})
-			} else {
-				// Non-conflict rebase failure (e.g., corrupt repo state, hook failure)
-				a.logger.Error("rebase failed for non-conflict reason", "pr", work.PRNumber, "stderr", stderr)
-			}
-			continue
-		}
-
-		if pushErr := a.gitPush(ctx, work.WorktreePath, true); pushErr != nil {
-			a.logger.Error("failed to push after rebase", "pr", work.PRNumber, "error", pushErr)
-		} else {
-			work.LastRebaseTime = time.Now()
-			a.logger.Info("rebased and pushed successfully", "pr", work.PRNumber)
-			a.emit(Event{
-				Type:      EventActionCompleted,
-				Category:  CategoryRebase,
-				Worker:    a.workerName(),
-				State:     "idle",
-				Action:    "Rebased and pushed",
-				PRNumbers: []int{work.PRNumber},
-			})
-			if !a.ShouldSkipComment("rebase") {
-				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-					a.rebaseSuccessComment(headSHA, ""))
-			}
+		// A behind-but-clean PR should rebase without conflicts; escalate
+		// only failures that actually look like conflicts.
+		if task := a.autoRebasePR(ctx, work, mergeState, "rebase", false); task != nil {
+			tasks = append(tasks, *task)
 		}
 	}
 
 	// Agent phase: resolve collected conflicts with the coding agent
 	a.resolveConflictsSequential(ctx, tasks)
+}
+
+// postRebaseMarker posts the hidden dedup marker for a failed conflict
+// resolution so the SHA is skipped on the next cycle. Skipped when the head
+// SHA is unknown: a degenerate marker would be junk and, without a SHA,
+// marker dedup cannot apply anyway.
+func (a *Agent) postRebaseMarker(ctx context.Context, prNumber int, headSHA string) {
+	if headSHA == "" {
+		return
+	}
+	_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, prNumber,
+		fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(headSHA)))
 }
 
 // resolveConflictsSequential invokes the coding agent to resolve conflicts for a list of tasks sequentially.
@@ -324,8 +306,7 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 				Error:     err.Error(),
 			})
 			// Post a hidden marker so deduplication skips this SHA on the next cycle
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(task.headSHA)))
+			a.postRebaseMarker(ctx, task.work.PRNumber, task.headSHA)
 			return
 		}
 
@@ -354,8 +335,7 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 		if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 			a.logger.Error("failed to push after conflict resolution", "pr", task.work.PRNumber, "error", err)
 			// Post a hidden marker so deduplication skips this SHA on the next cycle
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(task.headSHA)))
+			a.postRebaseMarker(ctx, task.work.PRNumber, task.headSHA)
 		} else {
 			task.work.LastRebaseTime = time.Now()
 			a.emit(Event{

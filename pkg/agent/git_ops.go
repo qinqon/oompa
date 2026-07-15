@@ -406,6 +406,38 @@ func (a *Agent) hasFixupCommits(ctx context.Context, worktreePath string) bool {
 	return strings.Contains(string(logOut), "fixup!")
 }
 
+// pushFixupsOrAmend pushes agent-produced changes when they take one of the
+// two self-evident forms: fixup commits (autosquashed into their targets) or
+// uncommitted changes (amended into HEAD). Returns handled=false when neither
+// form is present and the caller must decide how to treat a possible direct
+// commit; pushed reports whether a push succeeded.
+func (a *Agent) pushFixupsOrAmend(ctx context.Context, worktreePath string, prNumber int) (pushed, handled bool) {
+	switch {
+	case a.hasFixupCommits(ctx, worktreePath):
+		if err := a.gitAutosquashRebase(ctx, worktreePath); err != nil {
+			a.logger.Error("failed to autosquash fixup commits", "pr", prNumber, "error", err)
+			// A failed autosquash can leave the worktree mid-rebase; abort so
+			// later flows find a usable tree.
+			a.runner.Run(ctx, worktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
+		} else if err := a.gitPush(ctx, worktreePath, true); err != nil {
+			a.logger.Error("failed to push", "pr", prNumber, "error", err)
+		} else {
+			pushed = true
+		}
+		return pushed, true
+	case a.hasUncommittedChanges(ctx, worktreePath):
+		if err := a.gitAmendAll(ctx, worktreePath); err != nil {
+			a.logger.Error("failed to amend commit", "pr", prNumber, "error", err)
+		} else if err := a.gitPush(ctx, worktreePath, true); err != nil {
+			a.logger.Error("failed to push", "pr", prNumber, "error", err)
+		} else {
+			pushed = true
+		}
+		return pushed, true
+	}
+	return false, false
+}
+
 // gitRebaseWithRetry attempts a rebase and, if it fails due to unstaged changes
 // (e.g. upstream file deletions), cleans the worktree and retries once.
 // Returns the stderr output (as a string) and any error from the final rebase attempt.

@@ -50,12 +50,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		}
 
 		// Skip CI processing if this PR has exceeded the per-session cost threshold.
-		if a.cfg.MaxPRSessionCost > 0 && work.SessionCostUSD >= a.cfg.MaxPRSessionCost {
-			a.logger.Warn("skipping CI processing (per-PR session cost limit reached)",
-				"pr", work.PRNumber,
-				"sessionCostUSD", work.SessionCostUSD,
-				"limit", a.cfg.MaxPRSessionCost,
-			)
+		if a.sessionCostExceeded(work, "CI processing") {
 			continue
 		}
 
@@ -224,12 +219,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		// Re-check cost guard before each invocation — multiple tasks can be
 		// enqueued for the same PR, and earlier invocations may have pushed
 		// SessionCostUSD over the limit.
-		if a.cfg.MaxPRSessionCost > 0 && task.work.SessionCostUSD >= a.cfg.MaxPRSessionCost {
-			a.logger.Warn("skipping CI investigation (per-PR session cost limit reached)",
-				"pr", task.work.PRNumber,
-				"sessionCostUSD", task.work.SessionCostUSD,
-				"limit", a.cfg.MaxPRSessionCost,
-			)
+		if a.sessionCostExceeded(task.work, "CI investigation") {
 			return
 		}
 
@@ -335,8 +325,7 @@ func (a *Agent) classifyCIInfrastructure(_ context.Context, task ciTask, cleaned
 		Action:    fmt.Sprintf("CI infrastructure: %s", task.failures[0].Name),
 		PRNumbers: []int{task.work.PRNumber},
 	})
-	idx := strings.Index(cleaned, "INFRASTRUCTURE")
-	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "INFRASTRUCTURE"), " :—–-"))
+	explanation := extractKeywordExplanation(cleaned, "INFRASTRUCTURE")
 
 	// Always mark as checked in memory to prevent re-investigation on next poll.
 	// Comment markers serve as a secondary dedup mechanism but can be lost
@@ -373,8 +362,7 @@ func (a *Agent) classifyCIUnrelated(ctx context.Context, task ciTask, cleaned st
 		Action:    fmt.Sprintf("CI unrelated: %s", task.failures[0].Name),
 		PRNumbers: []int{task.work.PRNumber},
 	})
-	idx := strings.Index(cleaned, "UNRELATED")
-	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "UNRELATED"), " :—–-"))
+	explanation := extractKeywordExplanation(cleaned, "UNRELATED")
 
 	// Always mark as checked in memory to prevent re-investigation on next poll.
 	// Comment markers serve as a secondary dedup mechanism but can be lost
@@ -654,6 +642,17 @@ func parseCIStructuredFields(text string) (errorSummary, rootCause, evidence, re
 	return errorSummary, rootCause, evidence, recommendation, failingTest
 }
 
+// extractKeywordExplanation returns the text following the classification
+// keyword in the agent's response, stripped of separator punctuation the
+// models like to insert after the keyword (colons, dashes, markdown).
+func extractKeywordExplanation(cleaned, keyword string) string {
+	idx := strings.Index(cleaned, keyword)
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], keyword), " :—–-"))
+}
+
 // classifyCIRelated handles a CI failure classified as related to PR changes.
 // Returns a ciResult for consolidation; does NOT post a comment.
 func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned string) ciResult {
@@ -666,8 +665,7 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 		PRNumbers: []int{task.work.PRNumber},
 	})
 
-	idx := strings.Index(cleaned, "RELATED")
-	explanation := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(cleaned[idx:], "RELATED"), " :—–-"))
+	explanation := extractKeywordExplanation(cleaned, "RELATED")
 
 	errorSummary, rootCause, evidence, recommendation, failingTest := parseCIStructuredFields(explanation)
 
@@ -690,38 +688,15 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 		}
 	}
 
-	// Check if there are fixup commits, amended commits, or uncommitted changes
-	pushed := false
-	hasFixupCommits := a.hasFixupCommits(ctx, task.work.WorktreePath)
-	hasUncommitted := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
-
-	switch {
-	case hasFixupCommits:
-		// Run autosquash rebase to merge fixup commits into their targets
-		if err := a.gitAutosquashRebase(ctx, task.work.WorktreePath); err != nil {
-			a.logger.Error("failed to autosquash fixup commits", "pr", task.work.PRNumber, "error", err)
-		} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
-			a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
-		} else {
-			pushed = true
-		}
-	case hasUncommitted:
-		// The agent left uncommitted changes — amend them into HEAD as fallback
-		if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
-			a.logger.Error("failed to amend commit for CI fix", "pr", task.work.PRNumber, "error", err)
-		} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
-			a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
-		} else {
-			pushed = true
-		}
-	default:
-		// No fixups and no uncommitted changes — the agent may have amended
-		// the commit directly. Check if HEAD differs from the remote SHA.
+	// Push fixups or uncommitted changes; otherwise the agent may have
+	// amended the commit directly — push when HEAD differs from the remote.
+	pushed, handled := a.pushFixupsOrAmend(ctx, task.work.WorktreePath, task.work.PRNumber)
+	if !handled {
 		localSHA, _, err := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
 		if err == nil && strings.TrimSpace(string(localSHA)) != task.headSHA {
 			a.logger.Info("agent amended commit directly, pushing", "pr", task.work.PRNumber)
 			if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
-				a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
+				a.logger.Error("failed to push", "pr", task.work.PRNumber, "error", err)
 			} else {
 				pushed = true
 			}
