@@ -391,6 +391,20 @@ func (g *GoGitHubClient) GetCommitStatuses(ctx context.Context, owner, repo, ref
 	return runs, nil
 }
 
+// maxCILogBytes caps CI log payloads fetched for LLM analysis. Logs are
+// tail-truncated because failures appear at the end; the cap keeps enough
+// context for investigation while avoiding excessively large prompts.
+const maxCILogBytes = 50000
+
+// truncateLogTail returns the last maxCILogBytes of a log, with a truncation
+// marker prepended when the log was cut.
+func truncateLogTail(log string) string {
+	if len(log) <= maxCILogBytes {
+		return log
+	}
+	return "...(truncated)...\n" + log[len(log)-maxCILogBytes:]
+}
+
 func (g *GoGitHubClient) GetCheckRunLog(ctx context.Context, owner, repo string, checkRunID int64) (string, error) {
 	// The check run ID is the same as the job ID for GitHub Actions
 	_, resp, err := g.client.Actions.GetWorkflowJobLogs(ctx, owner, repo, checkRunID, 4)
@@ -404,14 +418,7 @@ func (g *GoGitHubClient) GetCheckRunLog(ctx context.Context, owner, repo string,
 		return "", fmt.Errorf("reading job logs: %w", err)
 	}
 
-	log := string(data)
-	// Truncate to last 50000 chars to keep enough context for investigation
-	// while avoiding excessively large prompts
-	const maxLogSize = 50000
-	if len(log) > maxLogSize {
-		log = "...(truncated)...\n" + log[len(log)-maxLogSize:]
-	}
-	return log, nil
+	return truncateLogTail(string(data)), nil
 }
 
 func (g *GoGitHubClient) HasPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction, user string) (bool, error) {
@@ -793,5 +800,5 @@ func (g *GoGitHubClient) GetWorkflowJobLogs(ctx context.Context, owner, repo str
 		return "", fmt.Errorf("reading log: %w", err)
 	}
 
-	return string(body), nil
+	return truncateLogTail(string(body)), nil
 }
