@@ -280,8 +280,9 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		// Track whether push succeeded so we can gate cursor advancement:
 		// if changes were detected but push failed, don't advance the cursor
 		// so the comments are retried on the next poll cycle.
-		pushed, changeDetected := a.pushFixupsOrAmend(ctx, task.work.WorktreePath, task.work.PRNumber)
-		if !changeDetected {
+		pushed, handled := a.pushFixupsOrAmend(ctx, task.work.WorktreePath, task.work.PRNumber)
+		changeDetected := handled
+		if !handled {
 			headAfter, _, revErr := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
 			headSHAAfter := strings.TrimSpace(string(headAfter))
 			if revErr == nil && headSHABefore != "" && headSHAAfter != headSHABefore {

@@ -258,6 +258,18 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 	a.resolveConflictsSequential(ctx, tasks)
 }
 
+// postRebaseMarker posts the hidden dedup marker for a failed conflict
+// resolution so the SHA is skipped on the next cycle. Skipped when the head
+// SHA is unknown: a degenerate marker would be junk and, without a SHA,
+// marker dedup cannot apply anyway.
+func (a *Agent) postRebaseMarker(ctx context.Context, prNumber int, headSHA string) {
+	if headSHA == "" {
+		return
+	}
+	_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, prNumber,
+		fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(headSHA)))
+}
+
 // resolveConflictsSequential invokes the coding agent to resolve conflicts for a list of tasks sequentially.
 func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflictTask) {
 	runSequential(ctx, tasks, func(ctx context.Context, task conflictTask) {
@@ -295,8 +307,7 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 				Error:     err.Error(),
 			})
 			// Post a hidden marker so deduplication skips this SHA on the next cycle
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(task.headSHA)))
+			a.postRebaseMarker(ctx, task.work.PRNumber, task.headSHA)
 			return
 		}
 
@@ -325,8 +336,7 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 		if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 			a.logger.Error("failed to push after conflict resolution", "pr", task.work.PRNumber, "error", err)
 			// Post a hidden marker so deduplication skips this SHA on the next cycle
-			_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-				fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(task.headSHA)))
+			a.postRebaseMarker(ctx, task.work.PRNumber, task.headSHA)
 		} else {
 			task.work.LastRebaseTime = time.Now()
 			a.emit(Event{

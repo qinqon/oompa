@@ -416,6 +416,9 @@ func (a *Agent) pushFixupsOrAmend(ctx context.Context, worktreePath string, prNu
 	case a.hasFixupCommits(ctx, worktreePath):
 		if err := a.gitAutosquashRebase(ctx, worktreePath); err != nil {
 			a.logger.Error("failed to autosquash fixup commits", "pr", prNumber, "error", err)
+			// A failed autosquash can leave the worktree mid-rebase; abort so
+			// later flows find a usable tree.
+			a.runner.Run(ctx, worktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
 		} else if err := a.gitPush(ctx, worktreePath, true); err != nil {
 			a.logger.Error("failed to push", "pr", prNumber, "error", err)
 		} else {
