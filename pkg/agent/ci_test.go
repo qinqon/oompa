@@ -1540,6 +1540,9 @@ func TestProcessCIFailures_CILaneLinkIncludesJobURL(t *testing.T) {
 	if !strings.Contains(ciLaneComment, "**Link:**") {
 		t.Errorf("expected CI lane link to include a job link, got: %q", ciLaneComment)
 	}
+	if !strings.Contains(ciLaneComment, gh.checkRuns[0].HTMLURL) {
+		t.Errorf("expected CI lane link to include %q, got: %q", gh.checkRuns[0].HTMLURL, ciLaneComment)
+	}
 }
 
 func TestProcessCIFailures_CommitStatusCILaneLink(t *testing.T) {

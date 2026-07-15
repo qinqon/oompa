@@ -354,11 +354,12 @@ func TestProcessConflicts_SkipCommentConflict(t *testing.T) {
 
 	agent.ProcessConflicts(context.Background())
 
-	// No human-visible comment should be posted
-	for _, comment := range gh.addedComments {
-		if strings.Contains(comment, "Rebased commit") && !strings.Contains(comment, "<!--") {
-			t.Errorf("expected conflict comment to be suppressed, got: %q", comment)
-		}
+	// No human-visible comment should be posted. The success comment always
+	// carries the bot marker (which contains "<!--"), so filtering on the
+	// marker would let a suppression regression slip through — assert that
+	// nothing was posted at all, like the rebase skip-comment test above.
+	if len(gh.addedComments) != 0 {
+		t.Errorf("expected 0 comments (conflict comment suppressed), got %d: %v", len(gh.addedComments), gh.addedComments)
 	}
 }
 

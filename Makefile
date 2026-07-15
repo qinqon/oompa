@@ -17,14 +17,10 @@ lint:
 	golangci-lint run
 
 fmt:
-	gofmt -w .
+	golangci-lint fmt
 
 check-fmt:
-	@unformatted="$$(gofmt -l .)"; \
-	if [ -n "$$unformatted" ]; then \
-		echo "unformatted files:"; echo "$$unformatted"; \
-		echo "run 'make fmt' and commit"; exit 1; \
-	fi
+	golangci-lint fmt --diff
 
 fix:
 	go fix ./...

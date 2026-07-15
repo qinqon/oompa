@@ -102,7 +102,11 @@ func TestProcessTriageJobs_SkipsSuccessfulRuns(t *testing.T) {
 
 func TestProcessTriageJobs_CreatesIssueWhenFlakyIssuesEnabled(t *testing.T) {
 	gh := &mockGitHubClient{
-		searchResults: []Issue{}, // No existing issues
+		searchResults: []Issue{}, // no existing issues → new issue is created
+		workflowRuns: []WorkflowRun{
+			{ID: 300, Status: "completed", Conclusion: "failure", CreatedAt: time.Now().Add(-1 * time.Hour), HTMLURL: "https://github.com/owner/repo/actions/runs/300"},
+		},
+		nextIssueNumber: 1,
 	}
 	runner := &mockCommandRunner{}
 	wtm := &mockWorktreeManager{}
@@ -111,45 +115,39 @@ func TestProcessTriageJobs_CreatesIssueWhenFlakyIssuesEnabled(t *testing.T) {
 	cfg := Config{
 		Owner:             "owner",
 		Repo:              "repo",
-		TriageJobs:        []string{}, // Empty to avoid actual HTTP calls
+		TriageJobs:        []string{"https://github.com/owner/repo/actions/workflows/ci.yml"},
 		CreateFlakyIssues: true,
 		FlakyLabel:        "ci-flake",
 	}
 
-	NewAgent(gh, runner, wtm, state, cfg, slog.Default(), &ClaudeCodeAgent{})
-
-	// Verify that CreateFlakyIssues flag is respected
-	if !cfg.CreateFlakyIssues {
-		t.Error("expected CreateFlakyIssues to be true")
+	codeAgent := &sequentialMockCodeAgent{
+		results: []mockCodeAgentCall{
+			{result: AgentResult{Result: "## Summary\nNetwork timeout waiting for e2e pod readiness"}},
+		},
 	}
 
-	// The actual issue creation happens in ProcessTriageJobs when it calls gh.CreateIssue
-	// We can verify the mock tracks created issues
-	if gh.nextIssueNumber == 0 {
-		gh.nextIssueNumber = 1
-	}
+	a := NewAgent(gh, runner, wtm, state, cfg, slog.Default(), codeAgent)
+	a.ProcessTriageJobs(context.Background())
 
-	issueNum, err := gh.CreateIssue(context.Background(), "owner", "repo",
-		"CI Failure: test-job", "Analysis output", []string{cfg.FlakyLabel})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if issueNum != 1 {
-		t.Errorf("expected issue number 1, got %d", issueNum)
+	if codeAgent.callCount != 1 {
+		t.Errorf("expected 1 agent call (investigation only, no match candidates), got %d", codeAgent.callCount)
 	}
 
 	if len(gh.createdIssues) != 1 {
-		t.Errorf("expected 1 issue created, got %d", len(gh.createdIssues))
+		t.Fatalf("expected 1 issue created, got %d", len(gh.createdIssues))
 	}
 
 	issue := gh.createdIssues[0]
-	if issue.Title != "CI Failure: test-job" {
-		t.Errorf("expected title 'CI Failure: test-job', got %q", issue.Title)
+	if !strings.HasPrefix(issue.Title, "CI Failure: owner/repo/ci.yml") {
+		t.Errorf("expected title prefixed with 'CI Failure: owner/repo/ci.yml', got %q", issue.Title)
 	}
 
 	if len(issue.Labels) != 1 || issue.Labels[0] != "ci-flake" {
 		t.Errorf("expected label 'ci-flake', got %v", issue.Labels)
+	}
+
+	if !state.IsRunInvestigated("owner/repo/ci.yml", "300") {
+		t.Error("expected run 300 to be marked as investigated")
 	}
 }
 
