@@ -694,7 +694,9 @@ func TestMatchExistingTriageIssue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gh := &mockGitHubClient{searchResults: tt.existing}
+			// matchExistingTriageIssue receives the merged issue list
+			// explicitly; it does not search GitHub itself.
+			gh := &mockGitHubClient{}
 			codeAgent := &sequentialMockCodeAgent{results: tt.llm}
 			a := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{},
 				withCfg(func(c *Config) {

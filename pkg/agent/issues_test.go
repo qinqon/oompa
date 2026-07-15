@@ -27,6 +27,7 @@ func TestProcessNewIssues_SkipsAndDefers(t *testing.T) {
 			gh:         &mockGitHubClient{issues: []Issue{{Number: 42, Title: "Fix bug"}}},
 			preTrack:   true,
 			wantStatus: StatusPROpen,
+			wantPR:     100,
 		},
 		{
 			name: "adopts existing open PR for the branch",
@@ -72,7 +73,7 @@ func TestProcessNewIssues_SkipsAndDefers(t *testing.T) {
 			wt := &mockWorktreeManager{}
 			agent := newTestAgent(tt.gh, runner, wt)
 			if tt.preTrack {
-				agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{IssueNumber: 42, Status: StatusPROpen}
+				trackWork(agent)
 			}
 
 			agent.ProcessNewIssues(context.Background())
