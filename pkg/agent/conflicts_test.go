@@ -421,152 +421,55 @@ func (r *unstagedChangesRebaseRunner) Run(ctx context.Context, workDir, name str
 	return nil, nil, nil
 }
 
-func TestProcessRebase_DefersWhenMainIsActive(t *testing.T) {
-	// High-velocity repo: >5 commits in 2h → rebase should be deferred.
-	gh := &mockGitHubClient{
-		mergeableState: "behind",
-		recentCommits:  10, // active main branch
+// TestProcessRebase_Guards covers the guard matrix in shouldRebaseNow as
+// exercised through ProcessRebase: main-branch activity, the minimum rebase
+// interval, and fail-open behavior when the commit count is unavailable.
+func TestProcessRebase_Guards(t *testing.T) {
+	tests := []struct {
+		name            string
+		recentCommits   int
+		countCommitsErr error
+		sinceLastRebase time.Duration // zero = never rebased
+		wantRebase      bool
+	}{
+		{name: "defers when main is active (>5 commits in window)", recentCommits: 10, wantRebase: false},
+		{name: "proceeds when main is quiet", recentCommits: 2, wantRebase: true},
+		{name: "defers when min interval not reached", sinceLastRebase: 1 * time.Hour, wantRebase: false},
+		{name: "proceeds when min interval expired", recentCommits: 2, sinceLastRebase: 5 * time.Hour, wantRebase: true},
+		{name: "fail-open when commit count unavailable", countCommitsErr: fmt.Errorf("API rate limit exceeded"), wantRebase: true},
+		{name: "first rebase skips the interval guard", recentCommits: 3, wantRebase: true},
+		{name: "exact activity threshold still rebases (only >threshold defers)", recentCommits: 5, wantRebase: true},
 	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &mockGitHubClient{
+				mergeableState:  "behind",
+				recentCommits:   tt.recentCommits,
+				countCommitsErr: tt.countCommitsErr,
+			}
+			runner := &mockCommandRunner{}
+			agent := newTestAgent(gh, runner, &mockWorktreeManager{})
+			trackWork(agent, func(w *IssueWork) {
+				if tt.sinceLastRebase != 0 {
+					w.LastRebaseTime = time.Now().Add(-tt.sinceLastRebase)
+				}
+			})
 
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
+			agent.ProcessRebase(context.Background())
 
-	agent.ProcessRebase(context.Background())
-
-	// Should NOT have attempted any git operations (rebase deferred)
-	for _, c := range runner.calls {
-		if c.Name == "git" {
-			t.Errorf("should not run git commands when main is active, got: git %v", c.Args)
-		}
-	}
-}
-
-func TestProcessRebase_ProceedsWhenMainIsQuiet(t *testing.T) {
-	// Quiet repo: ≤5 commits in 2h → rebase should proceed.
-	gh := &mockGitHubClient{
-		mergeableState: "behind",
-		recentCommits:  2, // quiet main branch
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
-
-	agent.ProcessRebase(context.Background())
-
-	// Should have attempted a rebase
-	var rebaseCalls int
-	for _, c := range runner.calls {
-		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
-			rebaseCalls++
-		}
-	}
-	if rebaseCalls == 0 {
-		t.Error("expected git rebase to be called when main is quiet")
-	}
-}
-
-func TestProcessRebase_DefersWhenMinIntervalNotReached(t *testing.T) {
-	// Rebase 1h ago, main is quiet → still deferred because 4h minimum not reached.
-	gh := &mockGitHubClient{
-		mergeableState: "behind",
-		recentCommits:  0, // very quiet
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent, func(w *IssueWork) {
-		w.LastRebaseTime = time.Now().Add(-1 * time.Hour) // rebased 1h ago
-	})
-
-	agent.ProcessRebase(context.Background())
-
-	// Should NOT have attempted any git operations
-	for _, c := range runner.calls {
-		if c.Name == "git" {
-			t.Errorf("should not rebase when min interval not reached, got: git %v", c.Args)
-		}
-	}
-}
-
-func TestProcessRebase_ProceedsWhenMinIntervalExpired(t *testing.T) {
-	// Rebase 5h ago, main is quiet → rebase proceeds.
-	gh := &mockGitHubClient{
-		mergeableState: "behind",
-		recentCommits:  2, // quiet
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent, func(w *IssueWork) {
-		w.LastRebaseTime = time.Now().Add(-5 * time.Hour) // rebased 5h ago
-	})
-
-	agent.ProcessRebase(context.Background())
-
-	var rebaseCalls int
-	for _, c := range runner.calls {
-		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
-			rebaseCalls++
-		}
-	}
-	if rebaseCalls == 0 {
-		t.Error("expected git rebase when min interval expired and main is quiet")
-	}
-}
-
-func TestProcessRebase_FailOpenOnAPIError(t *testing.T) {
-	// Can't count commits → fail-open, rebase proceeds.
-	gh := &mockGitHubClient{
-		mergeableState:  "behind",
-		countCommitsErr: fmt.Errorf("API rate limit exceeded"),
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
-
-	agent.ProcessRebase(context.Background())
-
-	var rebaseCalls int
-	for _, c := range runner.calls {
-		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
-			rebaseCalls++
-		}
-	}
-	if rebaseCalls == 0 {
-		t.Error("expected git rebase to proceed on API error (fail-open)")
-	}
-}
-
-func TestProcessRebase_FirstRebaseNoIntervalGuard(t *testing.T) {
-	// First rebase (LastRebaseTime is zero) → should proceed without interval guard.
-	gh := &mockGitHubClient{
-		mergeableState: "behind",
-		recentCommits:  3, // below threshold
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
-
-	agent.ProcessRebase(context.Background())
-
-	var rebaseCalls int
-	for _, c := range runner.calls {
-		if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
-			rebaseCalls++
-		}
-	}
-	if rebaseCalls == 0 {
-		t.Error("expected git rebase on first rebase (no interval guard for zero time)")
+			rebased := false
+			for _, c := range runner.calls {
+				if c.Name == "git" && len(c.Args) > 0 && c.Args[0] == "rebase" {
+					rebased = true
+				}
+			}
+			if rebased != tt.wantRebase {
+				t.Errorf("rebase attempted = %v, want %v", rebased, tt.wantRebase)
+			}
+			if !tt.wantRebase && countCalls(runner.calls, "git") != 0 {
+				t.Errorf("deferred rebase should run no git commands, got %d", countCalls(runner.calls, "git"))
+			}
+		})
 	}
 }
 
@@ -619,65 +522,38 @@ func TestProcessRebase_ExactThresholdAllowsRebase(t *testing.T) {
 	}
 }
 
-func TestShouldRebaseNow_ConfigurableInterval24h(t *testing.T) {
-	// RebaseInterval = 24h, last rebase 20h ago → skip (minimum interval not reached)
-	gh := &mockGitHubClient{
-		recentCommits: 0, // quiet main
+// TestShouldRebaseNow_Interval covers the configurable minimum-interval
+// logic directly: a custom interval, its expiry, and the 4h default.
+func TestShouldRebaseNow_Interval(t *testing.T) {
+	tests := []struct {
+		name       string
+		interval   time.Duration // zero = 4h default
+		sinceLast  time.Duration
+		wantAllow  bool
+		wantReason string
+	}{
+		{"24h interval not reached", 24 * time.Hour, 20 * time.Hour, false, "minimum interval not reached"},
+		{"24h interval expired", 24 * time.Hour, 25 * time.Hour, true, ""},
+		{"zero interval falls back to 4h default", 0, 3 * time.Hour, false, "minimum interval not reached"},
 	}
-	agent := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{})
-	agent.cfg.RebaseInterval = 24 * time.Hour
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &mockGitHubClient{recentCommits: 0} // quiet main
+			agent := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{})
+			agent.cfg.RebaseInterval = tt.interval
 
-	work := &IssueWork{
-		PRNumber:       100,
-		LastRebaseTime: time.Now().Add(-20 * time.Hour), // 20h ago
-	}
+			work := &IssueWork{
+				PRNumber:       100,
+				LastRebaseTime: time.Now().Add(-tt.sinceLast),
+			}
 
-	allowed, reason := agent.shouldRebaseNow(context.Background(), work)
-	if allowed {
-		t.Error("expected rebase to be deferred (20h < 24h interval)")
-	}
-	if reason != "minimum interval not reached" {
-		t.Errorf("expected reason 'minimum interval not reached', got %q", reason)
-	}
-}
-
-func TestShouldRebaseNow_ConfigurableInterval24hExpired(t *testing.T) {
-	// RebaseInterval = 24h, last rebase 25h ago → allow
-	gh := &mockGitHubClient{
-		recentCommits: 0, // quiet main
-	}
-	agent := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{})
-	agent.cfg.RebaseInterval = 24 * time.Hour
-
-	work := &IssueWork{
-		PRNumber:       100,
-		LastRebaseTime: time.Now().Add(-25 * time.Hour), // 25h ago
-	}
-
-	allowed, _ := agent.shouldRebaseNow(context.Background(), work)
-	if !allowed {
-		t.Error("expected rebase to be allowed (25h > 24h interval)")
-	}
-}
-
-func TestShouldRebaseNow_ZeroIntervalUsesDefault(t *testing.T) {
-	// RebaseInterval = 0 (not set) → use 4h default
-	gh := &mockGitHubClient{
-		recentCommits: 0,
-	}
-	agent := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{})
-	// agent.cfg.RebaseInterval is zero (default)
-
-	work := &IssueWork{
-		PRNumber:       100,
-		LastRebaseTime: time.Now().Add(-3 * time.Hour), // 3h ago, less than 4h default
-	}
-
-	allowed, reason := agent.shouldRebaseNow(context.Background(), work)
-	if allowed {
-		t.Error("expected rebase to be deferred (3h < 4h default interval)")
-	}
-	if reason != "minimum interval not reached" {
-		t.Errorf("expected reason 'minimum interval not reached', got %q", reason)
+			allowed, reason := agent.shouldRebaseNow(context.Background(), work)
+			if allowed != tt.wantAllow {
+				t.Errorf("allowed = %v, want %v (reason %q)", allowed, tt.wantAllow, reason)
+			}
+			if reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
 	}
 }

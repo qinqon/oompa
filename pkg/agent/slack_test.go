@@ -413,137 +413,213 @@ func TestPostToSlack_HTTPError(t *testing.T) {
 	}
 }
 
-func TestCheckCIStatus_ReportsFailures(t *testing.T) {
-	gh := &mockGitHubClient{
-		checkRuns: []CheckRun{
-			{ID: 1, Name: "e2e-test", Status: "completed", Conclusion: "failure", HTMLURL: "https://github.com/org/repo/actions/runs/1/job/1"},
-			{ID: 2, Name: "unit-test", Status: "completed", Conclusion: "success"},
+// TestCheckFindings covers the Check* finding-collection surface —
+// CheckCIStatus, checkRebaseNeededWithStates, checkConflictsWithStates, and
+// CheckNewReviews — against a slackTestAgent with one open PR (#100),
+// asserting finding count, owner/repo, category, message content, dedup key,
+// and lastReportedAt-based stale filtering.
+func TestCheckFindings(t *testing.T) {
+	checkCI := func(ctx context.Context, a *Agent, last time.Time) []SlackFinding {
+		return a.CheckCIStatus(ctx, last)
+	}
+	checkRebase := func(ctx context.Context, a *Agent, _ time.Time) []SlackFinding {
+		return a.checkRebaseNeededWithStates(ctx, a.fetchMergeableStates(ctx))
+	}
+	checkConflicts := func(ctx context.Context, a *Agent, _ time.Time) []SlackFinding {
+		return a.checkConflictsWithStates(ctx, a.fetchMergeableStates(ctx))
+	}
+	checkReviews := func(ctx context.Context, a *Agent, last time.Time) []SlackFinding {
+		return a.CheckNewReviews(ctx, last)
+	}
+
+	tests := []struct {
+		name              string
+		gh                *mockGitHubClient
+		lastReportedAt    time.Time
+		check             func(context.Context, *Agent, time.Time) []SlackFinding
+		wantCount         int
+		wantCategory      string
+		wantMsgContains   string
+		wantDedupContains string
+	}{
+		{
+			name: "CheckCIStatus reports failures",
+			gh: &mockGitHubClient{
+				checkRuns: []CheckRun{
+					{ID: 1, Name: "e2e-test", Status: "completed", Conclusion: "failure", HTMLURL: "https://github.com/org/repo/actions/runs/1/job/1"},
+					{ID: 2, Name: "unit-test", Status: "completed", Conclusion: "success"},
+				},
+				prHeadSHAs: []string{"abc123"},
+			},
+			check:             checkCI,
+			wantCount:         1,
+			wantCategory:      "ci",
+			wantMsgContains:   "e2e-test",
+			wantDedupContains: "abc123",
 		},
-		prHeadSHAs: []string{"abc123"},
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.CheckCIStatus(context.Background(), time.Time{})
-
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(findings))
-	}
-	if findings[0].Owner != "org" || findings[0].Repo != "repo" {
-		t.Errorf("expected Owner/Repo org/repo, got %s/%s", findings[0].Owner, findings[0].Repo)
-	}
-	if findings[0].Category != "ci" {
-		t.Errorf("expected category ci, got %s", findings[0].Category)
-	}
-	if !strings.Contains(findings[0].Message, "e2e-test") {
-		t.Errorf("expected message to contain check name, got: %s", findings[0].Message)
-	}
-	if !strings.Contains(findings[0].DedupKey, "abc123") {
-		t.Errorf("expected DedupKey to contain SHA, got: %s", findings[0].DedupKey)
-	}
-}
-
-func TestCheckRebaseNeeded_ReportsBehind(t *testing.T) {
-	gh := &mockGitHubClient{
-		mergeableState: "behind",
-		prBehind:       true,
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.checkRebaseNeededWithStates(context.Background(), a.fetchMergeableStates(context.Background()))
-
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(findings))
-	}
-	if findings[0].Owner != "org" || findings[0].Repo != "repo" {
-		t.Errorf("expected Owner/Repo org/repo, got %s/%s", findings[0].Owner, findings[0].Repo)
-	}
-	if findings[0].Category != "rebase" {
-		t.Errorf("expected category rebase, got %s", findings[0].Category)
-	}
-	if !strings.Contains(findings[0].Message, "behind main") {
-		t.Errorf("expected message about behind main, got: %s", findings[0].Message)
-	}
-}
-
-func TestCheckConflicts_ReportsDirty(t *testing.T) {
-	gh := &mockGitHubClient{
-		mergeableState: "dirty",
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.checkConflictsWithStates(context.Background(), a.fetchMergeableStates(context.Background()))
-
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(findings))
-	}
-	if findings[0].Owner != "org" || findings[0].Repo != "repo" {
-		t.Errorf("expected Owner/Repo org/repo, got %s/%s", findings[0].Owner, findings[0].Repo)
-	}
-	if findings[0].Category != "conflict" {
-		t.Errorf("expected category conflict, got %s", findings[0].Category)
-	}
-	if !strings.Contains(findings[0].Message, "merge conflicts") {
-		t.Errorf("expected message about merge conflicts, got: %s", findings[0].Message)
-	}
-}
-
-func TestCheckNewReviews_ReportsComments(t *testing.T) {
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 10, User: "reviewer1", Body: "Please fix this"},
-			{ID: 11, User: "reviewer2", Body: "LGTM"},
+		{
+			name: "CheckCIStatus no failures for passing CI",
+			gh: &mockGitHubClient{
+				checkRuns: []CheckRun{
+					{ID: 1, Name: "e2e-test", Status: "completed", Conclusion: "success"},
+				},
+				prHeadSHAs: []string{"abc123"},
+			},
+			check:     checkCI,
+			wantCount: 0,
+		},
+		{
+			name: "CheckCIStatus filters stale failures",
+			gh: &mockGitHubClient{
+				checkRuns: []CheckRun{
+					{ID: 1, Name: "stale-test", Status: "completed", Conclusion: "failure",
+						CompletedAt: time.Date(2026, 5, 29, 9, 0, 0, 0, time.UTC), // Before lastReportedAt
+						HTMLURL:     "https://github.com/org/repo/actions/runs/1/job/1"},
+					{ID: 2, Name: "new-test", Status: "completed", Conclusion: "failure",
+						CompletedAt: time.Date(2026, 5, 29, 11, 0, 0, 0, time.UTC), // After lastReportedAt
+						HTMLURL:     "https://github.com/org/repo/actions/runs/2/job/2"},
+				},
+				prHeadSHAs: []string{"abc123"},
+			},
+			lastReportedAt:    time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC),
+			check:             checkCI,
+			wantCount:         1,
+			wantCategory:      "ci",
+			wantMsgContains:   "new-test",
+			wantDedupContains: "abc123",
+		},
+		{
+			// Failures with zero CompletedAt (e.g. commit statuses) should not be filtered.
+			name: "CheckCIStatus includes failures with zero CompletedAt",
+			gh: &mockGitHubClient{
+				checkRuns: []CheckRun{
+					{ID: 1, Name: "no-timestamp", Status: "completed", Conclusion: "failure",
+						HTMLURL: "https://github.com/org/repo/actions/runs/1/job/1"},
+				},
+				prHeadSHAs: []string{"abc123"},
+			},
+			lastReportedAt:    time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC),
+			check:             checkCI,
+			wantCount:         1,
+			wantCategory:      "ci",
+			wantMsgContains:   "no-timestamp",
+			wantDedupContains: "abc123",
+		},
+		{
+			name: "CheckRebaseNeeded reports behind",
+			gh: &mockGitHubClient{
+				mergeableState: "behind",
+				prBehind:       true,
+			},
+			check:             checkRebase,
+			wantCount:         1,
+			wantCategory:      "rebase",
+			wantMsgContains:   "behind main",
+			wantDedupContains: "rebase-needed:100",
+		},
+		{
+			name:      "CheckRebaseNeeded no findings for clean state",
+			gh:        &mockGitHubClient{mergeableState: "clean"},
+			check:     checkRebase,
+			wantCount: 0,
+		},
+		{
+			name:              "CheckConflicts reports dirty",
+			gh:                &mockGitHubClient{mergeableState: "dirty"},
+			check:             checkConflicts,
+			wantCount:         1,
+			wantCategory:      "conflict",
+			wantMsgContains:   "merge conflicts",
+			wantDedupContains: "conflict:100",
+		},
+		{
+			name: "CheckNewReviews reports comments",
+			gh: &mockGitHubClient{
+				prComments: []ReviewComment{
+					{ID: 10, User: "reviewer1", Body: "Please fix this"},
+					{ID: 11, User: "reviewer2", Body: "LGTM"},
+				},
+			},
+			check:             checkReviews,
+			wantCount:         1,
+			wantCategory:      "review",
+			wantMsgContains:   "2 new review",
+			wantDedupContains: "review:100:11",
+		},
+		{
+			name: "CheckNewReviews filters stale comments",
+			gh: &mockGitHubClient{
+				prComments: []ReviewComment{
+					{ID: 10, User: "reviewer1", Body: "Old comment",
+						CreatedAt: time.Date(2026, 5, 29, 9, 0, 0, 0, time.UTC)}, // Before lastReportedAt
+					{ID: 11, User: "reviewer2", Body: "New comment",
+						CreatedAt: time.Date(2026, 5, 29, 11, 0, 0, 0, time.UTC)}, // After lastReportedAt
+				},
+			},
+			lastReportedAt:    time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC),
+			check:             checkReviews,
+			wantCount:         1,
+			wantCategory:      "review",
+			wantMsgContains:   "1 new review comment",
+			wantDedupContains: "review:100:11",
+		},
+		{
+			// Comments with zero CreatedAt should not be filtered.
+			name: "CheckNewReviews includes comments with zero CreatedAt",
+			gh: &mockGitHubClient{
+				prComments: []ReviewComment{
+					{ID: 10, User: "reviewer1", Body: "No timestamp comment"},
+				},
+			},
+			lastReportedAt:    time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC),
+			check:             checkReviews,
+			wantCount:         1,
+			wantCategory:      "review",
+			wantMsgContains:   "1 new review comment",
+			wantDedupContains: "review:100:10",
+		},
+		{
+			name: "CheckNewReviews all stale no findings",
+			gh: &mockGitHubClient{
+				prComments: []ReviewComment{
+					{ID: 10, User: "reviewer1", Body: "Old comment",
+						CreatedAt: time.Date(2026, 5, 29, 9, 0, 0, 0, time.UTC)},
+					{ID: 11, User: "reviewer2", Body: "Also old",
+						CreatedAt: time.Date(2026, 5, 29, 8, 0, 0, 0, time.UTC)},
+				},
+			},
+			lastReportedAt: time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC),
+			check:          checkReviews,
+			wantCount:      0,
 		},
 	}
 
-	a := slackTestAgent(gh)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := slackTestAgent(tt.gh)
 
-	findings := a.CheckNewReviews(context.Background(), time.Time{})
+			findings := tt.check(context.Background(), a, tt.lastReportedAt)
 
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding, got %d", len(findings))
-	}
-	if findings[0].Owner != "org" || findings[0].Repo != "repo" {
-		t.Errorf("expected Owner/Repo org/repo, got %s/%s", findings[0].Owner, findings[0].Repo)
-	}
-	if findings[0].Category != "review" {
-		t.Errorf("expected category review, got %s", findings[0].Category)
-	}
-	if !strings.Contains(findings[0].Message, "2 new review") {
-		t.Errorf("expected message about 2 new reviews, got: %s", findings[0].Message)
-	}
-}
-
-func TestCheckCIStatus_NoFailures(t *testing.T) {
-	gh := &mockGitHubClient{
-		checkRuns: []CheckRun{
-			{ID: 1, Name: "e2e-test", Status: "completed", Conclusion: "success"},
-		},
-		prHeadSHAs: []string{"abc123"},
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.CheckCIStatus(context.Background(), time.Time{})
-
-	if len(findings) != 0 {
-		t.Errorf("expected 0 findings for passing CI, got %d", len(findings))
-	}
-}
-
-func TestCheckRebaseNeeded_Clean(t *testing.T) {
-	gh := &mockGitHubClient{
-		mergeableState: "clean",
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.checkRebaseNeededWithStates(context.Background(), a.fetchMergeableStates(context.Background()))
-
-	if len(findings) != 0 {
-		t.Errorf("expected 0 findings for clean state, got %d", len(findings))
+			if len(findings) != tt.wantCount {
+				t.Fatalf("expected %d finding(s), got %d", tt.wantCount, len(findings))
+			}
+			if tt.wantCount == 0 {
+				return
+			}
+			f := findings[0]
+			if f.Owner != "org" || f.Repo != "repo" {
+				t.Errorf("expected Owner/Repo org/repo, got %s/%s", f.Owner, f.Repo)
+			}
+			if f.Category != tt.wantCategory {
+				t.Errorf("expected category %s, got %s", tt.wantCategory, f.Category)
+			}
+			if !strings.Contains(f.Message, tt.wantMsgContains) {
+				t.Errorf("expected message to contain %q, got: %s", tt.wantMsgContains, f.Message)
+			}
+			if !strings.Contains(f.DedupKey, tt.wantDedupContains) {
+				t.Errorf("expected DedupKey to contain %q, got: %s", tt.wantDedupContains, f.DedupKey)
+			}
+		})
 	}
 }
 
@@ -1171,99 +1247,6 @@ func TestSlackReporter_LastReportedAtSurvivesRestart(t *testing.T) {
 	}
 }
 
-// --- Timestamp-based filtering tests ---
-
-func TestCheckCIStatus_FiltersStaleFailures(t *testing.T) {
-	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
-
-	gh := &mockGitHubClient{
-		checkRuns: []CheckRun{
-			{ID: 1, Name: "stale-test", Status: "completed", Conclusion: "failure",
-				CompletedAt: time.Date(2026, 5, 29, 9, 0, 0, 0, time.UTC), // Before lastReportedAt
-				HTMLURL:     "https://github.com/org/repo/actions/runs/1/job/1"},
-			{ID: 2, Name: "new-test", Status: "completed", Conclusion: "failure",
-				CompletedAt: time.Date(2026, 5, 29, 11, 0, 0, 0, time.UTC), // After lastReportedAt
-				HTMLURL:     "https://github.com/org/repo/actions/runs/2/job/2"},
-		},
-		prHeadSHAs: []string{"abc123"},
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.CheckCIStatus(context.Background(), lastReportedAt)
-
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding (only new failure), got %d", len(findings))
-	}
-	if !strings.Contains(findings[0].Message, "new-test") {
-		t.Errorf("expected finding for new-test, got: %s", findings[0].Message)
-	}
-}
-
-func TestCheckCIStatus_IncludesFailuresWithZeroCompletedAt(t *testing.T) {
-	// Failures with zero CompletedAt (e.g. commit statuses) should not be filtered
-	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
-
-	gh := &mockGitHubClient{
-		checkRuns: []CheckRun{
-			{ID: 1, Name: "no-timestamp", Status: "completed", Conclusion: "failure",
-				HTMLURL: "https://github.com/org/repo/actions/runs/1/job/1"},
-		},
-		prHeadSHAs: []string{"abc123"},
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.CheckCIStatus(context.Background(), lastReportedAt)
-
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding (zero CompletedAt not filtered), got %d", len(findings))
-	}
-}
-
-func TestCheckNewReviews_FiltersStaleComments(t *testing.T) {
-	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
-
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 10, User: "reviewer1", Body: "Old comment",
-				CreatedAt: time.Date(2026, 5, 29, 9, 0, 0, 0, time.UTC)}, // Before lastReportedAt
-			{ID: 11, User: "reviewer2", Body: "New comment",
-				CreatedAt: time.Date(2026, 5, 29, 11, 0, 0, 0, time.UTC)}, // After lastReportedAt
-		},
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.CheckNewReviews(context.Background(), lastReportedAt)
-
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding (only new comment), got %d", len(findings))
-	}
-	if !strings.Contains(findings[0].Message, "1 new review comment") {
-		t.Errorf("expected message about 1 new review comment, got: %s", findings[0].Message)
-	}
-}
-
-func TestCheckNewReviews_IncludesCommentsWithZeroCreatedAt(t *testing.T) {
-	// Comments with zero CreatedAt should not be filtered
-	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
-
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 10, User: "reviewer1", Body: "No timestamp comment"},
-		},
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.CheckNewReviews(context.Background(), lastReportedAt)
-
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding (zero CreatedAt not filtered), got %d", len(findings))
-	}
-}
-
 func TestSlackReporter_DedupKeysSurviveRestart(t *testing.T) {
 	var mu sync.Mutex
 	postCount := 0
@@ -1469,26 +1452,5 @@ func TestPersistLastReportedAt_PersistsAllKeys(t *testing.T) {
 	_, loaded := loadLastReportedAt(path, logger)
 	if len(loaded) != 700 {
 		t.Errorf("expected all 700 keys persisted, got %d", len(loaded))
-	}
-}
-
-func TestCheckNewReviews_AllStaleNoFindings(t *testing.T) {
-	lastReportedAt := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
-
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 10, User: "reviewer1", Body: "Old comment",
-				CreatedAt: time.Date(2026, 5, 29, 9, 0, 0, 0, time.UTC)},
-			{ID: 11, User: "reviewer2", Body: "Also old",
-				CreatedAt: time.Date(2026, 5, 29, 8, 0, 0, 0, time.UTC)},
-		},
-	}
-
-	a := slackTestAgent(gh)
-
-	findings := a.CheckNewReviews(context.Background(), lastReportedAt)
-
-	if len(findings) != 0 {
-		t.Errorf("expected 0 findings when all comments are stale, got %d", len(findings))
 	}
 }

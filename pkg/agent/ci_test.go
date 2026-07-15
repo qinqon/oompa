@@ -7,8 +7,26 @@ import (
 	"testing"
 )
 
-func TestParseCIStructuredFields_AllFields(t *testing.T) {
-	input := `ERROR_SUMMARY: test assertion failed in kubevirt handler
+// TestParseCIStructuredFields covers extraction of the structured CI
+// investigation fields (ERROR_SUMMARY, ROOT_CAUSE, EVIDENCE, RECOMMENDATION,
+// FAILING_TEST) from an agent result: complete and partial field sets, fully
+// unstructured input, multi-line evidence that stops only at column-0 field
+// headers, and skipping of the CLASSIFICATION line.
+func TestParseCIStructuredFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		// wantExact maps field name to its exact expected value; an empty
+		// string asserts the field must be empty.
+		wantExact map[string]string
+		// wantContains and wantNotContains map field name to substrings the
+		// field must or must not contain.
+		wantContains    map[string][]string
+		wantNotContains map[string][]string
+	}{
+		{
+			name: "all fields",
+			input: `ERROR_SUMMARY: test assertion failed in kubevirt handler
 
 ROOT_CAUSE: The PR changed GenerateNetworkOverrideMachineConfig() but didn't update the test fixture to include the new nmstate config fields.
 
@@ -19,66 +37,48 @@ TestKubeVirtHandler/should_generate_nmstate_config:
 
 RECOMMENDATION: Update test fixtures to include new nmstate config fields.
 
-FAILING_TEST: TestKubeVirtHandler/should_generate_nmstate_config`
-
-	errorSummary, rootCause, evidence, recommendation, failingTest := parseCIStructuredFields(input)
-
-	if errorSummary != "test assertion failed in kubevirt handler" {
-		t.Errorf("errorSummary = %q, want %q", errorSummary, "test assertion failed in kubevirt handler")
-	}
-	if !strings.Contains(rootCause, "GenerateNetworkOverrideMachineConfig") {
-		t.Errorf("rootCause missing expected content, got %q", rootCause)
-	}
-	if !strings.Contains(evidence, "autoconf: false") {
-		t.Errorf("evidence missing expected content, got %q", evidence)
-	}
-	if !strings.Contains(recommendation, "Update test fixtures") {
-		t.Errorf("recommendation missing expected content, got %q", recommendation)
-	}
-	if failingTest != "TestKubeVirtHandler/should_generate_nmstate_config" {
-		t.Errorf("failingTest = %q, want %q", failingTest, "TestKubeVirtHandler/should_generate_nmstate_config")
-	}
-}
-
-func TestParseCIStructuredFields_MissingFields(t *testing.T) {
-	input := `Some preamble text.
+FAILING_TEST: TestKubeVirtHandler/should_generate_nmstate_config`,
+			wantExact: map[string]string{
+				"errorSummary": "test assertion failed in kubevirt handler",
+				"failingTest":  "TestKubeVirtHandler/should_generate_nmstate_config",
+			},
+			wantContains: map[string][]string{
+				"rootCause":      {"GenerateNetworkOverrideMachineConfig"},
+				"evidence":       {"autoconf: false"},
+				"recommendation": {"Update test fixtures"},
+			},
+		},
+		{
+			name: "missing fields stay empty",
+			input: `Some preamble text.
 
 ERROR_SUMMARY: HTTP 500 from git server
 
-ROOT_CAUSE: GitHub's git server returned HTTP 500 during clone.`
-
-	errorSummary, rootCause, evidence, recommendation, failingTest := parseCIStructuredFields(input)
-
-	if errorSummary != "HTTP 500 from git server" {
-		t.Errorf("errorSummary = %q, want %q", errorSummary, "HTTP 500 from git server")
-	}
-	if !strings.Contains(rootCause, "HTTP 500") {
-		t.Errorf("rootCause = %q, expected to contain 'HTTP 500'", rootCause)
-	}
-	if evidence != "" {
-		t.Errorf("evidence should be empty, got %q", evidence)
-	}
-	if recommendation != "" {
-		t.Errorf("recommendation should be empty, got %q", recommendation)
-	}
-	if failingTest != "" {
-		t.Errorf("failingTest should be empty, got %q", failingTest)
-	}
-}
-
-func TestParseCIStructuredFields_NoFields(t *testing.T) {
-	input := "GitHub git server returned HTTP 500. This is an infrastructure failure."
-
-	errorSummary, rootCause, evidence, recommendation, failingTest := parseCIStructuredFields(input)
-
-	if errorSummary != "" || rootCause != "" || evidence != "" || recommendation != "" || failingTest != "" {
-		t.Errorf("expected all empty fields for unstructured input, got: summary=%q root=%q evidence=%q rec=%q test=%q",
-			errorSummary, rootCause, evidence, recommendation, failingTest)
-	}
-}
-
-func TestParseCIStructuredFields_EvidenceMultiLine(t *testing.T) {
-	input := `ERROR_SUMMARY: test timeout
+ROOT_CAUSE: GitHub's git server returned HTTP 500 during clone.`,
+			wantExact: map[string]string{
+				"errorSummary":   "HTTP 500 from git server",
+				"evidence":       "",
+				"recommendation": "",
+				"failingTest":    "",
+			},
+			wantContains: map[string][]string{
+				"rootCause": {"HTTP 500"},
+			},
+		},
+		{
+			name:  "unstructured input yields no fields",
+			input: "GitHub git server returned HTTP 500. This is an infrastructure failure.",
+			wantExact: map[string]string{
+				"errorSummary":   "",
+				"rootCause":      "",
+				"evidence":       "",
+				"recommendation": "",
+				"failingTest":    "",
+			},
+		},
+		{
+			name: "multi-line evidence stops at next field",
+			input: `ERROR_SUMMARY: test timeout
 
 EVIDENCE:
 === RUN TestNetworkPolicy
@@ -86,39 +86,83 @@ EVIDENCE:
     waiting for pod readiness
 --- FAIL: TestNetworkPolicy (300.12s)
 
-RECOMMENDATION: Retest with /retest`
-
-	_, _, evidence, recommendation, _ := parseCIStructuredFields(input)
-
-	if !strings.Contains(evidence, "TestNetworkPolicy") {
-		t.Errorf("evidence missing test name, got %q", evidence)
-	}
-	if !strings.Contains(evidence, "timeout after 300s") {
-		t.Errorf("evidence missing timeout message, got %q", evidence)
-	}
-	// Evidence should stop at the next field
-	if strings.Contains(evidence, "RECOMMENDATION") {
-		t.Errorf("evidence should not contain RECOMMENDATION field, got %q", evidence)
-	}
-	if recommendation != "Retest with /retest" {
-		t.Errorf("recommendation = %q, want %q", recommendation, "Retest with /retest")
-	}
-}
-
-func TestParseCIStructuredFields_ClassificationLineSkipped(t *testing.T) {
-	input := `CLASSIFICATION: INFRASTRUCTURE
+RECOMMENDATION: Retest with /retest`,
+			wantExact: map[string]string{
+				"recommendation": "Retest with /retest",
+			},
+			wantContains: map[string][]string{
+				"evidence": {"TestNetworkPolicy", "timeout after 300s"},
+			},
+			wantNotContains: map[string][]string{
+				"evidence": {"RECOMMENDATION"},
+			},
+		},
+		{
+			name: "classification line skipped",
+			input: `CLASSIFICATION: INFRASTRUCTURE
 
 ERROR_SUMMARY: DNS resolution failure
 
-ROOT_CAUSE: Cluster DNS was unavailable.`
+ROOT_CAUSE: Cluster DNS was unavailable.`,
+			wantExact: map[string]string{
+				"errorSummary": "DNS resolution failure",
+				"rootCause":    "Cluster DNS was unavailable.",
+			},
+		},
+		{
+			// Indented lines that look like field headers must not terminate
+			// evidence capture because they are not at column 0.
+			name: "indented field-like lines stay in evidence",
+			input: `ERROR_SUMMARY: test failure
 
-	errorSummary, rootCause, _, _, _ := parseCIStructuredFields(input)
+EVIDENCE:
+  test output:
+    RECOMMENDATION: some test recommendation output
+    ROOT_CAUSE: some diagnostic line
+  more test output
 
-	if errorSummary != "DNS resolution failure" {
-		t.Errorf("errorSummary = %q, want %q", errorSummary, "DNS resolution failure")
+RECOMMENDATION: Retest with /retest`,
+			wantExact: map[string]string{
+				"recommendation": "Retest with /retest",
+			},
+			wantContains: map[string][]string{
+				"evidence": {
+					"RECOMMENDATION: some test recommendation output",
+					"ROOT_CAUSE: some diagnostic line",
+				},
+			},
+		},
 	}
-	if rootCause != "Cluster DNS was unavailable." {
-		t.Errorf("rootCause = %q, want %q", rootCause, "Cluster DNS was unavailable.")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errorSummary, rootCause, evidence, recommendation, failingTest := parseCIStructuredFields(tt.input)
+			got := map[string]string{
+				"errorSummary":   errorSummary,
+				"rootCause":      rootCause,
+				"evidence":       evidence,
+				"recommendation": recommendation,
+				"failingTest":    failingTest,
+			}
+			for field, want := range tt.wantExact {
+				if got[field] != want {
+					t.Errorf("%s = %q, want %q", field, got[field], want)
+				}
+			}
+			for field, subs := range tt.wantContains {
+				for _, sub := range subs {
+					if !strings.Contains(got[field], sub) {
+						t.Errorf("%s missing %q, got %q", field, sub, got[field])
+					}
+				}
+			}
+			for field, subs := range tt.wantNotContains {
+				for _, sub := range subs {
+					if strings.Contains(got[field], sub) {
+						t.Errorf("%s should not contain %q, got %q", field, sub, got[field])
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -159,207 +203,253 @@ func TestFormatCISummaryHeader(t *testing.T) {
 	}
 }
 
+// TestFormatCIRelatedDetails covers the collapsible details block for a
+// related CI failure: the full section layout when a fix was pushed, the
+// fix-needed variant without an Action section, and HTML escaping of the
+// check name.
 func TestFormatCIRelatedDetails(t *testing.T) {
-	r := ciResult{
-		check:          "unit-tests",
-		category:       "related",
-		errorSummary:   "test assertion failed",
-		rootCause:      "PR changed the handler but test fixture was not updated.",
-		evidence:       "Expected: \"autoconf: false\"\nGot: \"\"",
-		recommendation: "Update test fixtures.",
-		pushed:         true,
+	tests := []struct {
+		name            string
+		r               ciResult
+		wantContains    []string
+		wantNotContains []string
+	}{
+		{
+			name: "pushed fix renders all sections",
+			r: ciResult{
+				check:          "unit-tests",
+				category:       "related",
+				errorSummary:   "test assertion failed",
+				rootCause:      "PR changed the handler but test fixture was not updated.",
+				evidence:       "Expected: \"autoconf: false\"\nGot: \"\"",
+				recommendation: "Update test fixtures.",
+				pushed:         true,
+			},
+			wantContains: []string{
+				"<details>",
+				"🔴 Related",
+				"<code>unit-tests</code>",
+				"fix pushed",
+				"### Error",
+				"autoconf: false",
+				"### Root Cause",
+				"handler but test fixture",
+				"### Action",
+				"</details>",
+			},
+		},
+		{
+			name: "not pushed omits Action section",
+			r: ciResult{
+				check:          "lint",
+				category:       "related",
+				errorSummary:   "lint failure",
+				recommendation: "Fix lint errors.",
+			},
+			wantContains:    []string{"fix needed"},
+			wantNotContains: []string{"### Action"},
+		},
+		{
+			// Check name must be HTML-escaped inside <code> tags.
+			name: "HTML-escapes check name",
+			r: ciResult{
+				check:        "pull-ci-<org>/repo-e2e",
+				category:     "related",
+				errorSummary: "test failed",
+			},
+			wantContains:    []string{"&lt;org&gt;"},
+			wantNotContains: []string{"<org>"},
+		},
 	}
-
-	output := formatCIRelatedDetails(r)
-
-	if !strings.Contains(output, "<details>") {
-		t.Errorf("expected collapsible details block")
-	}
-	if !strings.Contains(output, "🔴 Related") {
-		t.Errorf("expected Related emoji marker")
-	}
-	if !strings.Contains(output, "<code>unit-tests</code>") {
-		t.Errorf("expected check name in code block")
-	}
-	if !strings.Contains(output, "fix pushed") {
-		t.Errorf("expected 'fix pushed' in summary")
-	}
-	if !strings.Contains(output, "### Error") {
-		t.Errorf("expected Error section")
-	}
-	if !strings.Contains(output, "autoconf: false") {
-		t.Errorf("expected evidence in Error section")
-	}
-	if !strings.Contains(output, "### Root Cause") {
-		t.Errorf("expected Root Cause section")
-	}
-	if !strings.Contains(output, "handler but test fixture") {
-		t.Errorf("expected root cause content")
-	}
-	if !strings.Contains(output, "### Action") {
-		t.Errorf("expected Action section for pushed fix")
-	}
-	if !strings.Contains(output, "</details>") {
-		t.Errorf("expected closing details tag")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := formatCIRelatedDetails(tt.r)
+			for _, want := range tt.wantContains {
+				if !strings.Contains(output, want) {
+					t.Errorf("output missing %q, got: %s", want, output)
+				}
+			}
+			for _, notWant := range tt.wantNotContains {
+				if strings.Contains(output, notWant) {
+					t.Errorf("output should not contain %q, got: %s", notWant, output)
+				}
+			}
+		})
 	}
 }
 
-func TestFormatCIRelatedDetails_NotPushed(t *testing.T) {
-	r := ciResult{
-		check:          "lint",
-		category:       "related",
-		errorSummary:   "lint failure",
-		recommendation: "Fix lint errors.",
-	}
-
-	output := formatCIRelatedDetails(r)
-
-	if !strings.Contains(output, "fix needed") {
-		t.Errorf("expected 'fix needed' in summary for non-pushed fix")
-	}
-	if strings.Contains(output, "### Action") {
-		t.Errorf("should not have Action section when fix was not pushed")
-	}
-}
-
+// TestFormatCIUnrelatedDetails covers the collapsible details block for an
+// unrelated CI failure: the flaky-issue reference and Known Issue section
+// when a flaky issue exists, their absence when none does, and HTML escaping
+// of the check name.
 func TestFormatCIUnrelatedDetails(t *testing.T) {
-	r := ciResult{
-		check:          "e2e-conformance",
-		category:       "unrelated",
-		errorSummary:   "SCTP ingress test timeout",
-		rootCause:      "This test has been flaking independently due to cluster network latency.",
-		evidence:       "TestNetworkPolicyV2 — timeout after 300s",
-		recommendation: "Skip or quarantine the test.",
-		failingTest:    "TestNetworkPolicyV2",
-		flakyIssue:     6381,
+	tests := []struct {
+		name            string
+		r               ciResult
+		wantContains    []string
+		wantNotContains []string
+	}{
+		{
+			name: "flaky issue referenced",
+			r: ciResult{
+				check:          "e2e-conformance",
+				category:       "unrelated",
+				errorSummary:   "SCTP ingress test timeout",
+				rootCause:      "This test has been flaking independently due to cluster network latency.",
+				evidence:       "TestNetworkPolicyV2 — timeout after 300s",
+				recommendation: "Skip or quarantine the test.",
+				failingTest:    "TestNetworkPolicyV2",
+				flakyIssue:     6381,
+			},
+			wantContains: []string{
+				"<details>",
+				"⚠️ Unrelated",
+				"flaky test (#6381)",
+				"### Known Issue",
+				"#6381",
+			},
+		},
+		{
+			name: "no flaky issue omits Known Issue section",
+			r: ciResult{
+				check:        "e2e-network",
+				category:     "unrelated",
+				errorSummary: "network timeout",
+			},
+			wantContains:    []string{"flaky test"},
+			wantNotContains: []string{"Known Issue"},
+		},
+		{
+			name: "HTML-escapes check name",
+			r: ciResult{
+				check:        "e2e-<shard>&test",
+				category:     "unrelated",
+				errorSummary: "flaky timeout",
+			},
+			wantContains: []string{"&lt;shard&gt;&amp;test"},
+		},
 	}
-	agent := &Agent{cfg: Config{}}
-
-	output := formatCIUnrelatedDetails(r, agent)
-
-	if !strings.Contains(output, "<details>") {
-		t.Errorf("expected collapsible details block")
-	}
-	if !strings.Contains(output, "⚠️ Unrelated") {
-		t.Errorf("expected Unrelated emoji marker")
-	}
-	if !strings.Contains(output, "flaky test (#6381)") {
-		t.Errorf("expected flaky issue reference in summary")
-	}
-	if !strings.Contains(output, "### Known Issue") {
-		t.Errorf("expected Known Issue section")
-	}
-	if !strings.Contains(output, "#6381") {
-		t.Errorf("expected issue reference")
-	}
-}
-
-func TestFormatCIUnrelatedDetails_NoFlakyIssue(t *testing.T) {
-	r := ciResult{
-		check:        "e2e-network",
-		category:     "unrelated",
-		errorSummary: "network timeout",
-	}
-	agent := &Agent{cfg: Config{}}
-
-	output := formatCIUnrelatedDetails(r, agent)
-
-	if !strings.Contains(output, "flaky test") {
-		t.Errorf("expected 'flaky test' label")
-	}
-	if strings.Contains(output, "Known Issue") {
-		t.Errorf("should not have Known Issue section without flaky issue")
-	}
-}
-
-func TestFormatCIInfrastructureSection_Grouped(t *testing.T) {
-	infra := []ciResult{
-		{check: "test-deploy", category: "infrastructure", errorSummary: "HTTP 500 from git server", rootCause: "GitHub outage", recommendation: "Retest with /retest"},
-		{check: "check-license-header", category: "infrastructure", errorSummary: "HTTP 500 from git server"},
-		{check: "e2e-dual-conversion", category: "infrastructure", errorSummary: "HTTP 500 from git server"},
-	}
-
-	output := formatCIInfrastructureSection(infra)
-
-	if !strings.Contains(output, "🔧 Infrastructure (3)") {
-		t.Errorf("expected grouped infrastructure header with count 3")
-	}
-	if !strings.Contains(output, "HTTP 500 from git server") {
-		t.Errorf("expected error summary in header")
-	}
-	// All checks should appear in the table
-	if !strings.Contains(output, "`test-deploy`") {
-		t.Errorf("expected test-deploy in table")
-	}
-	if !strings.Contains(output, "`check-license-header`") {
-		t.Errorf("expected check-license-header in table")
-	}
-	if !strings.Contains(output, "`e2e-dual-conversion`") {
-		t.Errorf("expected e2e-dual-conversion in table")
-	}
-	// Should use root cause from first result
-	if !strings.Contains(output, "GitHub outage") {
-		t.Errorf("expected root cause from first result")
-	}
-	if !strings.Contains(output, "Retest with /retest") {
-		t.Errorf("expected recommendation from first result")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &Agent{cfg: Config{}}
+			output := formatCIUnrelatedDetails(tt.r, agent)
+			for _, want := range tt.wantContains {
+				if !strings.Contains(output, want) {
+					t.Errorf("output missing %q, got: %s", want, output)
+				}
+			}
+			for _, notWant := range tt.wantNotContains {
+				if strings.Contains(output, notWant) {
+					t.Errorf("output should not contain %q, got: %s", notWant, output)
+				}
+			}
+		})
 	}
 }
 
-func TestFormatCIInfrastructureSection_SingleCheck(t *testing.T) {
-	infra := []ciResult{
-		{check: "build", category: "infrastructure", errorSummary: "OOM killed", rootCause: "Runner ran out of memory."},
+// TestFormatCIInfrastructureSection covers grouping of infrastructure
+// failures in the consolidated comment: identical errors collapse into one
+// grouped block listing every check, a single check gets its own compact
+// block, mixed errors split into separate groups, and single-check names are
+// HTML-escaped.
+func TestFormatCIInfrastructureSection(t *testing.T) {
+	tests := []struct {
+		name         string
+		infra        []ciResult
+		wantContains []string
+	}{
+		{
+			name: "grouped identical errors",
+			infra: []ciResult{
+				{check: "test-deploy", category: "infrastructure", errorSummary: "HTTP 500 from git server", rootCause: "GitHub outage", recommendation: "Retest with /retest"},
+				{check: "check-license-header", category: "infrastructure", errorSummary: "HTTP 500 from git server"},
+				{check: "e2e-dual-conversion", category: "infrastructure", errorSummary: "HTTP 500 from git server"},
+			},
+			// All checks appear in the table; root cause and recommendation
+			// come from the first result.
+			wantContains: []string{
+				"🔧 Infrastructure (3)",
+				"HTTP 500 from git server",
+				"`test-deploy`",
+				"`check-license-header`",
+				"`e2e-dual-conversion`",
+				"GitHub outage",
+				"Retest with /retest",
+			},
+		},
+		{
+			name: "single check",
+			infra: []ciResult{
+				{check: "build", category: "infrastructure", errorSummary: "OOM killed", rootCause: "Runner ran out of memory."},
+			},
+			wantContains: []string{
+				"🔧 Infrastructure: <code>build</code>",
+				"OOM killed",
+				"Runner ran out of memory",
+			},
+		},
+		{
+			// Two groups: one with 2 checks (HTTP 500) and one single (OOM).
+			name: "mixed errors split into groups",
+			infra: []ciResult{
+				{check: "test-deploy", category: "infrastructure", errorSummary: "HTTP 500 from git server"},
+				{check: "e2e-bgp", category: "infrastructure", errorSummary: "HTTP 500 from git server"},
+				{check: "build", category: "infrastructure", errorSummary: "OOM killed"},
+			},
+			wantContains: []string{
+				"Infrastructure (2)",
+				"Infrastructure: <code>build</code>",
+			},
+		},
+		{
+			name: "HTML-escapes single check name",
+			infra: []ciResult{
+				{check: "build-<arch>", category: "infrastructure", errorSummary: "OOM killed"},
+			},
+			wantContains: []string{"&lt;arch&gt;"},
+		},
 	}
-
-	output := formatCIInfrastructureSection(infra)
-
-	if !strings.Contains(output, "🔧 Infrastructure: <code>build</code>") {
-		t.Errorf("expected single infrastructure check format")
-	}
-	if !strings.Contains(output, "OOM killed") {
-		t.Errorf("expected error summary")
-	}
-	if !strings.Contains(output, "Runner ran out of memory") {
-		t.Errorf("expected root cause")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := formatCIInfrastructureSection(tt.infra)
+			for _, want := range tt.wantContains {
+				if !strings.Contains(output, want) {
+					t.Errorf("output missing %q, got: %s", want, output)
+				}
+			}
+		})
 	}
 }
 
-func TestFormatCIInfrastructureSection_MixedErrors(t *testing.T) {
-	infra := []ciResult{
-		{check: "test-deploy", category: "infrastructure", errorSummary: "HTTP 500 from git server"},
-		{check: "e2e-bgp", category: "infrastructure", errorSummary: "HTTP 500 from git server"},
-		{check: "build", category: "infrastructure", errorSummary: "OOM killed"},
+// TestResultSummaryLine covers the one-line summary choice: a structured
+// error summary wins over the free-form explanation, which is truncated to
+// its first sentence when used as the fallback.
+func TestResultSummaryLine(t *testing.T) {
+	tests := []struct {
+		name string
+		r    ciResult
+		want string
+	}{
+		{
+			name: "prefers error summary",
+			r: ciResult{
+				errorSummary: "structured summary",
+				explanation:  "Full explanation with many details. Second sentence.",
+			},
+			want: "structured summary",
+		},
+		{
+			name: "falls back to first sentence of explanation",
+			r:    ciResult{explanation: "Full explanation with many details. Second sentence."},
+			want: "Full explanation with many details.",
+		},
 	}
-
-	output := formatCIInfrastructureSection(infra)
-
-	// Should have two groups: one with 2 (HTTP 500) and one single (OOM)
-	if !strings.Contains(output, "Infrastructure (2)") {
-		t.Errorf("expected grouped header with count 2")
-	}
-	if !strings.Contains(output, "Infrastructure: <code>build</code>") {
-		t.Errorf("expected single check format for OOM")
-	}
-}
-
-func TestResultSummaryLine_PrefersErrorSummary(t *testing.T) {
-	r := ciResult{
-		errorSummary: "structured summary",
-		explanation:  "Full explanation with many details. Second sentence.",
-	}
-	got := resultSummaryLine(r)
-	if got != "structured summary" {
-		t.Errorf("resultSummaryLine = %q, want %q", got, "structured summary")
-	}
-}
-
-func TestResultSummaryLine_FallsBackToExplanation(t *testing.T) {
-	r := ciResult{
-		explanation: "Full explanation with many details. Second sentence.",
-	}
-	got := resultSummaryLine(r)
-	if got != "Full explanation with many details." {
-		t.Errorf("resultSummaryLine = %q, want %q", got, "Full explanation with many details.")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resultSummaryLine(tt.r); got != tt.want {
+				t.Errorf("resultSummaryLine = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -381,164 +471,97 @@ func TestEscapeHTML(t *testing.T) {
 	}
 }
 
-func TestWriteStructuredBody_AllFields(t *testing.T) {
-	var b strings.Builder
-	r := ciResult{
-		evidence:       "line 1\nline 2",
-		rootCause:      "Something broke.",
-		recommendation: "Fix it.",
+// TestWriteStructuredBody covers section emission in writeStructuredBody:
+// every section when evidence, root cause, and recommendation are set, the
+// summary as Error-section fallback when evidence is missing, and no
+// sections at all for an empty result.
+func TestWriteStructuredBody(t *testing.T) {
+	tests := []struct {
+		name            string
+		summary         string
+		r               ciResult
+		wantContains    []string
+		wantNotContains []string
+	}{
+		{
+			name:    "all fields",
+			summary: "summary line",
+			r: ciResult{
+				evidence:       "line 1\nline 2",
+				rootCause:      "Something broke.",
+				recommendation: "Fix it.",
+			},
+			wantContains: []string{
+				"### Error",
+				"line 1\nline 2",
+				"### Root Cause",
+				"### Recommendation",
+			},
+		},
+		{
+			name:         "no evidence uses summary",
+			summary:      "fallback summary",
+			wantContains: []string{"fallback summary"},
+		},
+		{
+			name:            "empty emits no sections",
+			wantNotContains: []string{"### Error", "### Root Cause", "### Recommendation"},
+		},
 	}
-	writeStructuredBody(&b, "summary line", r)
-	output := b.String()
-
-	if !strings.Contains(output, "### Error") {
-		t.Errorf("expected Error section")
-	}
-	if !strings.Contains(output, "line 1\nline 2") {
-		t.Errorf("expected evidence content")
-	}
-	if !strings.Contains(output, "### Root Cause") {
-		t.Errorf("expected Root Cause section")
-	}
-	if !strings.Contains(output, "### Recommendation") {
-		t.Errorf("expected Recommendation section")
-	}
-}
-
-func TestWriteStructuredBody_NoEvidence_UsesSummary(t *testing.T) {
-	var b strings.Builder
-	r := ciResult{}
-	writeStructuredBody(&b, "fallback summary", r)
-	output := b.String()
-
-	if !strings.Contains(output, "fallback summary") {
-		t.Errorf("expected summary as fallback in Error section")
-	}
-}
-
-func TestWriteStructuredBody_Empty(t *testing.T) {
-	var b strings.Builder
-	r := ciResult{}
-	writeStructuredBody(&b, "", r)
-	output := b.String()
-
-	if strings.Contains(output, "### Error") {
-		t.Errorf("should not have Error section with empty summary and evidence")
-	}
-	if strings.Contains(output, "### Root Cause") {
-		t.Errorf("should not have Root Cause section with empty rootCause")
-	}
-}
-
-func TestFormatCIRelatedDetails_HTMLEscapesCheckName(t *testing.T) {
-	r := ciResult{
-		check:        "pull-ci-<org>/repo-e2e",
-		category:     "related",
-		errorSummary: "test failed",
-		pushed:       false,
-	}
-
-	output := formatCIRelatedDetails(r)
-
-	// Check name should be HTML-escaped inside <code> tags
-	if !strings.Contains(output, "&lt;org&gt;") {
-		t.Errorf("expected HTML-escaped check name, got: %s", output)
-	}
-	if strings.Contains(output, "<org>") {
-		t.Errorf("check name with < and > should be escaped, got: %s", output)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var b strings.Builder
+			writeStructuredBody(&b, tt.summary, tt.r)
+			output := b.String()
+			for _, want := range tt.wantContains {
+				if !strings.Contains(output, want) {
+					t.Errorf("output missing %q, got: %s", want, output)
+				}
+			}
+			for _, notWant := range tt.wantNotContains {
+				if strings.Contains(output, notWant) {
+					t.Errorf("output should not contain %q, got: %s", notWant, output)
+				}
+			}
+		})
 	}
 }
 
-func TestFormatCIUnrelatedDetails_HTMLEscapesCheckName(t *testing.T) {
-	r := ciResult{
-		check:        "e2e-<shard>&test",
-		category:     "unrelated",
-		errorSummary: "flaky timeout",
+// TestWriteFenced covers fence selection in writeFenced: a plain body gets a
+// standard triple-backtick fence, and a body containing backtick runs gets a
+// fence longer than its longest run so the content cannot break out.
+func TestWriteFenced(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string // exact output: heading plus opening and closing fence
+	}{
+		{
+			name: "no backticks uses standard fence",
+			body: "plain error text",
+			want: "\n### Error\n```\nplain error text\n```\n",
+		},
+		{
+			// A 4-backtick fence avoids breakout and the body is preserved unchanged.
+			name: "triple backticks in body use longer fence",
+			body: "Error in ```yaml\nkey: value\n```",
+			want: "\n### Error\n````\nError in ```yaml\nkey: value\n```\n````\n",
+		},
+		{
+			// Fence must be longer than 5, the longest backtick run in the body.
+			name: "long backtick run uses even longer fence",
+			body: "Some `````long````` backtick run",
+			want: "\n### Error\n``````\nSome `````long````` backtick run\n``````\n",
+		},
 	}
-	agent := &Agent{cfg: Config{}}
-
-	output := formatCIUnrelatedDetails(r, agent)
-
-	if !strings.Contains(output, "&lt;shard&gt;&amp;test") {
-		t.Errorf("expected HTML-escaped check name, got: %s", output)
-	}
-}
-
-func TestFormatCIInfrastructureSection_HTMLEscapesSingleCheck(t *testing.T) {
-	infra := []ciResult{
-		{check: "build-<arch>", category: "infrastructure", errorSummary: "OOM killed"},
-	}
-
-	output := formatCIInfrastructureSection(infra)
-
-	if !strings.Contains(output, "&lt;arch&gt;") {
-		t.Errorf("expected HTML-escaped check name in single infra block, got: %s", output)
-	}
-}
-
-func TestWriteFenced_NoBackticks(t *testing.T) {
-	var b strings.Builder
-	writeFenced(&b, "### Error", "plain error text")
-	output := b.String()
-
-	if !strings.Contains(output, "```\nplain error text\n```") {
-		t.Errorf("expected standard triple-backtick fence, got: %s", output)
-	}
-}
-
-func TestWriteFenced_WithBackticks(t *testing.T) {
-	var b strings.Builder
-	body := "Error in ```yaml\nkey: value\n```"
-	writeFenced(&b, "### Error", body)
-	output := b.String()
-
-	// Should use a longer fence (4 backticks) to avoid breakout
-	if !strings.Contains(output, "````") {
-		t.Errorf("expected longer fence for body with backticks, got: %s", output)
-	}
-	// Should contain the body unchanged
-	if !strings.Contains(output, body) {
-		t.Errorf("expected body to be preserved unchanged, got: %s", output)
-	}
-}
-
-func TestWriteFenced_WithLongBacktickRun(t *testing.T) {
-	var b strings.Builder
-	body := "Some `````long````` backtick run"
-	writeFenced(&b, "### Error", body)
-	output := b.String()
-
-	// Should use fence longer than 5 (the longest run)
-	if !strings.Contains(output, "``````") {
-		t.Errorf("expected 6+ backtick fence, got: %s", output)
-	}
-}
-
-func TestParseCIStructuredFields_EvidenceWithFieldLikeLines(t *testing.T) {
-	// Evidence block contains indented lines that look like field headers.
-	// These should NOT terminate evidence capture because they're not at column 0.
-	input := `ERROR_SUMMARY: test failure
-
-EVIDENCE:
-  test output:
-    RECOMMENDATION: some test recommendation output
-    ROOT_CAUSE: some diagnostic line
-  more test output
-
-RECOMMENDATION: Retest with /retest`
-
-	_, _, evidence, recommendation, _ := parseCIStructuredFields(input)
-
-	// The indented field-like lines should be captured as evidence
-	if !strings.Contains(evidence, "RECOMMENDATION: some test recommendation output") {
-		t.Errorf("expected indented RECOMMENDATION to be captured as evidence, got %q", evidence)
-	}
-	if !strings.Contains(evidence, "ROOT_CAUSE: some diagnostic line") {
-		t.Errorf("expected indented ROOT_CAUSE to be captured as evidence, got %q", evidence)
-	}
-	// The actual RECOMMENDATION field (at column 0) should still be parsed
-	if recommendation != "Retest with /retest" {
-		t.Errorf("recommendation = %q, want %q", recommendation, "Retest with /retest")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var b strings.Builder
+			writeFenced(&b, "### Error", tt.body)
+			if got := b.String(); got != tt.want {
+				t.Errorf("writeFenced output = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -567,65 +590,47 @@ func TestProcessCIFailures_FixesFailingCI(t *testing.T) {
 	}
 }
 
-func TestProcessCIFailures_SkipsPassingCI(t *testing.T) {
-	gh := &mockGitHubClient{
-		checkRuns: []CheckRun{
-			{ID: 1, Name: "test", Status: "completed", Conclusion: "success"},
+// TestProcessCIFailures_SkipsWithoutInvokingClaude covers the reasons a CI
+// poll ends without invoking claude or posting comments: CI passed, the
+// fix-attempt budget is exhausted, or a check is still running.
+func TestProcessCIFailures_SkipsWithoutInvokingClaude(t *testing.T) {
+	tests := []struct {
+		name          string
+		checkRun      CheckRun
+		ciFixAttempts int
+	}{
+		{
+			name:     "passing CI",
+			checkRun: CheckRun{ID: 1, Name: "test", Status: "completed", Conclusion: "success"},
+		},
+		{
+			name:          "max retries reached",
+			checkRun:      CheckRun{ID: 1, Name: "test", Status: "completed", Conclusion: "failure"},
+			ciFixAttempts: 3,
+		},
+		{
+			name:     "pending CI",
+			checkRun: CheckRun{ID: 1, Name: "test", Status: "in_progress", Conclusion: ""},
 		},
 	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &mockGitHubClient{checkRuns: []CheckRun{tt.checkRun}}
+			runner := &mockCommandRunner{}
+			wt := &mockWorktreeManager{}
 
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
+			agent := newTestAgent(gh, runner, wt)
+			trackWork(agent, func(w *IssueWork) { w.CIFixAttempts = tt.ciFixAttempts })
 
-	agent.ProcessCIFailures(context.Background())
+			agent.ProcessCIFailures(context.Background())
 
-	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude when CI passes")
-	}
-}
-
-func TestProcessCIFailures_StopsAfterMaxRetries(t *testing.T) {
-	gh := &mockGitHubClient{
-		checkRuns: []CheckRun{
-			{ID: 1, Name: "test", Status: "completed", Conclusion: "failure"},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent, func(w *IssueWork) {
-		w.CIFixAttempts = 3
-	})
-
-	agent.ProcessCIFailures(context.Background())
-
-	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude after max retries")
-	}
-	if len(gh.addedComments) != 0 {
-		t.Error("expected no comments after max retries")
-	}
-}
-
-func TestProcessCIFailures_SkipsPendingCI(t *testing.T) {
-	gh := &mockGitHubClient{
-		checkRuns: []CheckRun{
-			{ID: 1, Name: "test", Status: "in_progress", Conclusion: ""},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
-
-	agent.ProcessCIFailures(context.Background())
-
-	if len(runner.calls) != 0 {
-		t.Error("should not invoke claude while CI is still running")
+			if len(runner.calls) != 0 {
+				t.Error("should not invoke claude")
+			}
+			if len(gh.addedComments) != 0 {
+				t.Errorf("expected no comments, got %v", gh.addedComments)
+			}
+		})
 	}
 }
 

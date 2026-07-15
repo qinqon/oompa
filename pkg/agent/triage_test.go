@@ -579,425 +579,148 @@ func TestMergeIssues(t *testing.T) {
 	}
 }
 
-func TestTriageDedup_DifferentFailuresSameJob_MatchesByJobName(t *testing.T) {
-	// Two different failures from the same job should match the existing
-	// issue via same-job prefix match, even when the failure signatures
-	// differ. This prevents duplicate issues when the LLM produces
-	// different summaries for the same job across days (issue #257).
-	gh := &mockGitHubClient{
-		searchResults: []Issue{
-			{Number: 1501, Title: "CI Failure: periodic-knmstate-e2e-handler-k8s-latest / VLAN bridge test timeout",
-				Body: "Periodic CI job failed. VLAN configuration test failed with timeout."},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{}, // Should NOT be called — same-job match fires first
-	}
-
-	a := newTestAgent(gh, runner, wtm,
-		withCfg(func(c *Config) {
-			c.FlakyLabel = "ci-flake"
-			c.CreateFlakyIssues = true
-			c.TriageJobs = []string{}
-		}),
-		withCodeAgent(codeAgent),
-	)
-
-	// Different failure signature from the same job
-	title := "CI Failure: periodic-knmstate-e2e-handler-k8s-latest / CRI-O mirror returned HTTP 404"
-	analysis := "## Summary\nCRI-O mirror returned HTTP 404\n\n## Root Cause\nInfrastructure mirror outage"
-
-	matchedIssue := a.matchExistingTriageIssue(context.Background(),
-		"periodic-knmstate-e2e-handler-k8s-latest",
-		title,
-		analysis,
-		gh.searchResults,
-		"/tmp/worktree",
-		nil, // no cycle issues
-		nil, // no concurrent failures (single job)
-	)
-
-	// Same-job prefix match should find issue #1501
-	if matchedIssue != 1501 {
-		t.Errorf("expected same-job match on issue #1501, got #%d", matchedIssue)
-	}
-
-	// LLM should NOT have been called (same-job match is pre-LLM)
-	if codeAgent.callCount != 0 {
-		t.Errorf("expected 0 agent calls (same-job match), got %d", codeAgent.callCount)
-	}
-}
-
-func TestFindSameJobIssue_CycleIssues(t *testing.T) {
+// TestMatchExistingTriageIssue covers the dedup ladder in
+// matchExistingTriageIssue: exact title match, same-job prefix match
+// (cross-day dedup, #257), same-job cycle issues (#253), LLM matching for
+// different jobs, and the deterministic fallback to cycle issues when the
+// LLM answers NONE.
+func TestMatchExistingTriageIssue(t *testing.T) {
 	tests := []struct {
 		name        string
 		jobName     string
+		title       string
+		analysis    string
+		existing    []Issue
 		cycleIssues []Issue
-		want        int
+		cycleJobs   []string
+		llm         []mockCodeAgentCall
+		wantIssue   int
+		wantLLM     int
 	}{
 		{
-			name:        "no cycle issues",
-			jobName:     "owner/repo/ci.yml",
-			cycleIssues: nil,
-			want:        0,
-		},
-		{
-			name:    "matching cycle issue",
-			jobName: "owner/repo/ci.yml",
-			cycleIssues: []Issue{
-				{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Compile error in main.go"},
+			name:     "exact title match skips LLM",
+			jobName:  "periodic-e2e-test",
+			title:    "CI Failure: periodic-e2e-test / CRI-O mirror HTTP 404",
+			analysis: "## Summary\nCRI-O mirror HTTP 404\n\n## Root Cause\nMirror outage",
+			existing: []Issue{
+				{Number: 99, Title: "CI Failure: periodic-e2e-test / CRI-O mirror HTTP 404", Body: "CRI-O mirror outage"},
 			},
-			want: 10,
+			wantIssue: 99,
 		},
 		{
-			name:    "no matching cycle issue (different job)",
-			jobName: "owner/repo/ci.yml",
-			cycleIssues: []Issue{
-				{Number: 10, Title: "CI Failure: owner/repo/e2e.yml / Test timeout"},
+			name:     "same job with similar failure matches by prefix",
+			jobName:  "periodic-e2e-test",
+			title:    "CI Failure: periodic-e2e-test / DNS lookup timed out for registry.k8s.io",
+			analysis: "## Summary\nDNS lookup timed out for registry.k8s.io\n\n## Root Cause\nDNS resolution failure",
+			existing: []Issue{
+				{Number: 42, Title: "CI Failure: periodic-e2e-test / DNS resolution failure", Body: "Periodic CI job failed. DNS resolution timed out."},
 			},
-			want: 0,
+			wantIssue: 42,
 		},
 		{
-			name:    "multiple cycle issues returns first match",
-			jobName: "owner/repo/ci.yml",
-			cycleIssues: []Issue{
-				{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Error A"},
-				{Number: 11, Title: "CI Failure: owner/repo/ci.yml / Error B"},
+			name:     "same job with different signature matches by prefix",
+			jobName:  "periodic-knmstate-e2e-handler-k8s-latest",
+			title:    "CI Failure: periodic-knmstate-e2e-handler-k8s-latest / CRI-O mirror returned HTTP 404",
+			analysis: "## Summary\nCRI-O mirror returned HTTP 404\n\n## Root Cause\nInfrastructure mirror outage",
+			existing: []Issue{
+				{Number: 1501, Title: "CI Failure: periodic-knmstate-e2e-handler-k8s-latest / VLAN bridge test timeout", Body: "Periodic CI job failed. VLAN configuration test failed with timeout."},
 			},
-			want: 10,
+			wantIssue: 1501,
 		},
 		{
-			name:    "matches by prefix regardless of failure signature",
-			jobName: "owner/repo/ci.yml",
+			name:     "same job with different signature matches across days",
+			jobName:  "kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml",
+			title:    "CI Failure: kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml / IPAM controller pod CrashLoopBackOff",
+			analysis: "## Summary\nIPAM controller pod CrashLoopBackOff\n\n## Root Cause\nMemory limit exceeded",
+			existing: []Issue{
+				{Number: 2835, Title: "CI Failure: kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml / DHCP timeout in pod network", Body: "Periodic CI job failed. DHCP timeout during pod network setup."},
+			},
+			wantIssue: 2835,
+		},
+		{
+			name:     "existing issue without signature suffix still matches",
+			jobName:  "owner/repo/ci.yml",
+			title:    "CI Failure: owner/repo/ci.yml / New failure signature",
+			analysis: "## Summary\nNew failure",
+			existing: []Issue{
+				{Number: 100, Title: "CI Failure: owner/repo/ci.yml", Body: "Periodic CI job failed."},
+			},
+			wantIssue: 100,
+		},
+		{
+			name:     "same-job cycle issue matches before LLM",
+			jobName:  "owner/repo/ci.yml",
+			title:    "CI Failure: owner/repo/ci.yml / Compile error in main.go line 99",
+			analysis: "## Summary\nCompile error in main.go line 99",
 			cycleIssues: []Issue{
 				{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Compile error in main.go line 42"},
 			},
-			want: 10,
+			cycleJobs: []string{"owner/repo/ci.yml"},
+			llm:       []mockCodeAgentCall{{result: AgentResult{Result: "NONE"}}},
+			wantIssue: 10,
 		},
 		{
-			name:    "title without failure signature also matches",
-			jobName: "owner/repo/ci.yml",
-			cycleIssues: []Issue{
-				{Number: 10, Title: "CI Failure: owner/repo/ci.yml"},
+			name:     "different job falls through to LLM",
+			jobName:  "owner/repo/ci.yml",
+			title:    "CI Failure: owner/repo/ci.yml / Compile error",
+			analysis: "## Summary\nCompile error",
+			existing: []Issue{
+				{Number: 200, Title: "CI Failure: owner/repo/e2e.yml / DNS timeout", Body: "Periodic CI job failed. DNS timeout."},
 			},
-			want: 10,
+			llm:       []mockCodeAgentCall{{result: AgentResult{Result: "NONE"}}},
+			wantIssue: 0,
+			wantLLM:   1,
 		},
 		{
-			name:    "does not match when job name is prefix of another job",
-			jobName: "owner/repo/ci.yml",
+			name:      "no existing issues returns zero without LLM",
+			jobName:   "periodic-e2e-test",
+			title:     "CI Failure: periodic-e2e-test / some failure",
+			analysis:  "analysis",
+			wantIssue: 0,
+		},
+		{
+			name:     "LLM NONE falls back deterministically to cycle issue",
+			jobName:  "job-b",
+			title:    "CI Failure: job-b / DNS timeout",
+			analysis: "## Summary\nDNS timeout",
 			cycleIssues: []Issue{
-				{Number: 10, Title: "CI Failure: owner/repo/ci.yml-long / Some error"},
+				{Number: 42, Title: "CI Failure: job-a / Infra outage", Body: "Infra outage"},
 			},
-			want: 0,
+			cycleJobs: []string{"job-a", "job-b", "job-c"},
+			llm:       []mockCodeAgentCall{{result: AgentResult{Result: "NONE"}}},
+			wantIssue: 42,
+			wantLLM:   1,
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := findSameJobIssue(tt.jobName, tt.cycleIssues)
-			if got != tt.want {
-				t.Errorf("findSameJobIssue(%q, ...) = %d, want %d", tt.jobName, got, tt.want)
+			// matchExistingTriageIssue receives the merged issue list
+			// explicitly; it does not search GitHub itself.
+			gh := &mockGitHubClient{}
+			codeAgent := &sequentialMockCodeAgent{results: tt.llm}
+			a := newTestAgent(gh, &mockCommandRunner{}, &mockWorktreeManager{},
+				withCfg(func(c *Config) {
+					c.FlakyLabel = "ci-flake"
+					c.CreateFlakyIssues = true
+				}),
+				withCodeAgent(codeAgent),
+			)
+
+			// Mirror production: investigateTriageRun merges cycle issues into
+			// the search results before matching.
+			existingIssues := mergeIssues(tt.existing, tt.cycleIssues)
+
+			got := a.matchExistingTriageIssue(context.Background(),
+				tt.jobName, tt.title, tt.analysis,
+				existingIssues, "/tmp/worktree", tt.cycleIssues, tt.cycleJobs)
+
+			if got != tt.wantIssue {
+				t.Errorf("matched issue = #%d, want #%d", got, tt.wantIssue)
+			}
+			if codeAgent.callCount != tt.wantLLM {
+				t.Errorf("LLM calls = %d, want %d", codeAgent.callCount, tt.wantLLM)
 			}
 		})
-	}
-}
-
-func TestTriageDedup_SameJobCycleIssue_MatchesBeforeLLM(t *testing.T) {
-	// When a cycle issue exists for the same job, matchExistingTriageIssue
-	// should return it immediately without calling the LLM matcher.
-	// This tests the fix for #253: same workflow, different signatures.
-	gh := &mockGitHubClient{
-		searchResults: []Issue{}, // no existing issues from search
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{
-			// Should NOT be called — same-job cycle dedup fires first
-			{result: AgentResult{Result: "NONE"}},
-		},
-	}
-
-	a := newTestAgent(gh, runner, wtm,
-		withCfg(func(c *Config) {
-			c.FlakyLabel = "ci-flake"
-			c.CreateFlakyIssues = true
-		}),
-		withCodeAgent(codeAgent),
-	)
-
-	cycleIssues := []Issue{
-		{Number: 10, Title: "CI Failure: owner/repo/ci.yml / Compile error in main.go line 42"},
-	}
-
-	// Different title (different failure signature) but same job
-	title := "CI Failure: owner/repo/ci.yml / Compile error in main.go line 99"
-	analysis := "## Summary\nCompile error in main.go line 99"
-
-	existingIssues := mergeIssues(gh.searchResults, cycleIssues)
-	matchedIssue := a.matchExistingTriageIssue(context.Background(),
-		"owner/repo/ci.yml",
-		title,
-		analysis,
-		existingIssues,
-		"/tmp/worktree",
-		cycleIssues,
-		[]string{"owner/repo/ci.yml"}, // single job
-	)
-
-	// Should match the cycle issue even though titles differ
-	if matchedIssue != 10 {
-		t.Errorf("expected match to cycle issue #10, got %d", matchedIssue)
-	}
-
-	// LLM should NOT have been called (same-job cycle dedup is pre-LLM)
-	if codeAgent.callCount != 0 {
-		t.Errorf("expected 0 agent calls (same-job cycle dedup), got %d", codeAgent.callCount)
-	}
-}
-
-func TestTriageDedup_SameFailureSameJob_MatchesExistingIssue(t *testing.T) {
-	// Same failure from the same job should match the existing issue via
-	// same-job prefix match (no LLM needed).
-	gh := &mockGitHubClient{
-		searchResults: []Issue{
-			{Number: 42, Title: "CI Failure: periodic-e2e-test / DNS resolution failure",
-				Body: "Periodic CI job failed. DNS resolution timed out."},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{}, // Should NOT be called — same-job match fires first
-	}
-
-	a := newTestAgent(gh, runner, wtm,
-		withCfg(func(c *Config) {
-			c.FlakyLabel = "ci-flake"
-			c.CreateFlakyIssues = true
-		}),
-		withCodeAgent(codeAgent),
-	)
-
-	// New failure is also a DNS issue, but slightly different title
-	title := "CI Failure: periodic-e2e-test / DNS lookup timed out for registry.k8s.io"
-	analysis := "## Summary\nDNS lookup timed out for registry.k8s.io\n\n## Root Cause\nDNS resolution failure"
-
-	matchedIssue := a.matchExistingTriageIssue(context.Background(),
-		"periodic-e2e-test",
-		title,
-		analysis,
-		gh.searchResults,
-		"/tmp/worktree",
-		nil, // no cycle issues
-		nil, // no concurrent failures (single job)
-	)
-
-	// Same-job prefix match → should match issue #42
-	if matchedIssue != 42 {
-		t.Errorf("expected match on issue #42, got #%d", matchedIssue)
-	}
-
-	// LLM should NOT have been called
-	if codeAgent.callCount != 0 {
-		t.Errorf("expected 0 agent calls (same-job match), got %d", codeAgent.callCount)
-	}
-}
-
-func TestTriageDedup_ExactTitleMatch_SkipsLLM(t *testing.T) {
-	// Exact title match should skip LLM invocation entirely.
-	gh := &mockGitHubClient{
-		searchResults: []Issue{
-			{Number: 99, Title: "CI Failure: periodic-e2e-test / CRI-O mirror HTTP 404",
-				Body: "CRI-O mirror outage"},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{}, // No results — should NOT be called
-	}
-
-	a := newTestAgent(gh, runner, wtm,
-		withCfg(func(c *Config) {
-			c.FlakyLabel = "ci-flake"
-			c.CreateFlakyIssues = true
-		}),
-		withCodeAgent(codeAgent),
-	)
-
-	title := "CI Failure: periodic-e2e-test / CRI-O mirror HTTP 404"
-	analysis := "## Summary\nCRI-O mirror HTTP 404\n\n## Root Cause\nMirror outage"
-
-	matchedIssue := a.matchExistingTriageIssue(context.Background(),
-		"periodic-e2e-test",
-		title,
-		analysis,
-		gh.searchResults,
-		"/tmp/worktree",
-		nil, // no cycle issues
-		nil, // no concurrent failures (single job)
-	)
-
-	// Exact title match — should return issue #99
-	if matchedIssue != 99 {
-		t.Errorf("expected exact title match on issue #99, got #%d", matchedIssue)
-	}
-
-	// LLM should NOT have been called
-	if codeAgent.callCount != 0 {
-		t.Errorf("expected 0 agent calls (exact title match), got %d", codeAgent.callCount)
-	}
-}
-
-func TestTriageDedup_SameJobDifferentSignature_MatchesAcrossDays(t *testing.T) {
-	// When the same CI job fails on consecutive days, the failure signature
-	// (LLM summary) may differ between runs. The same-job match should find
-	// the existing issue by job name prefix without invoking the LLM.
-	// This is the cross-day dedup scenario from issue #257.
-	gh := &mockGitHubClient{
-		searchResults: []Issue{
-			{Number: 2835, Title: "CI Failure: kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml / DHCP timeout in pod network",
-				Body: "Periodic CI job failed. DHCP timeout during pod network setup."},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{}, // Should NOT be called — same-job match fires first
-	}
-
-	a := newTestAgent(gh, runner, wtm,
-		withCfg(func(c *Config) {
-			c.FlakyLabel = "ci-flake"
-			c.CreateFlakyIssues = true
-		}),
-		withCodeAgent(codeAgent),
-	)
-
-	// Next day: same job, different failure signature from LLM
-	title := "CI Failure: kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml / IPAM controller pod CrashLoopBackOff"
-	analysis := "## Summary\nIPAM controller pod CrashLoopBackOff\n\n## Root Cause\nMemory limit exceeded"
-
-	matchedIssue := a.matchExistingTriageIssue(context.Background(),
-		"kubevirt/cluster-network-addons-operator/kubevirt-ipam-controller.yaml",
-		title,
-		analysis,
-		gh.searchResults,
-		"/tmp/worktree",
-		nil, // no cycle issues (different triage cycle)
-		nil, // no concurrent failures (single job)
-	)
-
-	// Should match issue #2835 via same-job prefix match
-	if matchedIssue != 2835 {
-		t.Errorf("expected same-job match on issue #2835, got #%d", matchedIssue)
-	}
-
-	// LLM should NOT have been called (same-job match is pre-LLM)
-	if codeAgent.callCount != 0 {
-		t.Errorf("expected 0 agent calls (same-job match), got %d", codeAgent.callCount)
-	}
-}
-
-func TestTriageDedup_SameJobNoSignature_MatchesAcrossDays(t *testing.T) {
-	// Existing issue has no failure signature suffix. Same-job match
-	// should still find it.
-	gh := &mockGitHubClient{
-		searchResults: []Issue{
-			{Number: 100, Title: "CI Failure: owner/repo/ci.yml",
-				Body: "Periodic CI job failed."},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{},
-	}
-
-	a := newTestAgent(gh, runner, wtm,
-		withCfg(func(c *Config) {
-			c.FlakyLabel = "ci-flake"
-			c.CreateFlakyIssues = true
-		}),
-		withCodeAgent(codeAgent),
-	)
-
-	title := "CI Failure: owner/repo/ci.yml / New failure signature"
-	analysis := "## Summary\nNew failure"
-
-	matchedIssue := a.matchExistingTriageIssue(context.Background(),
-		"owner/repo/ci.yml",
-		title,
-		analysis,
-		gh.searchResults,
-		"/tmp/worktree",
-		nil, nil,
-	)
-
-	if matchedIssue != 100 {
-		t.Errorf("expected same-job match on issue #100, got #%d", matchedIssue)
-	}
-	if codeAgent.callCount != 0 {
-		t.Errorf("expected 0 agent calls, got %d", codeAgent.callCount)
-	}
-}
-
-func TestTriageDedup_DifferentJob_DoesNotSameJobMatch(t *testing.T) {
-	// Issues from a DIFFERENT job should NOT be matched by same-job match.
-	// They should fall through to LLM matching.
-	gh := &mockGitHubClient{
-		searchResults: []Issue{
-			{Number: 200, Title: "CI Failure: owner/repo/e2e.yml / DNS timeout",
-				Body: "Periodic CI job failed. DNS timeout."},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{
-			{result: AgentResult{Result: "NONE"}}, // LLM says no match
-		},
-	}
-
-	a := newTestAgent(gh, runner, wtm,
-		withCfg(func(c *Config) {
-			c.FlakyLabel = "ci-flake"
-			c.CreateFlakyIssues = true
-		}),
-		withCodeAgent(codeAgent),
-	)
-
-	// Different job name
-	title := "CI Failure: owner/repo/ci.yml / Compile error"
-	analysis := "## Summary\nCompile error"
-
-	matchedIssue := a.matchExistingTriageIssue(context.Background(),
-		"owner/repo/ci.yml",
-		title,
-		analysis,
-		gh.searchResults,
-		"/tmp/worktree",
-		nil, nil,
-	)
-
-	// Should NOT match — different job
-	if matchedIssue != 0 {
-		t.Errorf("expected no match (different job), got #%d", matchedIssue)
-	}
-
-	// LLM should have been called (same-job match didn't fire)
-	if codeAgent.callCount != 1 {
-		t.Errorf("expected 1 agent call (LLM matching), got %d", codeAgent.callCount)
 	}
 }
 
@@ -1072,44 +795,6 @@ func TestFindSameJobIssue(t *testing.T) {
 				t.Errorf("findSameJobIssue(%q, ...) = %d, want %d", tt.job, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestTriageDedup_NoExistingIssues_ReturnsZero(t *testing.T) {
-	// No existing issues → should return 0 (will create a new issue).
-	gh := &mockGitHubClient{
-		searchResults: []Issue{},
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{},
-	}
-
-	a := newTestAgent(gh, runner, wtm,
-		withCfg(func(c *Config) {
-			c.FlakyLabel = "ci-flake"
-			c.CreateFlakyIssues = true
-		}),
-		withCodeAgent(codeAgent),
-	)
-
-	matchedIssue := a.matchExistingTriageIssue(context.Background(),
-		"periodic-e2e-test",
-		"CI Failure: periodic-e2e-test / some failure",
-		"analysis",
-		[]Issue{},
-		"/tmp/worktree",
-		nil, // no cycle issues
-		nil, // no concurrent failures (single job)
-	)
-
-	if matchedIssue != 0 {
-		t.Errorf("expected 0 (no existing issues), got #%d", matchedIssue)
-	}
-	if codeAgent.callCount != 0 {
-		t.Errorf("expected 0 agent calls (no existing issues), got %d", codeAgent.callCount)
 	}
 }
 
@@ -1263,64 +948,6 @@ func TestProcessTriageJobs_DeterministicFallbackWhenLLMSaysNone(t *testing.T) {
 	}
 	if runLinkCount != 2 {
 		t.Errorf("expected 2 run-link comments, got %d", runLinkCount)
-	}
-}
-
-func TestTriageDedup_DeterministicFallbackWithCycleIssuesMerged(t *testing.T) {
-	// Mirrors production behavior: investigateTriageRun merges cycleIssues
-	// into existingIssues before calling matchExistingTriageIssue. When the
-	// LLM says NONE, the deterministic fallback should match to the cycle
-	// issue even though it's present in existingIssues.
-	gh := &mockGitHubClient{
-		searchResults: []Issue{}, // GitHub search returns nothing (search lag)
-	}
-	runner := &mockCommandRunner{}
-	wtm := &mockWorktreeManager{}
-
-	// LLM says NONE — deterministic fallback should fire after LLM
-	codeAgent := &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{
-			{result: AgentResult{Result: "NONE"}},
-		},
-	}
-
-	a := newTestAgent(gh, runner, wtm,
-		withCfg(func(c *Config) {
-			c.FlakyLabel = "ci-flake"
-			c.CreateFlakyIssues = true
-		}),
-		withCodeAgent(codeAgent),
-	)
-
-	title := "CI Failure: job-b / DNS timeout"
-	analysis := "## Summary\nDNS timeout"
-
-	// Simulate 3 failed jobs with 1 cycle issue already created
-	cycleIssues := []Issue{
-		{Number: 42, Title: "CI Failure: job-a / Infra outage", Body: "Infra outage"},
-	}
-	cycleFailedJobs := []string{"job-a", "job-b", "job-c"}
-
-	// Mirror production: merge cycleIssues into existingIssues (as
-	// investigateTriageRun does before calling matchExistingTriageIssue)
-	existingIssues := mergeIssues([]Issue{}, cycleIssues)
-
-	matchedIssue := a.matchExistingTriageIssue(context.Background(),
-		"job-b", title, analysis,
-		existingIssues,
-		"/tmp/worktree",
-		cycleIssues,
-		cycleFailedJobs,
-	)
-
-	// Should match cycle issue #42 via deterministic fallback after LLM NONE
-	if matchedIssue != 42 {
-		t.Errorf("expected deterministic fallback to match cycle issue #42, got #%d", matchedIssue)
-	}
-
-	// LLM should have been called once (title didn't match, so LLM tried)
-	if codeAgent.callCount != 1 {
-		t.Errorf("expected 1 agent call (LLM tried before fallback), got %d", codeAgent.callCount)
 	}
 }
 

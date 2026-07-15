@@ -89,27 +89,211 @@ projects:
 	}
 }
 
-func TestLoadFileConfig_ValidationErrors(t *testing.T) {
+// TestLoadFileConfig_Validation covers LoadFileConfig accept/reject
+// behaviour: YAML parse errors, unknown keys, schema violations (projects,
+// repo format, roles), and field-level validation of reactions, agent,
+// agent-model, skip-comment, schedule, lookback, and rebase-interval.
+func TestLoadFileConfig_Validation(t *testing.T) {
 	tests := []struct {
-		name string
-		yaml string
+		name    string
+		yaml    string
+		wantErr bool
 	}{
-		{"no_projects", "agent: opencode\nprojects: []\n"},
-		{"invalid_repo", "projects:\n  - repo: invalid\n    prs:\n      - watch: [1]\n"},
-		{"no_roles", "projects:\n  - repo: owner/repo\n"},
-		{"prs_without_watch", "projects:\n  - repo: owner/repo\n    prs:\n      - reactions: [ci]\n"},
-		{"triage_without_jobs_or_workflow", "projects:\n  - repo: owner/repo\n    triage:\n      - schedule: \"09:00 Europe/Madrid\"\n"},
-		{"triage_workflow_without_lanes", "projects:\n  - repo: owner/repo\n    triage:\n      - workflow: test.yml\n"},
-		{"triage_lanes_without_workflow", "projects:\n  - repo: owner/repo\n    triage:\n      - lanes: [\"e2e*\"]\n"},
-		{"triage_jobs_and_workflow", "projects:\n  - repo: owner/repo\n    triage:\n      - jobs: [\"https://ci.example.com/job1\"]\n        workflow: test.yml\n        lanes: [\"e2e*\"]\n"},
-		{"invalid_reaction", "projects:\n  - repo: owner/repo\n    prs:\n      - watch: [1]\n        reactions: [invalid]\n"},
-		{"invalid_agent", "agent: badagent\nprojects:\n  - repo: owner/repo\n    issues:\n      - label: test\n"},
+		{name: "no_projects", yaml: "agent: opencode\nprojects: []\n", wantErr: true},
+		{name: "invalid_repo", yaml: "projects:\n  - repo: invalid\n    prs:\n      - watch: [1]\n", wantErr: true},
+		{name: "no_roles", yaml: "projects:\n  - repo: owner/repo\n", wantErr: true},
+		{name: "prs_without_watch", yaml: "projects:\n  - repo: owner/repo\n    prs:\n      - reactions: [ci]\n", wantErr: true},
+		{name: "triage_without_jobs_or_workflow", yaml: "projects:\n  - repo: owner/repo\n    triage:\n      - schedule: \"09:00 Europe/Madrid\"\n", wantErr: true},
+		{name: "triage_workflow_without_lanes", yaml: "projects:\n  - repo: owner/repo\n    triage:\n      - workflow: test.yml\n", wantErr: true},
+		{name: "triage_lanes_without_workflow", yaml: "projects:\n  - repo: owner/repo\n    triage:\n      - lanes: [\"e2e*\"]\n", wantErr: true},
+		{name: "triage_jobs_and_workflow", yaml: "projects:\n  - repo: owner/repo\n    triage:\n      - jobs: [\"https://ci.example.com/job1\"]\n        workflow: test.yml\n        lanes: [\"e2e*\"]\n", wantErr: true},
+		{name: "invalid_reaction", yaml: "projects:\n  - repo: owner/repo\n    prs:\n      - watch: [1]\n        reactions: [invalid]\n", wantErr: true},
+		{name: "invalid_agent", yaml: "agent: badagent\nprojects:\n  - repo: owner/repo\n    issues:\n      - label: test\n", wantErr: true},
+		{name: "invalid_yaml", yaml: "{{invalid yaml", wantErr: true},
+		{
+			name: "unknown_keys_rejected",
+			yaml: `
+agent: opencode
+unknown-field: some-value
+projects:
+  - repo: owner/repo
+    issues:
+      - label: test
+`,
+			wantErr: true,
+		},
+		{
+			name: "invalid_skip_comment",
+			yaml: `
+projects:
+  - repo: owner/repo
+    skip-comment:
+      - invalid-category
+    prs:
+      - watch: [1]
+`,
+			wantErr: true,
+		},
+		{
+			name: "agent_model_without_opencode",
+			yaml: `
+agent: claudecode
+agent-model: some-model
+projects:
+  - repo: owner/repo
+    issues:
+      - label: test
+`,
+			wantErr: true,
+		},
+		{
+			// agent-model without an explicit agent is valid: the agent is
+			// inherited from the global config and the resolved combination
+			// is validated when the code agent is selected.
+			name: "agent_model_without_agent_set",
+			yaml: `
+agent-model: some-model
+projects:
+  - repo: owner/repo
+    issues:
+      - label: test
+`,
+			wantErr: false,
+		},
+		{
+			name: "project_agent_model_without_opencode",
+			yaml: `
+agent: claudecode
+projects:
+  - repo: owner/repo
+    agent-model: some-model
+    prs:
+      - watch: [1]
+`,
+			wantErr: true,
+		},
+		{
+			// Project-level agent-model without an explicit agent is valid:
+			// the agent is inherited from the global config and the resolved
+			// combination is validated when the code agent is selected.
+			name: "project_agent_model_without_agent_set",
+			yaml: `
+projects:
+  - repo: owner/repo
+    agent-model: some-model
+    prs:
+      - watch: [1]
+`,
+			wantErr: false,
+		},
+		{
+			name: "invalid_schedule_timezone",
+			yaml: `
+projects:
+  - repo: owner/repo
+    triage:
+      - jobs: [https://ci.example.com/job]
+        schedule: "09:00 Invalid/Timezone"
+`,
+			wantErr: true,
+		},
+		{
+			name: "valid_schedule",
+			yaml: `
+projects:
+  - repo: owner/repo
+    triage:
+      - jobs: [https://ci.example.com/job]
+        schedule: "09:00 UTC"
+`,
+			wantErr: false,
+		},
+		{
+			name: "invalid_lookback",
+			yaml: `
+projects:
+  - repo: owner/repo
+    triage:
+      - jobs: [https://ci.example.com/job]
+        lookback: "not-a-duration"
+`,
+			wantErr: true,
+		},
+		{
+			name: "negative_lookback",
+			yaml: `
+projects:
+  - repo: owner/repo
+    triage:
+      - jobs: [https://ci.example.com/job]
+        lookback: "-1h"
+`,
+			wantErr: true,
+		},
+		{
+			name: "rebase_interval_invalid_project",
+			yaml: `
+projects:
+  - repo: owner/repo
+    rebase-interval: not-a-duration
+    prs:
+      - watch: [1]
+`,
+			wantErr: true,
+		},
+		{
+			name: "rebase_interval_negative_project",
+			yaml: `
+projects:
+  - repo: owner/repo
+    rebase-interval: "-1h"
+    prs:
+      - watch: [1]
+`,
+			wantErr: true,
+		},
+		{
+			name: "rebase_interval_zero_project",
+			yaml: `
+projects:
+  - repo: owner/repo
+    rebase-interval: "0s"
+    prs:
+      - watch: [1]
+`,
+			wantErr: true,
+		},
+		{
+			name: "rebase_interval_negative_pr",
+			yaml: `
+projects:
+  - repo: owner/repo
+    prs:
+      - watch: [1]
+        rebase-interval: "-2h"
+`,
+			wantErr: true,
+		},
+		{
+			name: "rebase_interval_invalid_pr",
+			yaml: `
+projects:
+  - repo: owner/repo
+    prs:
+      - watch: [1]
+        rebase-interval: bad
+`,
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := loadConfig(t, tt.yaml)
-			if err == nil {
+			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 		})
 	}
@@ -555,119 +739,10 @@ func TestBuildRoleEntries_GlobalOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadFileConfig_InvalidSkipComment(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    skip-comment:
-      - invalid-category
-    prs:
-      - watch: [1]
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for invalid skip-comment")
-	}
-}
-
 func TestLoadFileConfig_FileNotFound(t *testing.T) {
 	_, err := LoadFileConfig("/nonexistent/path.yaml")
 	if err == nil {
 		t.Fatal("expected error for missing file")
-	}
-}
-
-func TestLoadFileConfig_InvalidYAML(t *testing.T) {
-	_, err := loadConfig(t, "{{invalid yaml")
-	if err == nil {
-		t.Fatal("expected error for invalid YAML")
-	}
-}
-
-func TestLoadFileConfig_AgentModelWithoutOpenCode(t *testing.T) {
-	yaml := `
-agent: claudecode
-agent-model: some-model
-projects:
-  - repo: owner/repo
-    issues:
-      - label: test
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for agent-model with claudecode")
-	}
-}
-
-func TestLoadFileConfig_AgentModelWithoutAgentSet(t *testing.T) {
-	yaml := `
-agent-model: some-model
-projects:
-  - repo: owner/repo
-    issues:
-      - label: test
-`
-	// agent-model without an explicit agent is valid: the agent is inherited
-	// from the global config and the resolved combination is validated when
-	// the code agent is selected.
-	if _, err := loadConfig(t, yaml); err != nil {
-		t.Fatalf("unexpected error for agent-model without explicit agent: %v", err)
-	}
-}
-
-func TestLoadFileConfig_InvalidSchedule(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    triage:
-      - jobs: [https://ci.example.com/job]
-        schedule: "09:00 Invalid/Timezone"
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for invalid schedule timezone")
-	}
-}
-
-func TestLoadFileConfig_ValidSchedule(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    triage:
-      - jobs: [https://ci.example.com/job]
-        schedule: "09:00 UTC"
-`
-	_, err := loadConfig(t, yaml)
-	if err != nil {
-		t.Fatalf("unexpected error for valid schedule: %v", err)
-	}
-}
-
-func TestLoadFileConfig_InvalidLookback(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    triage:
-      - jobs: [https://ci.example.com/job]
-        lookback: "not-a-duration"
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for invalid lookback duration")
-	}
-}
-
-func TestLoadFileConfig_NegativeLookback(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    triage:
-      - jobs: [https://ci.example.com/job]
-        lookback: "-1h"
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for negative lookback duration")
 	}
 }
 
@@ -886,21 +961,6 @@ func TestReactionsNilVsEmpty(t *testing.T) {
 	}
 }
 
-func TestLoadFileConfig_UnknownKeysRejected(t *testing.T) {
-	yaml := `
-agent: opencode
-unknown-field: some-value
-projects:
-  - repo: owner/repo
-    issues:
-      - label: test
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for unknown YAML key")
-	}
-}
-
 func TestLoadFileConfig_RebaseIntervalValid(t *testing.T) {
 	yaml := `
 projects:
@@ -919,76 +979,6 @@ projects:
 	}
 	if fc.Projects[0].PRs[0].RebaseInterval != "8h" {
 		t.Errorf("expected PR rebase-interval '8h', got %q", fc.Projects[0].PRs[0].RebaseInterval)
-	}
-}
-
-func TestLoadFileConfig_RebaseIntervalInvalidProject(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    rebase-interval: not-a-duration
-    prs:
-      - watch: [1]
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for invalid project rebase-interval")
-	}
-}
-
-func TestLoadFileConfig_RebaseIntervalNegativeProject(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    rebase-interval: "-1h"
-    prs:
-      - watch: [1]
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for negative project rebase-interval")
-	}
-}
-
-func TestLoadFileConfig_RebaseIntervalZeroProject(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    rebase-interval: "0s"
-    prs:
-      - watch: [1]
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for zero project rebase-interval")
-	}
-}
-
-func TestLoadFileConfig_RebaseIntervalNegativePR(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    prs:
-      - watch: [1]
-        rebase-interval: "-2h"
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for negative PR rebase-interval")
-	}
-}
-
-func TestLoadFileConfig_RebaseIntervalInvalidPR(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    prs:
-      - watch: [1]
-        rebase-interval: bad
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for invalid PR rebase-interval")
 	}
 }
 
@@ -1105,37 +1095,6 @@ projects:
 	}
 	if fc.Projects[0].AgentModel != "google-vertex-anthropic/claude-sonnet-4-20250514" {
 		t.Errorf("expected project agent-model, got %q", fc.Projects[0].AgentModel)
-	}
-}
-
-func TestLoadFileConfig_ProjectAgentModelWithoutOpenCode(t *testing.T) {
-	yaml := `
-agent: claudecode
-projects:
-  - repo: owner/repo
-    agent-model: some-model
-    prs:
-      - watch: [1]
-`
-	_, err := loadConfig(t, yaml)
-	if err == nil {
-		t.Fatal("expected error for project agent-model with claudecode")
-	}
-}
-
-func TestLoadFileConfig_ProjectAgentModelWithoutAgentSet(t *testing.T) {
-	yaml := `
-projects:
-  - repo: owner/repo
-    agent-model: some-model
-    prs:
-      - watch: [1]
-`
-	// Project-level agent-model without an explicit agent is valid: the agent
-	// is inherited from the global config and the resolved combination is
-	// validated when the code agent is selected.
-	if _, err := loadConfig(t, yaml); err != nil {
-		t.Fatalf("unexpected error for project agent-model without explicit agent: %v", err)
 	}
 }
 

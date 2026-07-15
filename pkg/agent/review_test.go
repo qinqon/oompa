@@ -55,84 +55,114 @@ func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
 	}
 }
 
-func TestProcessReviewComments_PushFailureDoesNotAdvanceCursor(t *testing.T) {
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+// TestProcessReviewComments_CursorAdvancement covers when the per-PR review
+// cursors (LastCommentID/LastReviewID) move after a processing cycle. Cursors
+// advance after a successful agent run and even when the agent errors or fails
+// (issue #164: re-processing the same reviews costs $0.50-1.00 per cycle), but
+// stay put when changes were detected and the push failed, so the comments are
+// retried on the next poll cycle. Every cycle without a successful push
+// increments ReviewNoOpCount.
+func TestProcessReviewComments_CursorAdvancement(t *testing.T) {
+	tests := []struct {
+		name              string
+		prReviews         []PRReview // optional review fixture alongside comment 60
+		runner            *mockCommandRunner
+		codeAgent         CodeAgent // nil keeps the default claude agent driven by runner
+		initReviewID      int64
+		wantClaudeCalls   int
+		wantLastCommentID int64
+		wantLastReviewID  int64
+		wantNoOpCount     int
+	}{
+		{
+			// Runner returns non-empty stdout (triggers changeDetected) and an
+			// error (causes push to fail); sequentialMockCodeAgent makes the
+			// agent call succeed despite the broken runner. The cursor must NOT
+			// advance so the comments are retried on the next poll cycle.
+			name:   "push failure does not advance cursor",
+			runner: &mockCommandRunner{stdout: []byte("dirty"), err: fmt.Errorf("git failed")},
+			codeAgent: &sequentialMockCodeAgent{
+				results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+			},
+			wantClaudeCalls:   0,
+			wantLastCommentID: 50,
+			wantLastReviewID:  0,
+			wantNoOpCount:     1,
+		},
+		{
+			// Cursor should always advance after a successful agent run.
+			name:              "success advances cursor unconditionally",
+			runner:            &mockCommandRunner{claudeResults: [][]byte{streamResultJSON(AgentResult{Result: "Done"})}},
+			wantClaudeCalls:   1,
+			wantLastCommentID: 60,
+			wantLastReviewID:  0,
+			wantNoOpCount:     1,
+		},
+		{
+			// When the agent errors out, cursor should still advance to avoid
+			// infinite retry loops.
+			name:   "agent error still advances cursor",
+			runner: &mockCommandRunner{},
+			codeAgent: &sequentialMockCodeAgent{
+				results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
+			},
+			wantClaudeCalls:   0,
+			wantLastCommentID: 60,
+			wantLastReviewID:  0,
+			wantNoOpCount:     1,
+		},
+		{
+			// Issue #164: when the agent fails (e.g., git corruption), both
+			// cursors must advance and the failure counts as a no-op cycle.
+			name:      "agent failure advances comment and review cursors",
+			prReviews: []PRReview{{ID: 200, User: "copilot", Body: "Review feedback"}},
+			runner:    &mockCommandRunner{},
+			codeAgent: &sequentialMockCodeAgent{
+				results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
+			},
+			initReviewID:      100,
+			wantClaudeCalls:   0,
+			wantLastCommentID: 60,
+			wantLastReviewID:  200,
+			wantNoOpCount:     1,
 		},
 	}
-	// Runner returns non-empty stdout (triggers changeDetected) and an error (causes push to fail)
-	runner := &mockCommandRunner{stdout: []byte("dirty"), err: fmt.Errorf("git failed")}
-	wt := &mockWorktreeManager{}
 
-	agent := newTestAgent(gh, runner, wt)
-	// Use sequentialMockCodeAgent so the agent call succeeds despite the broken runner
-	agent.codeAgent = &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
-	}
-	trackWork(agent, func(w *IssueWork) {
-		w.LastCommentID = 50
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &mockGitHubClient{
+				prComments: []ReviewComment{
+					{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+				},
+				prReviews: tt.prReviews,
+			}
+			wt := &mockWorktreeManager{}
 
-	agent.ProcessReviewComments(context.Background())
+			agent := newTestAgent(gh, tt.runner, wt)
+			if tt.codeAgent != nil {
+				agent.codeAgent = tt.codeAgent
+			}
+			trackWork(agent, func(w *IssueWork) {
+				w.LastCommentID = 50
+				w.LastReviewID = tt.initReviewID
+			})
 
-	// Cursor should NOT advance when changes were detected but push failed,
-	// so the comments are retried on the next poll cycle.
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastCommentID != 50 {
-		t.Errorf("expected LastCommentID to stay at 50, got %d", work.LastCommentID)
-	}
-}
+			agent.ProcessReviewComments(context.Background())
 
-func TestProcessReviewComments_CursorAdvancesUnconditionally(t *testing.T) {
-	implResult := streamResultJSON(AgentResult{Result: "Done"})
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
-		},
-	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{implResult}}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent, func(w *IssueWork) {
-		w.LastCommentID = 50
-	})
-
-	agent.ProcessReviewComments(context.Background())
-
-	// Cursor should always advance after a successful agent run.
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastCommentID != 60 {
-		t.Errorf("expected LastCommentID to advance to 60, got %d", work.LastCommentID)
-	}
-}
-
-func TestProcessReviewComments_AgentErrorStillAdvancesCursor(t *testing.T) {
-	// When the agent errors out, cursor should still advance to avoid
-	// infinite retry loops ($0.50-1.00 each time).
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.codeAgent = &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
-	}
-	trackWork(agent, func(w *IssueWork) {
-		w.LastCommentID = 50
-	})
-
-	agent.ProcessReviewComments(context.Background())
-
-	// Cursor should still advance (to avoid infinite retry loops)
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastCommentID != 60 {
-		t.Errorf("expected LastCommentID to advance to 60, got %d", work.LastCommentID)
+			if got := countCalls(tt.runner.calls, "claude"); got != tt.wantClaudeCalls {
+				t.Errorf("expected %d claude calls, got %d", tt.wantClaudeCalls, got)
+			}
+			work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+			if work.LastCommentID != tt.wantLastCommentID {
+				t.Errorf("expected LastCommentID %d, got %d", tt.wantLastCommentID, work.LastCommentID)
+			}
+			if work.LastReviewID != tt.wantLastReviewID {
+				t.Errorf("expected LastReviewID %d, got %d", tt.wantLastReviewID, work.LastReviewID)
+			}
+			if work.ReviewNoOpCount != tt.wantNoOpCount {
+				t.Errorf("expected ReviewNoOpCount %d, got %d", tt.wantNoOpCount, work.ReviewNoOpCount)
+			}
+		})
 	}
 }
 
@@ -432,76 +462,116 @@ func (r *reviewFixupRunner) Run(ctx context.Context, workDir, name string, args 
 	return nil, nil, nil
 }
 
-func TestProcessReviewComments_AgentFailureAdvancesCursor(t *testing.T) {
-	// Issue #164: When the agent fails (e.g., git corruption), cursors must advance
-	// to prevent infinite retry loops that waste API credits.
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+// TestProcessReviewComments_NoOpCount covers the ReviewNoOpCount lifecycle
+// (issue #164): an agent cycle that produces no push increments the counter, a
+// successful push resets it to 0, and once the counter reaches
+// cfg.MaxReviewNoOps the agent is not invoked at all — cursors advance past
+// the stale reviews and the counter resets so reviews arriving later can be
+// processed.
+func TestProcessReviewComments_NoOpCount(t *testing.T) {
+	tests := []struct {
+		name              string
+		prComments        []ReviewComment
+		prReviews         []PRReview
+		claudeResults     [][]byte
+		fixupRunner       bool      // wrap the runner in reviewFixupRunner (fixup commits → successful autosquash + push)
+		codeAgent         CodeAgent // nil keeps the default claude agent driven by runner
+		maxNoOps          int
+		initCommentID     int64
+		initReviewID      int64
+		initNoOpCount     int
+		wantClaudeCalls   int
+		wantNoOpCount     int
+		wantLastCommentID int64
+		wantLastReviewID  int64
+	}{
+		{
+			// Simulates the scenario where push keeps failing on the same
+			// reviews: with the counter already at the limit the agent must not
+			// be invoked, cursors still advance past the skipped reviews, and
+			// the counter resets.
+			name: "limit reached pauses reviews",
+			prComments: []ReviewComment{
+				{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+			},
+			claudeResults:     [][]byte{streamResultJSON(AgentResult{Result: "No changes needed"})},
+			maxNoOps:          3,
+			initCommentID:     50,
+			initNoOpCount:     3, // already at limit
+			wantClaudeCalls:   0,
+			wantNoOpCount:     0,
+			wantLastCommentID: 60,
 		},
-		prReviews: []PRReview{
-			{ID: 200, User: "copilot", Body: "Review feedback"},
+		{
+			// The fixup runner simulates a successful autosquash + push, which
+			// resets the counter.
+			name: "successful push resets counter",
+			prComments: []ReviewComment{
+				{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
+			},
+			fixupRunner: true,
+			codeAgent: &sequentialMockCodeAgent{
+				results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
+			},
+			initCommentID:     50,
+			initNoOpCount:     2, // was approaching limit
+			wantClaudeCalls:   0,
+			wantNoOpCount:     0,
+			wantLastCommentID: 60,
+		},
+		{
+			// The agent runs but produces no changes (no push), so the counter
+			// increments and the cursor advances past the evaluated review.
+			name: "no push increments counter",
+			prReviews: []PRReview{
+				{ID: 200, User: "reviewer", Body: "Please fix the error handling"},
+			},
+			claudeResults:    [][]byte{streamResultJSON(AgentResult{Result: "All reviews are stale"})},
+			initReviewID:     100,
+			initNoOpCount:    1,
+			wantClaudeCalls:  1,
+			wantNoOpCount:    2,
+			wantLastReviewID: 200,
 		},
 	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
 
-	agent := newTestAgent(gh, runner, wt)
-	agent.codeAgent = &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
-	}
-	trackWork(agent, func(w *IssueWork) {
-		w.LastCommentID = 50
-		w.LastReviewID = 100
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &mockGitHubClient{prComments: tt.prComments, prReviews: tt.prReviews}
+			base := &mockCommandRunner{claudeResults: tt.claudeResults}
+			var runner CommandRunner = base
+			if tt.fixupRunner {
+				runner = &reviewFixupRunner{mockCommandRunner: base}
+			}
+			wt := &mockWorktreeManager{}
 
-	agent.ProcessReviewComments(context.Background())
+			agent := newTestAgent(gh, runner, wt)
+			agent.cfg.MaxReviewNoOps = tt.maxNoOps
+			if tt.codeAgent != nil {
+				agent.codeAgent = tt.codeAgent
+			}
+			trackWork(agent, func(w *IssueWork) {
+				w.LastCommentID = tt.initCommentID
+				w.LastReviewID = tt.initReviewID
+				w.ReviewNoOpCount = tt.initNoOpCount
+			})
 
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	// Cursors MUST advance even on agent failure to prevent infinite loops.
-	if work.LastCommentID != 60 {
-		t.Errorf("expected LastCommentID to advance to 60 on agent failure, got %d", work.LastCommentID)
-	}
-	if work.LastReviewID != 200 {
-		t.Errorf("expected LastReviewID to advance to 200 on agent failure, got %d", work.LastReviewID)
-	}
-	// ReviewNoOpCount should increment on failure.
-	if work.ReviewNoOpCount != 1 {
-		t.Errorf("expected ReviewNoOpCount to be 1 after agent failure, got %d", work.ReviewNoOpCount)
-	}
-}
+			agent.ProcessReviewComments(context.Background())
 
-func TestProcessReviewComments_NoOpCountPausesReviews(t *testing.T) {
-	// Issue #164: After N consecutive no-op cycles, review processing should pause.
-	// Simulates the scenario where push keeps failing on the same reviews.
-	result := streamResultJSON(AgentResult{Result: "No changes needed"})
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
-		},
-	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.cfg.MaxReviewNoOps = 3
-	trackWork(agent, func(w *IssueWork) {
-		w.LastCommentID = 50
-		w.ReviewNoOpCount = 3 // already at limit
-	})
-
-	agent.ProcessReviewComments(context.Background())
-
-	// Should NOT invoke the agent because no-op limit is reached.
-	claudeCalls := countCalls(runner.calls, "claude")
-	if claudeCalls != 0 {
-		t.Errorf("expected 0 claude calls when no-op limit reached, got %d", claudeCalls)
-	}
-
-	// Cursors should still advance past the skipped reviews.
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastCommentID != 60 {
-		t.Errorf("expected LastCommentID to advance to 60, got %d", work.LastCommentID)
+			if got := countCalls(base.calls, "claude"); got != tt.wantClaudeCalls {
+				t.Errorf("expected %d claude calls, got %d", tt.wantClaudeCalls, got)
+			}
+			work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+			if work.ReviewNoOpCount != tt.wantNoOpCount {
+				t.Errorf("expected ReviewNoOpCount %d, got %d", tt.wantNoOpCount, work.ReviewNoOpCount)
+			}
+			if work.LastCommentID != tt.wantLastCommentID {
+				t.Errorf("expected LastCommentID %d, got %d", tt.wantLastCommentID, work.LastCommentID)
+			}
+			if work.LastReviewID != tt.wantLastReviewID {
+				t.Errorf("expected LastReviewID %d, got %d", tt.wantLastReviewID, work.LastReviewID)
+			}
+		})
 	}
 }
 
@@ -559,66 +629,6 @@ func TestProcessReviewComments_NewReviewAfterNoOpPause(t *testing.T) {
 	}
 }
 
-func TestProcessReviewComments_NoOpCountResetsOnPush(t *testing.T) {
-	// When the agent pushes successfully, the no-op counter should reset to 0.
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Please fix this", Path: "main.go", Line: 10},
-		},
-	}
-	// Use a runner that simulates uncommitted changes (triggers push path)
-	runner := &reviewFixupRunner{
-		mockCommandRunner: &mockCommandRunner{},
-	}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.codeAgent = &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
-	}
-	trackWork(agent, func(w *IssueWork) {
-		w.LastCommentID = 50
-		w.ReviewNoOpCount = 2 // was approaching limit
-	})
-
-	agent.ProcessReviewComments(context.Background())
-
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	// The fixup runner simulates a successful push, so counter should reset.
-	if work.ReviewNoOpCount != 0 {
-		t.Errorf("expected ReviewNoOpCount to reset to 0 after successful push, got %d", work.ReviewNoOpCount)
-	}
-}
-
-func TestProcessReviewComments_NoOpCountIncrementsOnNoPush(t *testing.T) {
-	// When the agent runs but produces no changes (no push), the counter increments.
-	result := streamResultJSON(AgentResult{Result: "All reviews are stale"})
-	gh := &mockGitHubClient{
-		prReviews: []PRReview{
-			{ID: 200, User: "reviewer", Body: "Please fix the error handling"},
-		},
-	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent, func(w *IssueWork) {
-		w.LastReviewID = 100
-		w.ReviewNoOpCount = 1
-	})
-
-	agent.ProcessReviewComments(context.Background())
-
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.ReviewNoOpCount != 2 {
-		t.Errorf("expected ReviewNoOpCount to increment to 2, got %d", work.ReviewNoOpCount)
-	}
-	// Cursor should advance since no changes were detected
-	if work.LastReviewID != 200 {
-		t.Errorf("expected LastReviewID to advance to 200, got %d", work.LastReviewID)
-	}
-}
-
 func TestProcessReviewComments_CostGuardSkipsReviews(t *testing.T) {
 	// Issue #164: When a PR exceeds the per-session cost threshold, skip reviews.
 	gh := &mockGitHubClient{
@@ -670,86 +680,141 @@ func TestProcessReviewComments_CostTracking(t *testing.T) {
 	}
 }
 
-func TestProcessReviewComments_OompaCommandProcessed(t *testing.T) {
-	// A PR conversation comment starting with /oompa should be treated as a directive.
-	result := streamResultJSON(AgentResult{Result: "Done"})
-	gh := &mockGitHubClient{
-		issueComments: []ReviewComment{
-			{ID: 70, User: "reviewer", Body: "/oompa fix the commit message"},
+// TestProcessReviewComments_OompaCommandFiltering covers which PR conversation
+// comments trigger the coding agent: only /oompa-prefixed comments carrying a
+// directive, posted by whitelisted non-bot users, are processed (adding an
+// :eyes: reaction via the issue comment API and combining with any inline
+// review comments into a single agent task). Everything else is filtered out
+// without invoking the agent, with LastIssueCommentID still advancing past
+// filtered comments so they are not re-fetched on every poll cycle. The cursor
+// also advances when the agent errors on a directive.
+func TestProcessReviewComments_OompaCommandFiltering(t *testing.T) {
+	tests := []struct {
+		name                   string
+		issueComments          []ReviewComment
+		prComments             []ReviewComment // optional inline review comments processed alongside
+		reviewers              []string        // cfg.Reviewers whitelist; empty allows all
+		codeAgent              CodeAgent       // nil keeps the default claude agent driven by runner
+		wantClaudeCalls        int
+		wantLastCommentID      int64
+		wantLastIssueCommentID int64
+		wantReactions          []string
+	}{
+		{
+			// A PR conversation comment starting with /oompa is treated as a directive.
+			name: "oompa command processed",
+			issueComments: []ReviewComment{
+				{ID: 70, User: "reviewer", Body: "/oompa fix the commit message"},
+			},
+			wantClaudeCalls:        1,
+			wantLastIssueCommentID: 70,
+			wantReactions:          []string{"issue:70:eyes"},
+		},
+		{
+			// PR conversation comments without /oompa prefix should be ignored.
+			name: "non-oompa comments ignored",
+			issueComments: []ReviewComment{
+				{ID: 70, User: "reviewer", Body: "This looks good to me"},
+				{ID: 71, User: "reviewer", Body: "I think we should refactor this"},
+			},
+			wantClaudeCalls:        0,
+			wantLastIssueCommentID: 71,
+		},
+		{
+			// /oompa commands from non-whitelisted users should be ignored.
+			name: "oompa command from non-whitelisted user ignored",
+			issueComments: []ReviewComment{
+				{ID: 70, User: "random-user", Body: "/oompa fix the commit message"},
+			},
+			reviewers:              []string{"trusted-reviewer"},
+			wantClaudeCalls:        0,
+			wantLastIssueCommentID: 70,
+		},
+		{
+			// Inline review comments and /oompa PR comments are combined into
+			// one agent task; both cursors advance and both get reactions.
+			name: "oompa command combines with inline review comments",
+			prComments: []ReviewComment{
+				{ID: 60, User: "reviewer", Body: "Fix the typo", Path: "main.go", Line: 10},
+			},
+			issueComments: []ReviewComment{
+				{ID: 70, User: "reviewer", Body: "/oompa rebase on main"},
+			},
+			wantClaudeCalls:        1,
+			wantLastCommentID:      60,
+			wantLastIssueCommentID: 70,
+			wantReactions:          []string{"60:eyes", "issue:70:eyes"},
+		},
+		{
+			// When the agent errors, the issue comment cursor should still
+			// advance. The mocked code agent replaces the claude binary, so
+			// zero claude calls are recorded even though the agent was invoked.
+			name: "cursor advances when agent errors on directive",
+			issueComments: []ReviewComment{
+				{ID: 70, User: "reviewer", Body: "/oompa fix the commit message"},
+			},
+			codeAgent: &sequentialMockCodeAgent{
+				results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
+			},
+			wantClaudeCalls:        0,
+			wantLastIssueCommentID: 70,
+			wantReactions:          []string{"issue:70:eyes"},
+		},
+		{
+			// A bare "/oompa" comment with no directive text should be ignored.
+			name: "bare oompa prefix without directive ignored",
+			issueComments: []ReviewComment{
+				{ID: 70, User: "reviewer", Body: "/oompa"},
+				{ID: 71, User: "reviewer", Body: "/oompa   "},
+			},
+			wantClaudeCalls:        0,
+			wantLastIssueCommentID: 71,
+		},
+		{
+			// Bot-posted comments with /oompa prefix should be ignored.
+			name: "bot-posted oompa command ignored",
+			issueComments: []ReviewComment{
+				{ID: 70, User: "some-bot", Body: "/oompa do something " + botMarker},
+			},
+			wantClaudeCalls:        0,
+			wantLastIssueCommentID: 70,
 		},
 	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
-	wt := &mockWorktreeManager{}
 
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &mockGitHubClient{
+				prComments:    tt.prComments,
+				issueComments: tt.issueComments,
+			}
+			runner := &mockCommandRunner{claudeResults: [][]byte{streamResultJSON(AgentResult{Result: "Done"})}}
+			wt := &mockWorktreeManager{}
 
-	agent.ProcessReviewComments(context.Background())
+			agent := newTestAgent(gh, runner, wt)
+			agent.cfg.Reviewers = tt.reviewers
+			if tt.codeAgent != nil {
+				agent.codeAgent = tt.codeAgent
+			}
+			trackWork(agent)
 
-	// Should have invoked the agent
-	claudeCalls := countCalls(runner.calls, "claude")
-	if claudeCalls != 1 {
-		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
-	}
+			agent.ProcessReviewComments(context.Background())
 
-	// Cursor should advance
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastIssueCommentID != 70 {
-		t.Errorf("expected LastIssueCommentID 70, got %d", work.LastIssueCommentID)
-	}
-
-	// Should have added :eyes: reaction using issue comment API
-	if !slices.Contains(gh.addedReactions, "issue:70:eyes") {
-		t.Errorf("expected issue comment :eyes: reaction, got %v", gh.addedReactions)
-	}
-}
-
-func TestProcessReviewComments_IgnoresNonOompaComments(t *testing.T) {
-	// PR conversation comments without /oompa prefix should be ignored.
-	gh := &mockGitHubClient{
-		issueComments: []ReviewComment{
-			{ID: 70, User: "reviewer", Body: "This looks good to me"},
-			{ID: 71, User: "reviewer", Body: "I think we should refactor this"},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
-
-	agent.ProcessReviewComments(context.Background())
-
-	// Should NOT invoke the agent
-	if countCalls(runner.calls, "claude") != 0 {
-		t.Error("should not invoke claude for comments without /oompa prefix")
-	}
-
-	// Cursor should still advance past filtered comments
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastIssueCommentID != 71 {
-		t.Errorf("expected LastIssueCommentID to advance to 71, got %d", work.LastIssueCommentID)
-	}
-}
-
-func TestProcessReviewComments_OompaCommandSkipsNonWhitelisted(t *testing.T) {
-	// /oompa commands from non-whitelisted users should be ignored.
-	gh := &mockGitHubClient{
-		issueComments: []ReviewComment{
-			{ID: 70, User: "random-user", Body: "/oompa fix the commit message"},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.cfg.Reviewers = []string{"trusted-reviewer"}
-	trackWork(agent)
-
-	agent.ProcessReviewComments(context.Background())
-
-	if countCalls(runner.calls, "claude") != 0 {
-		t.Error("should not invoke claude for non-whitelisted user's /oompa command")
+			if got := countCalls(runner.calls, "claude"); got != tt.wantClaudeCalls {
+				t.Errorf("expected %d claude calls, got %d", tt.wantClaudeCalls, got)
+			}
+			work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
+			if work.LastCommentID != tt.wantLastCommentID {
+				t.Errorf("expected LastCommentID %d, got %d", tt.wantLastCommentID, work.LastCommentID)
+			}
+			if work.LastIssueCommentID != tt.wantLastIssueCommentID {
+				t.Errorf("expected LastIssueCommentID %d, got %d", tt.wantLastIssueCommentID, work.LastIssueCommentID)
+			}
+			for _, reaction := range tt.wantReactions {
+				if !slices.Contains(gh.addedReactions, reaction) {
+					t.Errorf("expected reaction %q, got %v", reaction, gh.addedReactions)
+				}
+			}
+		})
 	}
 }
 
@@ -792,121 +857,6 @@ func TestProcessReviewComments_OompaCommandIncludedInPrompt(t *testing.T) {
 	// Should NOT contain the /oompa prefix in the directive
 	if strings.Contains(prompt, "/oompa add") {
 		t.Error("prompt should strip the /oompa prefix from directives")
-	}
-}
-
-func TestProcessReviewComments_OompaCommandWithReviewComments(t *testing.T) {
-	// Both inline review comments and /oompa PR comments should be processed together.
-	result := streamResultJSON(AgentResult{Result: "Done"})
-	gh := &mockGitHubClient{
-		prComments: []ReviewComment{
-			{ID: 60, User: "reviewer", Body: "Fix the typo", Path: "main.go", Line: 10},
-		},
-		issueComments: []ReviewComment{
-			{ID: 70, User: "reviewer", Body: "/oompa rebase on main"},
-		},
-	}
-	runner := &mockCommandRunner{claudeResults: [][]byte{result}}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
-
-	agent.ProcessReviewComments(context.Background())
-
-	// Should have invoked the agent once (both types combined into one task)
-	claudeCalls := countCalls(runner.calls, "claude")
-	if claudeCalls != 1 {
-		t.Fatalf("expected 1 claude call, got %d", claudeCalls)
-	}
-
-	// Both cursors should advance
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastCommentID != 60 {
-		t.Errorf("expected LastCommentID 60, got %d", work.LastCommentID)
-	}
-	if work.LastIssueCommentID != 70 {
-		t.Errorf("expected LastIssueCommentID 70, got %d", work.LastIssueCommentID)
-	}
-
-	// Should have reactions for both comment types
-	if !slices.Contains(gh.addedReactions, "60:eyes") {
-		t.Error("expected :eyes: reaction on review comment")
-	}
-	if !slices.Contains(gh.addedReactions, "issue:70:eyes") {
-		t.Error("expected :eyes: reaction on issue comment")
-	}
-}
-
-func TestProcessReviewComments_OompaCommandCursorAdvancesOnAgentError(t *testing.T) {
-	// When the agent errors, the issue comment cursor should still advance.
-	gh := &mockGitHubClient{
-		issueComments: []ReviewComment{
-			{ID: 70, User: "reviewer", Body: "/oompa fix the commit message"},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	agent.codeAgent = &sequentialMockCodeAgent{
-		results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
-	}
-	trackWork(agent)
-
-	agent.ProcessReviewComments(context.Background())
-
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastIssueCommentID != 70 {
-		t.Errorf("expected LastIssueCommentID to advance to 70 on agent error, got %d", work.LastIssueCommentID)
-	}
-}
-
-func TestProcessReviewComments_OompaCommandIgnoresBarePrefix(t *testing.T) {
-	// A bare "/oompa" comment with no directive text should be ignored.
-	gh := &mockGitHubClient{
-		issueComments: []ReviewComment{
-			{ID: 70, User: "reviewer", Body: "/oompa"},
-			{ID: 71, User: "reviewer", Body: "/oompa   "},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
-
-	agent.ProcessReviewComments(context.Background())
-
-	// Should NOT invoke the agent for bare /oompa with no directive
-	if countCalls(runner.calls, "claude") != 0 {
-		t.Error("should not invoke claude for bare /oompa comment with no directive")
-	}
-
-	// Cursor should still advance past filtered comments
-	work := agent.state.ActiveIssues[IssueKey("owner", "repo", 42)]
-	if work.LastIssueCommentID != 71 {
-		t.Errorf("expected LastIssueCommentID to advance to 71, got %d", work.LastIssueCommentID)
-	}
-}
-
-func TestProcessReviewComments_OompaCommandIgnoresBotComments(t *testing.T) {
-	// Bot-posted comments with /oompa prefix should be ignored.
-	gh := &mockGitHubClient{
-		issueComments: []ReviewComment{
-			{ID: 70, User: "some-bot", Body: "/oompa do something " + botMarker},
-		},
-	}
-	runner := &mockCommandRunner{}
-	wt := &mockWorktreeManager{}
-
-	agent := newTestAgent(gh, runner, wt)
-	trackWork(agent)
-
-	agent.ProcessReviewComments(context.Background())
-
-	if countCalls(runner.calls, "claude") != 0 {
-		t.Error("should not invoke claude for bot-posted /oompa comment")
 	}
 }
 
