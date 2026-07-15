@@ -41,7 +41,7 @@ Follow the pattern in `pkg/agent/ci.go` — see `ProcessCIFailures` for a comple
 2. Gate it with `a.ShouldRunReaction("foo")` at the top.
 3. Add the call to the main polling loop in `cmd/oompa/main.go`, after the existing `Process*` calls.
 4. Add the reaction name to the `--reactions` flag documentation.
-5. Write tests in `pkg/agent/loop_test.go` using the mock interfaces.
+5. Write tests in a matching `pkg/agent/foo_test.go` using the shared test doubles from `pkg/agent/mocks_test.go`.
 
 ### Adding a new GitHub API method
 
@@ -49,15 +49,16 @@ See `pkg/agent/github.go` for reference implementations of paginated API calls:
 
 1. Add the method signature to the `GitHubClient` interface in `pkg/agent/github.go`.
 2. Implement it on `*GoGitHubClient` in the same file.
-3. Add the mock implementation to `MockGitHubClient` in `pkg/agent/loop_test.go`.
-4. Write a test using `httptest.NewServer` in `pkg/agent/github_test.go`.
+3. Add the mock implementation to `mockGitHubClient` in `pkg/agent/mocks_test.go`.
+4. Add a no-op or pass-through implementation to `DryRunGitHubClient` in `pkg/agent/dryrun.go` (no-op for mutating methods, pass-through for reads).
+5. Write a test using `httptest.NewServer` in `pkg/agent/github_test.go`.
 
-### Adding a new event type to state tracking
+### Adding a new tracked state field
 
 Use `IssueWork` in `pkg/agent/types.go` as a template for new tracked fields:
 
 1. Add any new fields to `IssueWork` in `pkg/agent/types.go`.
-2. Ensure JSON serialization round-trips correctly — add a test in `pkg/agent/state_test.go`.
+2. State is never persisted to disk — it is rebuilt from GitHub on startup by `BuildStateFromGitHub` in `pkg/agent/state.go`. If the new field must survive restarts, add recovery logic there (see `recoverCommentCursors` for an example) and cover it in `pkg/agent/state_test.go`.
 3. Update the relevant `Process*` method to populate the new field.
 
 ### Adding a new CLI flag
