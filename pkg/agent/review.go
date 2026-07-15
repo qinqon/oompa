@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// ProcessReviewComments checks for new review comments and review bodies, then runs Claude to address them.
+// ProcessReviewComments checks for new review comments and review bodies, then runs the coding agent to address them.
 func (a *Agent) ProcessReviewComments(ctx context.Context) {
 	a.emit(Event{
 		Type:     EventActionStarted,
@@ -23,7 +23,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		State:    "idle",
 		Action:   "Review check complete",
 	})
-	// Sequential phase: filter comments, prepare worktrees, add reactions, build tasks
+	// Scan phase: filter comments, prepare worktrees, add reactions, build tasks
 	var tasks []reviewTask
 
 	for _, work := range a.state.ActiveIssues {
@@ -223,7 +223,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		})
 	}
 
-	// Sequential phase: run agent to address review feedback, then push changes
+	// Agent phase: run agent to address review feedback, then push changes
 	runSequential(ctx, tasks, func(ctx context.Context, task reviewTask) {
 		a.emit(Event{
 			Type:      EventAgentInvocation,

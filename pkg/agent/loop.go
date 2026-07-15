@@ -108,8 +108,9 @@ func (a *Agent) RefreshToken(ctx context.Context) error {
 	return nil
 }
 
-// runSequential executes a function on each item sequentially.
-// Each role entry runs within its own goroutine, so no worker pool is needed.
+// runSequential executes a function on each item sequentially, one at a
+// time — sequential processing within an agent is a correctness invariant
+// (it protects the agent's git state).
 // Stops early if the context is cancelled (e.g. during graceful shutdown).
 func runSequential[T any](ctx context.Context, items []T, fn func(context.Context, T)) {
 	for _, item := range items {
@@ -120,7 +121,8 @@ func runSequential[T any](ctx context.Context, items []T, fn func(context.Contex
 	}
 }
 
-// Task structs for parallel execution
+// Task structs carrying collected work items from the scan phase to the
+// agent-invocation phase of each reaction.
 
 type newIssueTask struct {
 	issue        Issue
@@ -422,7 +424,7 @@ func (a *Agent) BootstrapWatchedPRs(ctx context.Context) {
 			WorktreePath: worktreePath,
 			BranchName:   branchName,
 			PRNumber:     prNumber,
-			Status:       "pr-open",
+			Status:       StatusPROpen,
 		}
 
 		a.state.ActiveIssues[IssueKey(a.cfg.Owner, a.cfg.Repo, prNumber)] = work
@@ -445,7 +447,7 @@ func (a *Agent) hasExistingBotComment(ctx context.Context, issueNumber int, text
 	return false
 }
 
-// parseFlakyMatch parses Claude's response to a flaky match prompt.
+// parseFlakyMatch parses the coding agent's response to a flaky match prompt.
 // Returns the matched issue number and true if the response is "MATCH <number>".
 // Handles multi-line responses where the LLM appends an explanation after
 // the MATCH line (e.g. "MATCH #42\n\nThis matches because...").

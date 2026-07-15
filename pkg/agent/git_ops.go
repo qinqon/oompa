@@ -46,7 +46,7 @@ func (a *Agent) ensureTrailers(msg string) string {
 	return msg
 }
 
-// buildPRBody constructs a PR description. If Claude wrote a .pr-body.md file
+// buildPRBody constructs a PR description. If the agent wrote a .pr-body.md file
 // (filled from the repo's PR template), that is used. Otherwise falls back to
 // constructing a body from the git log.
 func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumber int) string {
@@ -289,11 +289,11 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 		return fmt.Errorf("git reset --soft: %w (stderr: %s)", err, string(stderr))
 	}
 
-	// Unstage .pr-body.md if Claude accidentally staged it — it must not be committed.
+	// Unstage .pr-body.md if the agent accidentally staged it — it must not be committed.
 	a.runner.Run(ctx, worktreePath, "git", "restore", "--staged", ".pr-body.md") //nolint:errcheck // best-effort
 
 	// Create a single commit with a meaningful message.
-	// Strip any Signed-off-by/Assisted-by trailers Claude may have added to individual
+	// Strip any Signed-off-by/Assisted-by trailers the agent may have added to individual
 	// commits before building the body, then append exactly one canonical set of trailers.
 	//
 	// The subject line uses the issue title directly (truncated to 72 chars).

@@ -48,7 +48,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		State:    "idle",
 		Action:   "Conflict check complete",
 	})
-	// Sequential phase: GitHub API calls, worktree setup, git fetch, automatic rebase attempts
+	// Scan phase: GitHub API calls, worktree setup, git fetch, automatic rebase attempts
 	var tasks []conflictTask
 
 	for _, work := range a.state.ActiveIssues {
@@ -115,9 +115,9 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 			continue
 		}
 
-		// Rebase failed — abort and let Claude try
+		// Rebase failed — abort and let the coding agent try
 		a.runner.Run(ctx, work.WorktreePath, "git", "rebase", "--abort") //nolint:errcheck // best-effort
-		a.logger.Info("automatic rebase failed, invoking Claude to resolve conflicts", "pr", work.PRNumber, "stderr", stderr)
+		a.logger.Info("automatic rebase failed, invoking coding agent to resolve conflicts", "pr", work.PRNumber, "stderr", stderr)
 
 		tasks = append(tasks, conflictTask{
 			work:         work,
@@ -127,7 +127,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		})
 	}
 
-	// Sequential phase: Claude invocations for conflict resolution
+	// Agent phase: resolve collected conflicts with the coding agent
 	a.resolveConflictsSequential(ctx, tasks)
 }
 
@@ -187,7 +187,7 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 		State:    "idle",
 		Action:   "Rebase check complete",
 	})
-	// Sequential phase: check states, try automatic rebase, collect failed conflicts into tasks
+	// Scan phase: check states, try automatic rebase, collect failed conflicts into tasks
 	var tasks []conflictTask
 
 	for _, work := range a.state.ActiveIssues {
@@ -283,7 +283,7 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 		}
 	}
 
-	// Sequential phase: invoke Claude for conflict resolution on collected tasks
+	// Agent phase: resolve collected conflicts with the coding agent
 	a.resolveConflictsSequential(ctx, tasks)
 }
 

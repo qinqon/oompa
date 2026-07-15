@@ -11,7 +11,7 @@ import (
 // triageLookbackRunLimit is the maximum number of runs to fetch when scanning a lookback window.
 const triageLookbackRunLimit = 50
 
-// triageRunTask pairs a CI source with a run for parallel investigation.
+// triageRunTask pairs a CI source with a failed run queued for investigation.
 type triageRunTask struct {
 	ciSource CIJobSource
 	run      JobRun

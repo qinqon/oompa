@@ -25,7 +25,7 @@ type ciResult struct {
 	pushed         bool   // whether a fix was pushed
 }
 
-// ProcessCIFailures checks CI status for open PRs and invokes Claude to fix failures.
+// ProcessCIFailures checks CI status for open PRs and invokes the coding agent to fix failures.
 func (a *Agent) ProcessCIFailures(ctx context.Context) {
 	a.emit(Event{
 		Type:     EventActionStarted,
@@ -41,7 +41,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		State:    "idle",
 		Action:   "CI check complete",
 	})
-	// Sequential phase: GitHub API calls, check run fetching, worktree setup
+	// Scan phase: GitHub API calls, check run fetching, worktree setup
 	var tasks []ciTask
 
 	for _, work := range a.state.ActiveIssues {
@@ -182,11 +182,11 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 			continue
 		}
 
-		// Get PR diff to help Claude determine if failure is related
+		// Get PR diff to help the agent determine if failure is related
 		diffOut, _, _ := a.runner.Run(ctx, work.WorktreePath, "git", "diff", "--stat", a.originDefaultBranch())
 		diff := string(diffOut)
 
-		// Get commits in the PR to help Claude identify which commit introduced the failure
+		// Get commits in the PR to help the agent identify which commit introduced the failure
 		commits := a.getPRCommits(ctx, work.WorktreePath)
 
 		// Create one task per failure so each gets its own RELATED/UNRELATED classification.
@@ -214,7 +214,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 	// Track insertion order to preserve the task processing sequence.
 	var groupOrder []string
 
-	// Sequential phase: Claude invocations and result collection
+	// Agent phase: investigate each collected failure and gather results
 	runSequential(ctx, tasks, func(ctx context.Context, task ciTask) {
 		// Re-check cost guard before each invocation — multiple tasks can be
 		// enqueued for the same PR, and earlier invocations may have pushed
@@ -338,10 +338,6 @@ func (a *Agent) classifyCIInfrastructure(_ context.Context, task ciTask, cleaned
 	// (e.g. if comments are deleted), so in-memory state is the primary guard.
 	a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
 
-	if a.ShouldSkipComment("ci-infrastructure") {
-		a.logger.Info("skipping CI infrastructure comment (--skip-comment)", "pr", task.work.PRNumber)
-	}
-
 	task.work.LastCIStatus = "infrastructure-failure"
 	task.work.LastCheckedCISHA = task.headSHA
 
@@ -379,10 +375,6 @@ func (a *Agent) classifyCIUnrelated(ctx context.Context, task ciTask, cleaned st
 	// Comment markers serve as a secondary dedup mechanism but can be lost
 	// (e.g. if comments are deleted), so in-memory state is the primary guard.
 	a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
-
-	if a.ShouldSkipComment("ci-unrelated") {
-		a.logger.Info("skipping CI unrelated comment (--skip-comment)", "pr", task.work.PRNumber)
-	}
 
 	task.work.LastCIStatus = "unrelated-failure"
 	task.work.LastCheckedCISHA = task.headSHA
@@ -679,9 +671,6 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 		a.logger.Info("CI failure is related (skip-fix mode, not pushing)", "pr", task.work.PRNumber)
 		// Always mark as checked in memory to prevent re-investigation on next poll.
 		a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
-		if a.ShouldSkipComment("ci-related") {
-			a.logger.Info("skipping CI related comment (--skip-comment)", "pr", task.work.PRNumber)
-		}
 		task.work.LastCIStatus = "related-skip-fix"
 		task.work.LastCheckedCISHA = task.headSHA
 		return ciResult{
@@ -712,7 +701,7 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 			pushed = true
 		}
 	case hasUncommitted:
-		// Claude left uncommitted changes — amend them into HEAD as fallback
+		// The agent left uncommitted changes — amend them into HEAD as fallback
 		if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
 			a.logger.Error("failed to amend commit for CI fix", "pr", task.work.PRNumber, "error", err)
 		} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
@@ -721,11 +710,11 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 			pushed = true
 		}
 	default:
-		// No fixups and no uncommitted changes — Claude may have amended
+		// No fixups and no uncommitted changes — the agent may have amended
 		// the commit directly. Check if HEAD differs from the remote SHA.
 		localSHA, _, err := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
 		if err == nil && strings.TrimSpace(string(localSHA)) != task.headSHA {
-			a.logger.Info("Claude amended commit directly, pushing", "pr", task.work.PRNumber)
+			a.logger.Info("agent amended commit directly, pushing", "pr", task.work.PRNumber)
 			if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
 				a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
 			} else {
@@ -748,17 +737,13 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 	if pushed {
 		a.logger.Info("CI failure is related, pushed a fix", "pr", task.work.PRNumber)
 	} else {
-		a.logger.Warn("Claude said RELATED but no changes to push", "pr", task.work.PRNumber)
+		a.logger.Warn("agent said RELATED but no changes to push", "pr", task.work.PRNumber)
 	}
 
 	// Always mark as checked in memory to prevent re-investigation on next poll.
 	// Comment markers serve as a secondary dedup mechanism but can be lost
 	// (e.g. if comments are deleted), so in-memory state is the primary guard.
 	a.markCIChecked(task.work, task.headSHA, task.failures[0].Name)
-
-	if a.ShouldSkipComment("ci-related") {
-		a.logger.Info("skipping CI related comment (--skip-comment)", "pr", task.work.PRNumber)
-	}
 
 	task.work.CIFixAttempts++
 	task.work.LastCIStatus = "failure"
