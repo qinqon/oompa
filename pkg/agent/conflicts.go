@@ -19,6 +19,18 @@ const (
 	rebaseMinInterval = 4 * time.Hour
 )
 
+// rebaseSuccessComment builds the human-visible comment for a successful
+// rebase push. The commit reference is omitted when the head SHA could not
+// be resolved, and the actual default branch name is used instead of a
+// hardcoded "main".
+func (a *Agent) rebaseSuccessComment(headSHA, suffix string) string {
+	subject := "Rebased"
+	if headSHA != "" {
+		subject = "Rebased commit " + shortSHA(headSHA)
+	}
+	return fmt.Sprintf("%s on %s and pushed%s.\n\n%s", subject, a.defaultBranch(), suffix, a.botComment())
+}
+
 // ProcessConflicts checks for merge conflicts (dirty mergeable_state) and tries to resolve them.
 // For simple rebases when a PR is just behind the base branch, use ProcessRebase instead.
 func (a *Agent) ProcessConflicts(ctx context.Context) {
@@ -58,7 +70,12 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 		}
 
 		// Check if we already posted a conflict comment for the current HEAD
-		headSHA, _ := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		headSHA, err := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		if err != nil {
+			// Without the SHA, comment-marker dedup below is skipped, so a
+			// repeat comment is possible — but proceeding beats stalling.
+			a.logger.Warn("failed to get PR head SHA", "pr", work.PRNumber, "error", err)
+		}
 		if headSHA != "" && a.hasExistingBotComment(ctx, work.PRNumber, "rebase") && a.hasExistingBotComment(ctx, work.PRNumber, shortSHA(headSHA)) {
 			continue
 		}
@@ -92,7 +109,7 @@ func (a *Agent) ProcessConflicts(ctx context.Context) {
 				})
 				if !a.ShouldSkipComment("conflict") {
 					_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-						fmt.Sprintf("Rebased commit %s on main and pushed.\n\n%s", shortSHA(headSHA), a.botComment()))
+						a.rebaseSuccessComment(headSHA, ""))
 				}
 			}
 			continue
@@ -207,7 +224,12 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 			continue
 		}
 
-		headSHA, _ := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		headSHA, err := a.gh.GetPRHeadSHA(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+		if err != nil {
+			// Without the SHA, comment-marker dedup below is skipped, so a
+			// repeat comment is possible — but proceeding beats stalling.
+			a.logger.Warn("failed to get PR head SHA", "pr", work.PRNumber, "error", err)
+		}
 		if headSHA != "" && a.hasExistingBotComment(ctx, work.PRNumber, "rebase") && a.hasExistingBotComment(ctx, work.PRNumber, shortSHA(headSHA)) {
 			continue
 		}
@@ -256,7 +278,7 @@ func (a *Agent) ProcessRebase(ctx context.Context) {
 			})
 			if !a.ShouldSkipComment("rebase") {
 				_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, work.PRNumber,
-					fmt.Sprintf("Rebased commit %s on main and pushed.\n\n%s", shortSHA(headSHA), a.botComment()))
+					a.rebaseSuccessComment(headSHA, ""))
 			}
 		}
 	}
@@ -346,7 +368,7 @@ func (a *Agent) resolveConflictsSequential(ctx context.Context, tasks []conflict
 			})
 			if !a.ShouldSkipComment("conflict") {
 				if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, task.work.PRNumber,
-					fmt.Sprintf("Rebased commit %s on main and pushed (conflicts resolved).\n\n%s", shortSHA(task.headSHA), a.botComment())); err != nil {
+					a.rebaseSuccessComment(task.headSHA, " (conflicts resolved)")); err != nil {
 					a.logger.Error("failed to log success to github", "pr", task.work.PRNumber, "error", err)
 				}
 			}
