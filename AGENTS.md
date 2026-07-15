@@ -5,7 +5,15 @@
 ```bash
 go build -o oompa ./cmd/oompa
 go test ./...
+make fmt    # gofmt/goimports via golangci-lint fmt — run before committing
 ```
+
+## Package Layout
+
+- `cmd/oompa` — CLI entry point, flag binding, polling loop, TUI.
+- `pkg/agent` — the agent core: reactions (`Process*`), GitHub client, state, config, events, Slack.
+- `internal/execx` — external command execution (`CommandRunner`, `ExecRunner`, streaming). `pkg/agent` re-exports the names via type aliases; further leaves (github client, worktree, events) are being peeled out the same way.
+- `test/e2e` — binary-level tests against a fake GitHub HTTP server.
 
 ## Single-File Verification
 
@@ -41,7 +49,7 @@ Follow the pattern in `pkg/agent/ci.go` — see `ProcessCIFailures` for a comple
 2. Gate it with `a.ShouldRunReaction("foo")` at the top.
 3. Add the call to the main polling loop in `cmd/oompa/main.go`, after the existing `Process*` calls.
 4. Add the reaction name to the `--reactions` flag documentation.
-5. Write tests in a matching `pkg/agent/foo_test.go` using the shared test doubles from `pkg/agent/mocks_test.go`.
+5. Write tests in a matching `pkg/agent/foo_test.go` (see Testing Conventions below).
 
 ### Adding a new GitHub API method
 
@@ -68,6 +76,16 @@ Based on `pkg/agent/config.go` for the Config struct pattern:
 1. Add the field to `Config` in `pkg/agent/config.go`.
 2. Add the flag binding in `cmd/oompa/main.go` (flag + env var fallback).
 3. Document it in the README flags table.
+
+## Testing Conventions
+
+Shared helpers live in `pkg/agent/mocks_test.go` — use them instead of hand-rolling setup:
+
+- `newTestAgent(gh, runner, wt, opts...)` builds an Agent through the production `NewAgent` constructor with canonical owner/repo config and a discard logger. Customize with `withCfg(func(*Config))` and `withCodeAgent(ca)`. Never construct `&Agent{...}` literals in tests except for pure-function tests that only need `cfg`.
+- `trackWork(agent, ...func(*IssueWork))` registers the canonical in-flight fixture (issue 42 → PR 100 on branch `ai/issue-42`, status pr-open); pass mutators for scenario deltas only.
+- `countCalls(runner.calls, "claude")` counts invocations of a binary; `discardLogger()` for quiet loggers.
+- `mockGitHubClient` is data-driven (set fields, no function stubs); `mockCommandRunner` records calls and can script claude output via `claudeResults`.
+- Near-identical one-scenario tests belong in a table (`tests := []struct{...}` + `t.Run`) with a doc comment naming the behavioral surface; apply the strictest common assertion set to every row. Keep genuinely different flows as standalone functions — do not force-fit.
 
 ## Design Invariants
 

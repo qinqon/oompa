@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -263,6 +264,58 @@ func (m *mockWorktreeManager) DefaultBranch() string { return "main" }
 func (m *mockWorktreeManager) OriginDefaultBranch() string { return "origin/main" }
 
 func (m *mockWorktreeManager) PushRemote() string { return "origin" }
+
+// commandCall records one invocation seen by mockCommandRunner.
+type commandCall struct {
+	WorkDir string
+	Name    string
+	Args    []string
+	Stdin   string
+}
+
+type mockCommandRunner struct {
+	mu            sync.Mutex
+	calls         []commandCall
+	stdout        []byte
+	stderr        []byte
+	err           error
+	claudeResults [][]byte
+	claudeIndex   int
+}
+
+func (m *mockCommandRunner) Run(_ context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
+	m.mu.Lock()
+	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args})
+	stdout = m.stdout
+	if name == "claude" && len(m.claudeResults) > 0 {
+		if m.claudeIndex < len(m.claudeResults) {
+			stdout = m.claudeResults[m.claudeIndex]
+		} else {
+			stdout = m.claudeResults[len(m.claudeResults)-1]
+		}
+		m.claudeIndex++
+	}
+	stderr, err = m.stderr, m.err
+	m.mu.Unlock()
+	return stdout, stderr, err
+}
+
+func (m *mockCommandRunner) RunWithStdin(_ context.Context, workDir, stdin, name string, args ...string) (stdout, stderr []byte, err error) {
+	m.mu.Lock()
+	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args, Stdin: stdin})
+	stdout = m.stdout
+	if name == "claude" && len(m.claudeResults) > 0 {
+		if m.claudeIndex < len(m.claudeResults) {
+			stdout = m.claudeResults[m.claudeIndex]
+		} else {
+			stdout = m.claudeResults[len(m.claudeResults)-1]
+		}
+		m.claudeIndex++
+	}
+	stderr, err = m.stderr, m.err
+	m.mu.Unlock()
+	return stdout, stderr, err
+}
 
 // discardLogger returns a logger that drops all output, keeping tests quiet.
 func discardLogger() *slog.Logger {
