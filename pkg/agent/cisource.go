@@ -174,6 +174,9 @@ func parseDirectGCSURL(jobURL string) (CIJobSource, error) {
 // parseGitHubActionsURL parses a GitHub Actions workflow URL like:
 // https://github.com/nmstate/kubernetes-nmstate/actions/workflows/nightly.yml
 func parseGitHubActionsURL(jobURL string, ghClient GitHubClient, lookback time.Duration) (CIJobSource, error) {
+	if ghClient == nil {
+		return nil, fmt.Errorf("github client is required for GitHub Actions job source: %s", jobURL)
+	}
 	// Regex: github.com/{owner}/{repo}/actions/workflows/{workflow}
 	re := regexp.MustCompile(`github\.com/([^/]+)/([^/]+)/actions/workflows/([^/?#]+)`)
 	matches := re.FindStringSubmatch(jobURL)

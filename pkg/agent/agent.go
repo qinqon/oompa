@@ -31,10 +31,16 @@ type cliAgentSpec struct {
 // alongside the error (cost-only: result text never propagates on failure).
 func runCLIAgent(ctx context.Context, runner CommandRunner, workDir, prompt string,
 	logger *slog.Logger, spec cliAgentSpec) (AgentResult, error) {
+	// Guard against malformed specs: a nil parser makes the invocation
+	// meaningless, and panicking would take down the whole daemon.
+	if spec.parse == nil {
+		return AgentResult{}, fmt.Errorf("cli agent spec for %q has no parser", spec.binary)
+	}
+
 	var stdout, stderr []byte
 	var err error
 
-	if sr, ok := runner.(StreamingRunner); ok && logger != nil {
+	if sr, ok := runner.(StreamingRunner); ok && logger != nil && spec.logLine != nil {
 		stdout, stderr, err = sr.RunStreamWithStdin(ctx, workDir, prompt, func(line []byte) {
 			spec.logLine(logger, line)
 		}, spec.binary, spec.args...)

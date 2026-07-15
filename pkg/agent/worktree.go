@@ -16,7 +16,9 @@ type WorktreeManager interface {
 	RemoveWorktree(ctx context.Context, worktreePath string) error
 	SyncWorktree(ctx context.Context, worktreePath string) error
 	// DefaultBranch returns the default branch name of the upstream repo
-	// (e.g. "main", "master").
+	// (e.g. "main", "master"). Implementations that detect the branch
+	// lazily may return "main" as a fallback until detection has run
+	// (for GitWorktreeManager, during EnsureRepoCloned).
 	DefaultBranch() string
 	// OriginDefaultBranch returns "origin/<default-branch>".
 	OriginDefaultBranch() string

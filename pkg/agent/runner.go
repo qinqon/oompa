@@ -113,6 +113,12 @@ func (r *ExecRunner) RunStreamWithStdin(ctx context.Context, workDir, stdin stri
 	}
 	scanErr := scanner.Err()
 
+	// Close the pipe before Wait: if the scanner stopped early (e.g. a line
+	// exceeded the buffer cap), unread output could block the child forever,
+	// and Wait must not be called until reads complete or the pipe is closed.
+	// After a normal EOF this is a harmless no-op.
+	pipe.Close() //nolint:errcheck,gosec // best-effort unblock before Wait
+
 	// Always call Wait to release child process resources and avoid zombies.
 	waitErr := cmd.Wait()
 
