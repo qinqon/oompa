@@ -109,6 +109,57 @@ func (a *Agent) hasUncommittedChanges(ctx context.Context, worktreePath string) 
 	return strings.TrimSpace(string(out)) != ""
 }
 
+// isCommentOnlyDiff returns true if the diff between the origin default branch
+// and HEAD is non-empty and every added/removed line is blank or a comment.
+// Detection is conservative: any changed line that is not clearly a comment or
+// whitespace means the diff is treated as a real (functional) change.
+func (a *Agent) isCommentOnlyDiff(ctx context.Context, worktreePath string) bool {
+	out, _, err := a.runner.Run(ctx, worktreePath, "git", "diff", a.originDefaultBranch()+"...HEAD")
+	if err != nil {
+		return false
+	}
+	return isCommentOnlyDiffText(string(out))
+}
+
+// isCommentOnlyDiffText parses a unified diff and reports whether all changed
+// lines are comments or whitespace. An empty diff returns false.
+func isCommentOnlyDiffText(diff string) bool {
+	hasChangedLine := false
+	for _, line := range strings.Split(diff, "\n") {
+		var content string
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+			continue // file headers
+		case strings.HasPrefix(line, "+"):
+			content = line[1:]
+		case strings.HasPrefix(line, "-"):
+			content = line[1:]
+		default:
+			continue // context, hunk headers, metadata
+		}
+		hasChangedLine = true
+		if !isCommentOrBlankLine(content) {
+			return false
+		}
+	}
+	return hasChangedLine
+}
+
+// isCommentOrBlankLine returns true if the line is whitespace-only or starts
+// with a common comment marker.
+func isCommentOrBlankLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	for _, marker := range []string{"#", "//", "/*", "*/", "* "} {
+		if strings.HasPrefix(trimmed, marker) {
+			return true
+		}
+	}
+	return trimmed == "*"
+}
+
 // gitAmendAll stages all changes and amends the current commit.
 // If the agent wrote a .oompa-commit-msg file, its contents replace the commit message.
 func (a *Agent) gitAmendAll(ctx context.Context, worktreePath string) error {

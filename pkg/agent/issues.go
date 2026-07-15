@@ -211,6 +211,14 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			return
 		}
 
+		// Treat comment-only changes as a failed fix: no functional code changed,
+		// so opening a PR would waste reviewer time (see specs/error-handling.md).
+		if a.isCommentOnlyDiff(ctx, task.worktreePath) {
+			a.logger.Warn("claude produced comment-only changes, treating as failed fix", "issue", task.issue.Number)
+			a.markIssueFailed(ctx, task.issue.Number, task.work)
+			return
+		}
+
 		// Squash all commits into a single commit before pushing
 		if err := a.gitSquashCommits(ctx, task.worktreePath, task.issue.Number, task.issue.Title); err != nil {
 			a.logger.Error("failed to squash commits", "issue", task.issue.Number, "error", err)
