@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-// WorktreeManager manages git worktrees for parallel issue work.
+// WorktreeManager manages git worktrees, one per issue branch.
 type WorktreeManager interface {
 	EnsureRepoCloned(ctx context.Context) error
 	CreateWorktree(ctx context.Context, branchName string) (worktreePath string, err error)

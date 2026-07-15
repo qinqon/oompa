@@ -20,7 +20,6 @@ type GitHubClient interface {
 	GetPRState(ctx context.Context, owner, repo string, prNumber int) (string, error)
 	AddIssueComment(ctx context.Context, owner, repo string, issueNumber int, body string) error
 	AddLabel(ctx context.Context, owner, repo string, issueNumber int, label string) error
-	RemoveLabel(ctx context.Context, owner, repo string, issueNumber int, label string) error
 	ListPRsByHead(ctx context.Context, owner, repo, headOwner, branch string) ([]PR, error)
 	AddPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error
 	AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction string) error
@@ -28,7 +27,6 @@ type GitHubClient interface {
 	GetCheckRunLog(ctx context.Context, owner, repo string, checkRunID int64) (string, error)
 	GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error)
 	HasPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction, user string) (bool, error)
-	ReplyToPRComment(ctx context.Context, owner, repo string, prNumber int, commentID int64, body string) error
 	AssignIssue(ctx context.Context, owner, repo string, issueNumber int, user string) error
 	UnassignIssue(ctx context.Context, owner, repo string, issueNumber int, user string) error
 	GetPRMergeable(ctx context.Context, owner, repo string, prNumber int) (string, error)
@@ -204,14 +202,6 @@ func (g *GoGitHubClient) AddLabel(ctx context.Context, owner, repo string, issue
 	_, _, err := g.client.Issues.AddLabelsToIssue(ctx, owner, repo, issueNumber, []string{label})
 	if err != nil {
 		return fmt.Errorf("adding label: %w", err)
-	}
-	return nil
-}
-
-func (g *GoGitHubClient) RemoveLabel(ctx context.Context, owner, repo string, issueNumber int, label string) error {
-	_, err := g.client.Issues.RemoveLabelForIssue(ctx, owner, repo, issueNumber, label)
-	if err != nil {
-		return fmt.Errorf("removing label: %w", err)
 	}
 	return nil
 }
@@ -432,14 +422,6 @@ func (g *GoGitHubClient) HasPRCommentReaction(ctx context.Context, owner, repo s
 		}
 	}
 	return false, nil
-}
-
-func (g *GoGitHubClient) ReplyToPRComment(ctx context.Context, owner, repo string, prNumber int, commentID int64, body string) error {
-	_, _, err := g.client.PullRequests.CreateCommentInReplyTo(ctx, owner, repo, prNumber, body, commentID)
-	if err != nil {
-		return fmt.Errorf("replying to PR comment: %w", err)
-	}
-	return nil
 }
 
 func (g *GoGitHubClient) GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error) {

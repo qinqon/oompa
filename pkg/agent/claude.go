@@ -30,7 +30,6 @@ type CommandRunner interface {
 // StreamingRunner extends CommandRunner with line-by-line stdout streaming.
 type StreamingRunner interface {
 	CommandRunner
-	RunStream(ctx context.Context, workDir string, onLine func(line []byte), name string, args ...string) (stdout []byte, stderr []byte, err error)
 	RunStreamWithStdin(ctx context.Context, workDir string, stdin string, onLine func(line []byte), name string, args ...string) (stdout []byte, stderr []byte, err error)
 }
 
@@ -96,10 +95,6 @@ func (r *ExecRunner) RunWithStdin(ctx context.Context, workDir, stdin, name stri
 	return stdout, stderr, err
 }
 
-func (r *ExecRunner) RunStream(ctx context.Context, workDir string, onLine func(line []byte), name string, args ...string) (stdout, stderr []byte, err error) {
-	return r.RunStreamWithStdin(ctx, workDir, "", onLine, name, args...)
-}
-
 func (r *ExecRunner) RunStreamWithStdin(ctx context.Context, workDir, stdin string, onLine func(line []byte), name string, args ...string) (stdout, stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = workDir
@@ -150,15 +145,13 @@ func (r *ExecRunner) RunStreamWithStdin(ctx context.Context, workDir, stdin stri
 // streamEvent represents a single event in Claude's stream-json output.
 type streamEvent struct {
 	Type    string         `json:"type"`
-	Subtype string         `json:"subtype,omitempty"`
 	Message *streamMessage `json:"message,omitempty"`
 	// Result fields (only present when Type == "result")
-	Result        string  `json:"result,omitempty"`
-	CostUSD       float64 `json:"cost_usd,omitempty"`
-	TotalCostUSD  float64 `json:"total_cost_usd,omitempty"`
-	NumTurns      int     `json:"num_turns,omitempty"`
-	DurationMs    int64   `json:"duration_ms,omitempty"`
-	DurationAPIMs int64   `json:"duration_api_ms,omitempty"`
+	Result       string  `json:"result,omitempty"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
+	TotalCostUSD float64 `json:"total_cost_usd,omitempty"`
+	NumTurns     int     `json:"num_turns,omitempty"`
+	DurationMs   int64   `json:"duration_ms,omitempty"`
 }
 
 type streamMessage struct {

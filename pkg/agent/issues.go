@@ -4,10 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 )
 
-// ProcessNewIssues finds labeled issues and spawns Claude to implement fixes.
+// ProcessNewIssues finds labeled issues and runs the coding agent to implement fixes.
 func (a *Agent) ProcessNewIssues(ctx context.Context) {
 	if a.cfg.Label == "" {
 		return
@@ -35,7 +34,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		return
 	}
 
-	// Sequential phase: filter issues, create worktrees, insert into state
+	// Scan phase: filter issues, create worktrees, insert into state
 	var tasks []newIssueTask
 
 	for _, issue := range issues {
@@ -85,7 +84,6 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 					BranchName:  branchName,
 					PRNumber:    openPR.Number,
 					Status:      StatusPROpen,
-					CreatedAt:   time.Now(),
 				}
 				continue
 			} else if hasMerged {
@@ -137,10 +135,9 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			WorktreePath: worktreePath,
 			BranchName:   branchName,
 			Status:       StatusImplementing,
-			CreatedAt:    time.Now(),
 		}
 
-		// Insert into state map before parallel phase
+		// Insert into state map before the agent phase
 		a.state.ActiveIssues[issueKey] = work
 
 		tasks = append(tasks, newIssueTask{
@@ -151,7 +148,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		})
 	}
 
-	// Sequential phase: run Claude, push, create PR
+	// Agent phase: implement each collected issue, push, create PR
 	runSequential(ctx, tasks, func(ctx context.Context, task newIssueTask) {
 		var success bool
 		defer func() {
@@ -206,10 +203,17 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 			return
 		}
 
-		// Check if Claude produced any commits
-		logOut, _, _ := a.runner.Run(ctx, task.worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--oneline")
+		// Check if the agent produced any commits
+		logOut, logStderr, logErr := a.runner.Run(ctx, task.worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--oneline")
+		if logErr != nil {
+			// Distinguish a broken worktree from a genuinely empty branch so
+			// the failure log doesn't blame the agent for a git error.
+			a.logger.Error("failed to check for commits", "issue", task.issue.Number, "error", logErr, "stderr", string(logStderr))
+			a.markIssueFailed(ctx, task.issue.Number, task.work)
+			return
+		}
 		if strings.TrimSpace(string(logOut)) == "" {
-			a.logger.Warn("claude finished but produced no commits", "issue", task.issue.Number)
+			a.logger.Warn("agent finished but produced no commits", "issue", task.issue.Number)
 			a.markIssueFailed(ctx, task.issue.Number, task.work)
 			return
 		}
@@ -217,7 +221,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		// Treat comment-only changes as a failed fix: no functional code changed,
 		// so opening a PR would waste reviewer time.
 		if a.isCommentOnlyDiff(ctx, task.worktreePath) {
-			a.logger.Warn("claude produced comment-only changes, treating as failed fix", "issue", task.issue.Number)
+			a.logger.Warn("agent produced comment-only changes, treating as failed fix", "issue", task.issue.Number)
 			a.markIssueFailed(ctx, task.issue.Number, task.work)
 			return
 		}

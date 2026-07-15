@@ -11,7 +11,7 @@ import (
 // triageLookbackRunLimit is the maximum number of runs to fetch when scanning a lookback window.
 const triageLookbackRunLimit = 50
 
-// triageRunTask pairs a CI source with a run for parallel investigation.
+// triageRunTask pairs a CI source with a failed run queued for investigation.
 type triageRunTask struct {
 	ciSource CIJobSource
 	run      JobRun
@@ -338,7 +338,7 @@ func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, an
 	// exact title match and LLM matching to both fail. Since both runs come
 	// from the same workflow/job in the same triage cycle, they should always
 	// group under the same issue.
-	sameJobCycleIssue := findSameJobCycleIssue(jobName, cycleIssues)
+	sameJobCycleIssue := findSameJobIssue(jobName, cycleIssues)
 	if sameJobCycleIssue > 0 {
 		a.logger.Info("same-job cycle dedup: matching to cycle issue created for this job",
 			"issue", sameJobCycleIssue, "job", jobName)
@@ -419,14 +419,6 @@ func (a *Agent) matchExistingTriageIssue(ctx context.Context, jobName, title, an
 	}
 
 	return 0
-}
-
-// findSameJobCycleIssue returns the issue number of a cycle issue that was
-// created for the same job, or 0 if none exists. It matches by checking if
-// the issue title starts with "CI Failure: <jobName>", which is the title
-// format used by investigateTriageRun.
-func findSameJobCycleIssue(jobName string, cycleIssues []Issue) int {
-	return findSameJobIssue(jobName, cycleIssues)
 }
 
 // findSameJobIssue returns the issue number of an issue that tracks the same

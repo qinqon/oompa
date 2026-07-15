@@ -21,7 +21,6 @@ type fakeGitHub struct {
 	prComments     map[int][]ReviewComment // prNumber -> comments
 	postedComments []string                // issue comments posted
 	addedLabels    []string
-	removedLabels  []string
 	reactions      []string
 	checkRuns      []CheckRun
 	nextPRNumber   int
@@ -154,13 +153,6 @@ func (f *fakeGitHubClient) AddLabel(_ context.Context, _, _ string, _ int, label
 	return nil
 }
 
-func (f *fakeGitHubClient) RemoveLabel(_ context.Context, _, _ string, _ int, label string) error {
-	f.state.mu.Lock()
-	defer f.state.mu.Unlock()
-	f.state.removedLabels = append(f.state.removedLabels, label)
-	return nil
-}
-
 func (f *fakeGitHubClient) ListPRsByHead(_ context.Context, _, _, _, branch string) ([]PR, error) {
 	f.state.mu.Lock()
 	defer f.state.mu.Unlock()
@@ -218,13 +210,6 @@ func (f *fakeGitHubClient) GetPRHeadSHA(_ context.Context, _, _ string, prNumber
 
 func (f *fakeGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, _ int64, _, _ string) (bool, error) {
 	return false, nil
-}
-
-func (f *fakeGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, _ int, commentID int64, body string) error {
-	f.state.mu.Lock()
-	defer f.state.mu.Unlock()
-	f.state.postedComments = append(f.state.postedComments, fmt.Sprintf("reply:%d:%s", commentID, body))
-	return nil
 }
 
 func (f *fakeGitHubClient) GetPRMergeable(_ context.Context, _, _ string, _ int) (string, error) {

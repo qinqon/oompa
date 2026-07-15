@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -47,7 +46,7 @@ func (a *Agent) ensureTrailers(msg string) string {
 	return msg
 }
 
-// buildPRBody constructs a PR description. If Claude wrote a .pr-body.md file
+// buildPRBody constructs a PR description. If the agent wrote a .pr-body.md file
 // (filled from the repo's PR template), that is used. Otherwise falls back to
 // constructing a body from the git log.
 func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumber int) string {
@@ -62,7 +61,11 @@ func (a *Agent) buildPRBody(ctx context.Context, worktreePath string, issueNumbe
 	}
 
 	// Fallback: construct from git log body only (skip subject to avoid duplication).
-	logOut, _, _ := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%b---")
+	// Degrade gracefully on error: the body is built without the log section.
+	logOut, logStderr, logErr := a.runner.Run(ctx, worktreePath, "git", "log", a.originDefaultBranch()+"..HEAD", "--format=%b")
+	if logErr != nil {
+		a.logger.Warn("failed to get git log for PR body", "issue", issueNumber, "error", logErr, "stderr", string(logStderr))
+	}
 	rawBody := strings.TrimSpace(string(logOut))
 
 	body := fmt.Sprintf("Fixes #%d\n\n", issueNumber)
@@ -247,15 +250,6 @@ func (a *Agent) gitSquashInto(ctx context.Context, worktreePath, targetSHA strin
 	return nil
 }
 
-// conventionalCommitRe matches issue titles that start with a conventional commit prefix.
-// Supports standard prefixes with optional scope and breaking change indicator.
-var conventionalCommitRe = regexp.MustCompile(`^(feat|fix|build|refactor|docs|chore|test|ci|perf|style|revert)(\([^)]+\))?!?:`)
-
-// isConventionalCommitTitle returns true if the title starts with a conventional commit prefix.
-func isConventionalCommitTitle(title string) bool {
-	return conventionalCommitRe.MatchString(title)
-}
-
 // maxSubjectLen is the maximum length of a commit subject line.
 const maxSubjectLen = 72
 
@@ -299,11 +293,11 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 		return fmt.Errorf("git reset --soft: %w (stderr: %s)", err, string(stderr))
 	}
 
-	// Unstage .pr-body.md if Claude accidentally staged it — it must not be committed.
+	// Unstage .pr-body.md if the agent accidentally staged it — it must not be committed.
 	a.runner.Run(ctx, worktreePath, "git", "restore", "--staged", ".pr-body.md") //nolint:errcheck // best-effort
 
 	// Create a single commit with a meaningful message.
-	// Strip any Signed-off-by/Assisted-by trailers Claude may have added to individual
+	// Strip any Signed-off-by/Assisted-by trailers the agent may have added to individual
 	// commits before building the body, then append exactly one canonical set of trailers.
 	//
 	// The subject line uses the issue title directly (truncated to 72 chars).

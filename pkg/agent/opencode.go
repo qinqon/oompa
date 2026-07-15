@@ -16,11 +16,9 @@ type OpenCodeAgent struct {
 // opencodeEvent represents a single event in OpenCode's JSONL output.
 // OpenCode emits newline-delimited JSON with event-specific data nested under "part".
 type opencodeEvent struct {
-	Type      string         `json:"type"`
-	Timestamp int64          `json:"timestamp"`
-	SessionID string         `json:"sessionID"`
-	Part      opencodePart   `json:"part"`
-	Error     *opencodeError `json:"error,omitempty"`
+	Type  string         `json:"type"`
+	Part  opencodePart   `json:"part"`
+	Error *opencodeError `json:"error,omitempty"`
 }
 
 // opencodePart contains event-specific data for OpenCode events.
@@ -32,31 +30,17 @@ type opencodePart struct {
 	Cost   float64            `json:"cost,omitempty"`
 	Tokens *opencodeTokens    `json:"tokens,omitempty"`
 	State  *opencodeToolState `json:"state,omitempty"`
-	Time   *opencodeTime      `json:"time,omitempty"`
 }
 
 // opencodeTokens contains token usage information.
 type opencodeTokens struct {
-	Input     int `json:"input"`
-	Output    int `json:"output"`
-	Reasoning int `json:"reasoning"`
-	Cache     *struct {
-		Read  int `json:"read"`
-		Write int `json:"write"`
-	} `json:"cache,omitempty"`
+	Input  int `json:"input"`
+	Output int `json:"output"`
 }
 
 // opencodeToolState contains tool execution state.
 type opencodeToolState struct {
-	Status string         `json:"status,omitempty"`
-	Output string         `json:"output,omitempty"`
-	Input  map[string]any `json:"input,omitempty"`
-}
-
-// opencodeTime contains timing information.
-type opencodeTime struct {
-	Start int64 `json:"start"`
-	End   int64 `json:"end"`
+	Status string `json:"status,omitempty"`
 }
 
 // opencodeError contains error information.

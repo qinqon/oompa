@@ -17,7 +17,6 @@ type mockGitHubClient struct {
 	addedComments       []string
 	addedCommentTargets []int // issue/PR number each comment was posted to
 	addedLabels         []string
-	removedLabels       []string
 	addedReactions      []string
 	checkRuns           []CheckRun
 	commitStatuses      []CheckRun       // commit status failures (returned by GetCommitStatuses)
@@ -84,11 +83,6 @@ func (m *mockGitHubClient) AddLabel(_ context.Context, _, _ string, _ int, label
 	return nil
 }
 
-func (m *mockGitHubClient) RemoveLabel(_ context.Context, _, _ string, _ int, label string) error {
-	m.removedLabels = append(m.removedLabels, label)
-	return nil
-}
-
 func (m *mockGitHubClient) ListPRsByHead(_ context.Context, _, _, _, _ string) ([]PR, error) {
 	m.prsCallCount++
 	if m.listPRsErr != nil {
@@ -143,11 +137,6 @@ func (m *mockGitHubClient) HasPRCommentReaction(_ context.Context, _, _ string, 
 		}
 	}
 	return false, nil
-}
-
-func (m *mockGitHubClient) ReplyToPRComment(_ context.Context, _, _ string, _ int, commentID int64, body string) error {
-	m.addedComments = append(m.addedComments, fmt.Sprintf("reply:%d:%s", commentID, body))
-	return nil
 }
 
 func (m *mockGitHubClient) GetPRMergeable(_ context.Context, _, _ string, _ int) (string, error) {

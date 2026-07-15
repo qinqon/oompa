@@ -44,24 +44,25 @@ type AgentResult struct {
 }
 
 // IssueWork tracks the state of work on a single issue.
+// State is held in memory only — it is rebuilt from GitHub on startup by
+// BuildStateFromGitHub and never serialized to disk.
 type IssueWork struct {
-	IssueNumber        int             `json:"issueNumber"`
-	IssueTitle         string          `json:"issueTitle"`
-	WorktreePath       string          `json:"worktreePath"`
-	BranchName         string          `json:"branchName"`
-	PRNumber           int             `json:"prNumber"`
-	LastCommentID      int64           `json:"lastCommentID"`
-	LastReviewID       int64           `json:"lastReviewID"`
-	LastIssueCommentID int64           `json:"lastIssueCommentID,omitempty"` // cursor for PR conversation comments (Issues API)
-	Status             string          `json:"status"`                       // implementing, pr-open, failed, done
-	CIFixAttempts      int             `json:"ciFixAttempts"`
-	LastCIStatus       string          `json:"lastCIStatus"`              // "", "pending", "success", "failure"
-	LastCheckedCISHA   string          `json:"lastCheckedCISHA"`          // last commit SHA investigated for CI failures
-	CheckedCIChecks    map[string]bool `json:"checkedCIChecks,omitempty"` // tracks "sha:check" keys investigated (for dedup without comments)
-	ReviewNoOpCount    int             `json:"reviewNoOpCount,omitempty"` // consecutive cycles where reviews produced no push
-	SessionCostUSD     float64         `json:"sessionCostUSD,omitempty"`  // cumulative agent cost for this PR in current session
-	LastRebaseTime     time.Time       `json:"lastRebaseTime"`            // when this PR was last rebased (for min-interval guard)
-	CreatedAt          time.Time       `json:"createdAt"`
+	IssueNumber        int
+	IssueTitle         string
+	WorktreePath       string
+	BranchName         string
+	PRNumber           int
+	LastCommentID      int64
+	LastReviewID       int64
+	LastIssueCommentID int64  // cursor for PR conversation comments (Issues API)
+	Status             string // implementing, pr-open, failed, done
+	CIFixAttempts      int
+	LastCIStatus       string          // "", "pending", "success", "failure"
+	LastCheckedCISHA   string          // last commit SHA investigated for CI failures
+	CheckedCIChecks    map[string]bool // tracks "sha:check" keys investigated (for dedup without comments)
+	ReviewNoOpCount    int             // consecutive cycles where reviews produced no push
+	SessionCostUSD     float64         // cumulative agent cost for this PR in current session
+	LastRebaseTime     time.Time       // when this PR was last rebased (for min-interval guard)
 }
 
 // PRReview represents a GitHub pull request review (approve, request changes, comment).

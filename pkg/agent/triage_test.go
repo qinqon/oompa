@@ -653,7 +653,7 @@ func TestTriageDedup_DifferentFailuresSameJob_MatchesByJobName(t *testing.T) {
 	}
 }
 
-func TestFindSameJobCycleIssue(t *testing.T) {
+func TestFindSameJobIssue_CycleIssues(t *testing.T) {
 	tests := []struct {
 		name        string
 		jobName     string
@@ -719,9 +719,9 @@ func TestFindSameJobCycleIssue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := findSameJobCycleIssue(tt.jobName, tt.cycleIssues)
+			got := findSameJobIssue(tt.jobName, tt.cycleIssues)
 			if got != tt.want {
-				t.Errorf("findSameJobCycleIssue(%q, ...) = %d, want %d", tt.jobName, got, tt.want)
+				t.Errorf("findSameJobIssue(%q, ...) = %d, want %d", tt.jobName, got, tt.want)
 			}
 		})
 	}

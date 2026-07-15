@@ -461,7 +461,7 @@ func TestCheckRebaseNeeded_ReportsBehind(t *testing.T) {
 		Status:     StatusPROpen,
 	}
 
-	findings := a.CheckRebaseNeeded(context.Background())
+	findings := a.checkRebaseNeededWithStates(context.Background(), a.fetchMergeableStates(context.Background()))
 
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
@@ -496,7 +496,7 @@ func TestCheckConflicts_ReportsDirty(t *testing.T) {
 		Status:     StatusPROpen,
 	}
 
-	findings := a.CheckConflicts(context.Background())
+	findings := a.checkConflictsWithStates(context.Background(), a.fetchMergeableStates(context.Background()))
 
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
@@ -598,7 +598,7 @@ func TestCheckRebaseNeeded_Clean(t *testing.T) {
 		Status:     StatusPROpen,
 	}
 
-	findings := a.CheckRebaseNeeded(context.Background())
+	findings := a.checkRebaseNeededWithStates(context.Background(), a.fetchMergeableStates(context.Background()))
 
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for clean state, got %d", len(findings))
