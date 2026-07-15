@@ -50,12 +50,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		}
 
 		// Skip CI processing if this PR has exceeded the per-session cost threshold.
-		if a.cfg.MaxPRSessionCost > 0 && work.SessionCostUSD >= a.cfg.MaxPRSessionCost {
-			a.logger.Warn("skipping CI processing (per-PR session cost limit reached)",
-				"pr", work.PRNumber,
-				"sessionCostUSD", work.SessionCostUSD,
-				"limit", a.cfg.MaxPRSessionCost,
-			)
+		if a.sessionCostExceeded(work, "CI processing") {
 			continue
 		}
 
@@ -224,12 +219,7 @@ func (a *Agent) ProcessCIFailures(ctx context.Context) {
 		// Re-check cost guard before each invocation — multiple tasks can be
 		// enqueued for the same PR, and earlier invocations may have pushed
 		// SessionCostUSD over the limit.
-		if a.cfg.MaxPRSessionCost > 0 && task.work.SessionCostUSD >= a.cfg.MaxPRSessionCost {
-			a.logger.Warn("skipping CI investigation (per-PR session cost limit reached)",
-				"pr", task.work.PRNumber,
-				"sessionCostUSD", task.work.SessionCostUSD,
-				"limit", a.cfg.MaxPRSessionCost,
-			)
+		if a.sessionCostExceeded(task.work, "CI investigation") {
 			return
 		}
 
@@ -690,38 +680,15 @@ func (a *Agent) classifyCIRelated(ctx context.Context, task ciTask, cleaned stri
 		}
 	}
 
-	// Check if there are fixup commits, amended commits, or uncommitted changes
-	pushed := false
-	hasFixupCommits := a.hasFixupCommits(ctx, task.work.WorktreePath)
-	hasUncommitted := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
-
-	switch {
-	case hasFixupCommits:
-		// Run autosquash rebase to merge fixup commits into their targets
-		if err := a.gitAutosquashRebase(ctx, task.work.WorktreePath); err != nil {
-			a.logger.Error("failed to autosquash fixup commits", "pr", task.work.PRNumber, "error", err)
-		} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
-			a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
-		} else {
-			pushed = true
-		}
-	case hasUncommitted:
-		// The agent left uncommitted changes — amend them into HEAD as fallback
-		if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
-			a.logger.Error("failed to amend commit for CI fix", "pr", task.work.PRNumber, "error", err)
-		} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
-			a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
-		} else {
-			pushed = true
-		}
-	default:
-		// No fixups and no uncommitted changes — the agent may have amended
-		// the commit directly. Check if HEAD differs from the remote SHA.
+	// Push fixups or uncommitted changes; otherwise the agent may have
+	// amended the commit directly — push when HEAD differs from the remote.
+	pushed, handled := a.pushFixupsOrAmend(ctx, task.work.WorktreePath, task.work.PRNumber)
+	if !handled {
 		localSHA, _, err := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
 		if err == nil && strings.TrimSpace(string(localSHA)) != task.headSHA {
 			a.logger.Info("agent amended commit directly, pushing", "pr", task.work.PRNumber)
 			if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
-				a.logger.Error("failed to push CI fix", "pr", task.work.PRNumber, "error", err)
+				a.logger.Error("failed to push", "pr", task.work.PRNumber, "error", err)
 			} else {
 				pushed = true
 			}

@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+// advanceReviewCursors moves the three per-PR comment cursors forward to the
+// given maxima. Cursors never move backwards.
+func advanceReviewCursors(work *IssueWork, maxCommentID, maxReviewID, maxIssueCommentID int64) {
+	work.LastCommentID = max(work.LastCommentID, maxCommentID)
+	work.LastReviewID = max(work.LastReviewID, maxReviewID)
+	work.LastIssueCommentID = max(work.LastIssueCommentID, maxIssueCommentID)
+}
+
 // ProcessReviewComments checks for new review comments and review bodies, then runs the coding agent to address them.
 func (a *Agent) ProcessReviewComments(ctx context.Context) {
 	a.emit(Event{
@@ -32,12 +40,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		}
 
 		// Skip review processing if this PR has exceeded the per-session cost threshold.
-		if a.cfg.MaxPRSessionCost > 0 && work.SessionCostUSD >= a.cfg.MaxPRSessionCost {
-			a.logger.Warn("skipping reviews (per-PR session cost limit reached)",
-				"pr", work.PRNumber,
-				"sessionCostUSD", work.SessionCostUSD,
-				"limit", a.cfg.MaxPRSessionCost,
-			)
+		if a.sessionCostExceeded(work, "reviews") {
 			continue
 		}
 
@@ -152,15 +155,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		if len(humanComments) == 0 && len(humanReviews) == 0 && len(prComments) == 0 {
 			// No actionable comments/reviews, but still advance cursors past
 			// filtered items to avoid re-fetching them on every poll cycle.
-			if maxCommentID > work.LastCommentID {
-				work.LastCommentID = maxCommentID
-			}
-			if maxReviewID > work.LastReviewID {
-				work.LastReviewID = maxReviewID
-			}
-			if maxIssueCommentID > work.LastIssueCommentID {
-				work.LastIssueCommentID = maxIssueCommentID
-			}
+			advanceReviewCursors(work, maxCommentID, maxReviewID, maxIssueCommentID)
 			continue
 		}
 
@@ -172,15 +167,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		// stale reviews are eventually skipped while new reviews can be processed.
 		if a.cfg.MaxReviewNoOps > 0 && work.ReviewNoOpCount >= a.cfg.MaxReviewNoOps {
 			// Advance cursors past these reviews to stop re-fetching them.
-			if maxCommentID > work.LastCommentID {
-				work.LastCommentID = maxCommentID
-			}
-			if maxReviewID > work.LastReviewID {
-				work.LastReviewID = maxReviewID
-			}
-			if maxIssueCommentID > work.LastIssueCommentID {
-				work.LastIssueCommentID = maxIssueCommentID
-			}
+			advanceReviewCursors(work, maxCommentID, maxReviewID, maxIssueCommentID)
 			a.logger.Warn("skipping stale reviews (no-op retry limit reached)",
 				"pr", work.PRNumber,
 				"noOpCount", work.ReviewNoOpCount,
@@ -275,15 +262,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 			// Advance cursors even on agent failure — the reviews were evaluated.
 			// Not advancing causes an infinite retry loop where the same reviews
 			// are re-fetched and re-processed every poll cycle ($0.50-1.00 each time).
-			if task.maxCommentID > task.work.LastCommentID {
-				task.work.LastCommentID = task.maxCommentID
-			}
-			if task.maxReviewID > task.work.LastReviewID {
-				task.work.LastReviewID = task.maxReviewID
-			}
-			if task.maxIssueCommentID > task.work.LastIssueCommentID {
-				task.work.LastIssueCommentID = task.maxIssueCommentID
-			}
+			advanceReviewCursors(task.work, task.maxCommentID, task.maxReviewID, task.maxIssueCommentID)
 			task.work.ReviewNoOpCount++
 			return
 		}
@@ -301,31 +280,8 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		// Track whether push succeeded so we can gate cursor advancement:
 		// if changes were detected but push failed, don't advance the cursor
 		// so the comments are retried on the next poll cycle.
-		pushed, changeDetected := false, false
-		hasFixups := a.hasFixupCommits(ctx, task.work.WorktreePath)
-		hasUncommitted := a.hasUncommittedChanges(ctx, task.work.WorktreePath)
-
-		switch {
-		case hasFixups:
-			// Agent created fixup commits — autosquash them into their targets
-			changeDetected = true
-			if err := a.gitAutosquashRebase(ctx, task.work.WorktreePath); err != nil {
-				a.logger.Error("failed to autosquash fixup commits", "pr", task.work.PRNumber, "error", err)
-			} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
-				a.logger.Error("failed to push", "pr", task.work.PRNumber, "error", err)
-			} else {
-				pushed = true
-			}
-		case hasUncommitted:
-			changeDetected = true
-			if err := a.gitAmendAll(ctx, task.work.WorktreePath); err != nil {
-				a.logger.Error("failed to amend commit", "pr", task.work.PRNumber, "error", err)
-			} else if err := a.gitPush(ctx, task.work.WorktreePath, true); err != nil {
-				a.logger.Error("failed to push", "pr", task.work.PRNumber, "error", err)
-			} else {
-				pushed = true
-			}
-		default:
+		pushed, changeDetected := a.pushFixupsOrAmend(ctx, task.work.WorktreePath, task.work.PRNumber)
+		if !changeDetected {
 			headAfter, _, revErr := a.runner.Run(ctx, task.work.WorktreePath, "git", "rev-parse", "HEAD")
 			headSHAAfter := strings.TrimSpace(string(headAfter))
 			if revErr == nil && headSHABefore != "" && headSHAAfter != headSHABefore {
@@ -353,15 +309,7 @@ func (a *Agent) ProcessReviewComments(ctx context.Context) {
 		// When changes were detected but push failed, skip cursor advancement
 		// so the comments are retried on the next poll cycle.
 		if !changeDetected || pushed {
-			if task.maxCommentID > task.work.LastCommentID {
-				task.work.LastCommentID = task.maxCommentID
-			}
-			if task.maxReviewID > task.work.LastReviewID {
-				task.work.LastReviewID = task.maxReviewID
-			}
-			if task.maxIssueCommentID > task.work.LastIssueCommentID {
-				task.work.LastIssueCommentID = task.maxIssueCommentID
-			}
+			advanceReviewCursors(task.work, task.maxCommentID, task.maxReviewID, task.maxIssueCommentID)
 		}
 
 		// Comment on the PR with a link to the pushed change and a summary.
