@@ -962,26 +962,16 @@ func TestProcessReviewComments_SquashUsesCommitMsgFile(t *testing.T) {
 	}
 	wt := &fixedPathWorktreeManager{fixedPath: worktreeDir}
 
-	agent := &Agent{
-		gh:        gh,
-		runner:    runner,
-		worktrees: wt,
-		state:     NewState(),
-		cfg: Config{
-			Owner:       "owner",
-			Repo:        "repo",
-			Label:       "good-for-ai",
-			FlakyLabel:  "flaky-test",
-			GitHubUser:  "test-bot",
-			SignedOffBy: "Test User <test@example.com>",
-			AssistedBy:  "Claude <noreply@anthropic.com>",
-		},
-		logger: slog.Default(),
-		codeAgent: &commitMsgCodeAgent{
+	agent := newTestAgent(gh, runner, wt,
+		withCfg(func(c *Config) {
+			c.SignedOffBy = "Test User <test@example.com>"
+			c.AssistedBy = "Claude <noreply@anthropic.com>"
+		}),
+		withCodeAgent(&commitMsgCodeAgent{
 			commitMsg: "fix: corrected commit subject\n\nProper body",
 			result:    AgentResult{Result: "Done"},
-		},
-	}
+		}),
+	)
 	trackWork(agent, func(w *IssueWork) {
 		w.WorktreePath = worktreeDir
 	})
@@ -1039,26 +1029,16 @@ func TestProcessReviewComments_AmendUsesCommitMsgFile(t *testing.T) {
 	}
 	wt := &fixedPathWorktreeManager{fixedPath: worktreeDir}
 
-	agent := &Agent{
-		gh:        gh,
-		runner:    runner,
-		worktrees: wt,
-		state:     NewState(),
-		cfg: Config{
-			Owner:       "owner",
-			Repo:        "repo",
-			Label:       "good-for-ai",
-			FlakyLabel:  "flaky-test",
-			GitHubUser:  "test-bot",
-			SignedOffBy: "Test User <test@example.com>",
-			AssistedBy:  "Claude <noreply@anthropic.com>",
-		},
-		logger: slog.Default(),
-		codeAgent: &commitMsgCodeAgent{
+	agent := newTestAgent(gh, runner, wt,
+		withCfg(func(c *Config) {
+			c.SignedOffBy = "Test User <test@example.com>"
+			c.AssistedBy = "Claude <noreply@anthropic.com>"
+		}),
+		withCodeAgent(&commitMsgCodeAgent{
 			commitMsg: "fix: updated commit message\n\nNew body",
 			result:    AgentResult{Result: "Done"},
-		},
-	}
+		}),
+	)
 	trackWork(agent, func(w *IssueWork) {
 		w.WorktreePath = worktreeDir
 	})
