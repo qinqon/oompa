@@ -7,11 +7,11 @@ An autonomous AI-powered code maintenance agent that uses [OpenCode](https://ope
 - **Resolve issues** -- picks up GitHub issues with a configurable label, implements fixes, and opens pull requests.
 - **Address reviews** -- reads reviewer comments and iterates on the code until reviewers are satisfied.
 - **Fix CI failures** -- detects failing checks, analyzes logs, and pushes fixes.
-- **Resolve merge conflicts** -- attempts an automatic rebase and falls back to Claude when that fails.
+- **Resolve merge conflicts** -- attempts an automatic rebase and falls back to the coding agent when that fails.
 - **Babysit PRs** -- monitors specific PRs for reviews, CI, conflicts, and rebase.
 - **Triage periodic CI** -- analyzes nightly/scheduled job failures and creates issues with root-cause analysis.
 
-Claude never merges; a human must approve and merge every PR.
+The coding agent never merges; a human must approve and merge every PR.
 
 ## Prerequisites
 
@@ -66,7 +66,7 @@ To set up a GitHub App: create one in your org settings (`https://github.com/org
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|
 | `--repo` | `OOMPA_REPO` | -- | GitHub repo as `owner/repo` (required) |
-| `--agent` | `OOMPA_AGENT` | `claudecode` | Coding agent backend: `claudecode` or `opencode` |
+| `--agent` | `OOMPA_AGENT` | `opencode` | Coding agent backend: `claudecode` or `opencode` |
 | `--agent-model` | `OOMPA_AGENT_MODEL` | -- | Model override for OpenCode (e.g. `google-vertex-anthropic/claude-opus-4-6@default`) |
 | `--label` | `OOMPA_LABEL` | `good-for-ai` | Issue label to watch |
 | `--clone-dir` | `OOMPA_CLONE_DIR` | `/tmp/oompa-work` | Working directory for clones and worktrees |
@@ -198,15 +198,14 @@ Manage services with: `systemctl --user enable --now <service>`, `systemctl --us
 
 ## Architecture
 
-The agent is stateless on disk -- on every startup it rebuilds state from GitHub by scanning labeled issues and matching PRs. All external interactions (GitHub API, Claude CLI, git) are behind interfaces with mock implementations, so tests run without credentials or network access.
+The agent is stateless on disk -- on every startup it rebuilds state from GitHub by scanning labeled issues and matching PRs. All external interactions (GitHub API, agent CLI, git) are behind interfaces with mock implementations, so tests run without credentials or network access.
 
 ```text
 cmd/oompa/          CLI entry point
-pkg/agent/          Core logic (loop, state, GitHub client, Claude runner, worktree, prompts)
-specs/              Design specifications for each component
+pkg/agent/          Core logic (loop, state, GitHub client, agent runner, worktree, prompts)
 ```
 
-Claude only creates PRs -- it never merges. No force-pushes. On failure, the issue is labeled `ai-failed` with a comment explaining the error; a human removes the label and re-adds `good-for-ai` to retry. Billing is controlled through GCP IAM on the Vertex AI project.
+The coding agent only creates PRs -- it never merges. No force-pushes. On failure, the issue is labeled `ai-failed` with a comment explaining the error; a human removes the label and re-adds `good-for-ai` to retry. Billing is controlled through GCP IAM on the Vertex AI project.
 
 ## Acknowledgments
 

@@ -20,7 +20,7 @@ type Config struct {
 	SignedOffBy   string
 	AssistedBy    string   // Assisted-by trailer value for commits (e.g. "oompa with claude-opus-4-6 <https://github.com/qinqon/oompa>")
 	GitHubUser      string   // authenticated GitHub username (for reaction checks)
-	GitHubToken     string   // GitHub token (passed to Claude for gh CLI access)
+	GitHubToken     string   // GitHub token (passed to the coding agent for gh CLI access)
 	GitHubHeadOwner string   // owner for PR head filtering (fork owner for PAT, repo owner for App)
 	ForkOwner       string   // owner of the fork repo for pushing (empty = push to upstream)
 	ForkRepo        string   // name of the fork repo (empty = same as Repo)

@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -624,9 +623,11 @@ projects:
 	path := filepath.Join(dir, "config.yaml")
 	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper: WriteFile errors are caught by subsequent LoadFileConfig
 
-	_, err := LoadFileConfig(path)
-	if err == nil {
-		t.Fatal("expected error for agent-model without explicit agent")
+	// agent-model without an explicit agent is valid: the agent is inherited
+	// from the global config and the resolved combination is validated when
+	// the code agent is selected.
+	if _, err := LoadFileConfig(path); err != nil {
+		t.Fatalf("unexpected error for agent-model without explicit agent: %v", err)
 	}
 }
 
@@ -1210,13 +1211,11 @@ projects:
 	path := filepath.Join(dir, "config.yaml")
 	os.WriteFile(path, []byte(yaml), 0o644) //nolint:errcheck // test helper
 
-	_, err := LoadFileConfig(path)
-	if err == nil {
-		t.Fatal("expected error for project agent-model without explicit agent")
-	}
-	// Error message should guide user to set agent at global level
-	if !strings.Contains(err.Error(), "global level") {
-		t.Errorf("expected error to mention 'global level', got %q", err.Error())
+	// Project-level agent-model without an explicit agent is valid: the agent
+	// is inherited from the global config and the resolved combination is
+	// validated when the code agent is selected.
+	if _, err := LoadFileConfig(path); err != nil {
+		t.Fatalf("unexpected error for project agent-model without explicit agent: %v", err)
 	}
 }
 
