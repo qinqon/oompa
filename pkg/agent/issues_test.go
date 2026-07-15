@@ -36,12 +36,10 @@ func TestProcessNewIssues_RechecksForPR(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber: 42,
-		BranchName:  "ai/issue-42",
-		Status:      "implementing",
-		PRNumber:    0,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.Status = "implementing"
+		w.PRNumber = 0
+	})
 
 	agent.ProcessNewIssues(context.Background())
 

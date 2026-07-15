@@ -17,12 +17,9 @@ func TestProcessReviewComments_NoNewComments(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		PRNumber:      100,
-		Status:        "pr-open",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -42,14 +39,9 @@ func TestProcessReviewComments_AddressesHumanComments(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -78,14 +70,9 @@ func TestProcessReviewComments_PushFailureDoesNotAdvanceCursor(t *testing.T) {
 	agent.codeAgent = &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -108,14 +95,9 @@ func TestProcessReviewComments_CursorAdvancesUnconditionally(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -141,14 +123,9 @@ func TestProcessReviewComments_AgentErrorStillAdvancesCursor(t *testing.T) {
 	agent.codeAgent = &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -170,12 +147,9 @@ func TestProcessReviewComments_SkipsNonWhitelistedUsers(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.Reviewers = []string{"trusted-reviewer"}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		PRNumber:      100,
-		Status:        "pr-open",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -196,14 +170,9 @@ func TestProcessReviewComments_AllowsAllWhenWhitelistEmpty(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	// No reviewers set — empty whitelist means allow all
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -229,14 +198,9 @@ func TestProcessReviewComments_UnaddressedReviewIsProcessed(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-		LastReviewID: 100, // review 200 > 100, so it's new/unaddressed
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastReviewID = 100 // review 200 > 100, so it's new/unaddressed
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -265,14 +229,9 @@ func TestProcessReviewComments_AlreadyAddressedReviewIsFilteredBySinceID(t *test
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-		LastReviewID: 100, // review 50 <= 100, filtered by sinceID
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastReviewID = 100 // review 50 <= 100, filtered by sinceID
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -299,16 +258,11 @@ func TestProcessReviewComments_MultipleReviewersSimultaneous(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
+	trackWork(agent, func(w *IssueWork) {
 		// LastReviewID 250: oompa already processed coderabbit (ID 200) and gemini (ID 250)
 		// but copilot's review (ID 300) is still unaddressed
-		LastReviewID: 250,
-	}
+		w.LastReviewID = 250
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -344,14 +298,9 @@ func TestProcessReviewComments_SquashesAgentCommits(t *testing.T) {
 	agent.codeAgent = &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -440,14 +389,9 @@ func TestProcessReviewComments_AutosquashesFixupCommits(t *testing.T) {
 	agent.codeAgent = &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -506,15 +450,10 @@ func TestProcessReviewComments_AgentFailureAdvancesCursor(t *testing.T) {
 	agent.codeAgent = &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-		LastReviewID:  100,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+		w.LastReviewID = 100
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -546,15 +485,10 @@ func TestProcessReviewComments_NoOpCountPausesReviews(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.MaxReviewNoOps = 3
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:     42,
-		IssueTitle:      "Fix bug",
-		PRNumber:        100,
-		Status:          "pr-open",
-		WorktreePath:    "/tmp/worktree",
-		LastCommentID:   50,
-		ReviewNoOpCount: 3, // already at limit
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+		w.ReviewNoOpCount = 3 // already at limit
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -589,15 +523,10 @@ func TestProcessReviewComments_NewReviewAfterNoOpPause(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.MaxReviewNoOps = 3
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:     42,
-		IssueTitle:      "Fix bug",
-		PRNumber:        100,
-		Status:          "pr-open",
-		WorktreePath:    "/tmp/worktree",
-		LastReviewID:    250, // cursor at 250, review 300 is new
-		ReviewNoOpCount: 3,   // at limit
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastReviewID = 250  // cursor at 250, review 300 is new
+		w.ReviewNoOpCount = 3 // at limit
+	})
 
 	// Cycle 1: no-op limit reached → cursors advance to 300, counter resets to 0
 	agent.ProcessReviewComments(context.Background())
@@ -647,15 +576,10 @@ func TestProcessReviewComments_NoOpCountResetsOnPush(t *testing.T) {
 	agent.codeAgent = &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:     42,
-		IssueTitle:      "Fix bug",
-		PRNumber:        100,
-		Status:          "pr-open",
-		WorktreePath:    "/tmp/worktree",
-		LastCommentID:   50,
-		ReviewNoOpCount: 2, // was approaching limit
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+		w.ReviewNoOpCount = 2 // was approaching limit
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -678,15 +602,10 @@ func TestProcessReviewComments_NoOpCountIncrementsOnNoPush(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:     42,
-		IssueTitle:      "Fix bug",
-		PRNumber:        100,
-		Status:          "pr-open",
-		WorktreePath:    "/tmp/worktree",
-		LastReviewID:    100,
-		ReviewNoOpCount: 1,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastReviewID = 100
+		w.ReviewNoOpCount = 1
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -712,15 +631,10 @@ func TestProcessReviewComments_CostGuardSkipsReviews(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.MaxPRSessionCost = 10.0
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:    42,
-		IssueTitle:     "Fix bug",
-		PRNumber:       100,
-		Status:         "pr-open",
-		WorktreePath:   "/tmp/worktree",
-		LastCommentID:  50,
-		SessionCostUSD: 11.5, // exceeds $10 threshold
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+		w.SessionCostUSD = 11.5 // exceeds $10 threshold
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -742,15 +656,10 @@ func TestProcessReviewComments_CostTracking(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:    42,
-		IssueTitle:     "Fix bug",
-		PRNumber:       100,
-		Status:         "pr-open",
-		WorktreePath:   "/tmp/worktree",
-		LastCommentID:  50,
-		SessionCostUSD: 2.0, // existing cost
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+		w.SessionCostUSD = 2.0 // existing cost
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -773,13 +682,7 @@ func TestProcessReviewComments_OompaCommandProcessed(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -813,12 +716,7 @@ func TestProcessReviewComments_IgnoresNonOompaComments(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -846,12 +744,7 @@ func TestProcessReviewComments_OompaCommandSkipsNonWhitelisted(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.cfg.Reviewers = []string{"trusted-reviewer"}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -876,13 +769,7 @@ func TestProcessReviewComments_OompaCommandIncludedInPrompt(t *testing.T) {
 
 	agent := newTestAgent(gh, runner, wt)
 	agent.codeAgent = codeAgent
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -923,13 +810,7 @@ func TestProcessReviewComments_OompaCommandWithReviewComments(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -971,13 +852,7 @@ func TestProcessReviewComments_OompaCommandCursorAdvancesOnAgentError(t *testing
 	agent.codeAgent = &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{{err: fmt.Errorf("agent crashed")}},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -999,12 +874,7 @@ func TestProcessReviewComments_OompaCommandIgnoresBarePrefix(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -1031,12 +901,7 @@ func TestProcessReviewComments_OompaCommandIgnoresBotComments(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: "/tmp/worktree",
-	}
+	trackWork(agent)
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -1117,13 +982,9 @@ func TestProcessReviewComments_SquashUsesCommitMsgFile(t *testing.T) {
 			result:    AgentResult{Result: "Done"},
 		},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: worktreeDir,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.WorktreePath = worktreeDir
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -1198,13 +1059,9 @@ func TestProcessReviewComments_AmendUsesCommitMsgFile(t *testing.T) {
 			result:    AgentResult{Result: "Done"},
 		},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:  42,
-		IssueTitle:   "Fix bug",
-		PRNumber:     100,
-		Status:       "pr-open",
-		WorktreePath: worktreeDir,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.WorktreePath = worktreeDir
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -1258,14 +1115,9 @@ func TestProcessReviewComments_SquashWithoutCommitMsgFileUsesNoEdit(t *testing.T
 	agent.codeAgent = &sequentialMockCodeAgent{
 		results: []mockCodeAgentCall{{result: AgentResult{Result: "Done"}}},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -1305,14 +1157,9 @@ func TestProcessReviewComments_PostsChangeSummaryAfterPush(t *testing.T) {
 			{result: AgentResult{Result: "- Added validation logic to the review handler"}}, // change summary
 		},
 	}
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 
@@ -1364,14 +1211,9 @@ func TestProcessReviewComments_NoChangeSummaryWhenNoPush(t *testing.T) {
 	wt := &mockWorktreeManager{}
 
 	agent := newTestAgent(gh, runner, wt)
-	agent.state.ActiveIssues[IssueKey("owner", "repo", 42)] = &IssueWork{
-		IssueNumber:   42,
-		IssueTitle:    "Fix bug",
-		PRNumber:      100,
-		Status:        "pr-open",
-		WorktreePath:  "/tmp/worktree",
-		LastCommentID: 50,
-	}
+	trackWork(agent, func(w *IssueWork) {
+		w.LastCommentID = 50
+	})
 
 	agent.ProcessReviewComments(context.Background())
 

@@ -294,6 +294,25 @@ func newTestAgent(gh *mockGitHubClient, runner CommandRunner, wt WorktreeManager
 	return a
 }
 
+// trackWork registers the canonical in-flight fixture (issue 42 with PR 100
+// open on branch ai/issue-42) in the agent state, applies any mutations, and
+// returns the tracked work for later assertions.
+func trackWork(a *Agent, mutate ...func(*IssueWork)) *IssueWork {
+	w := &IssueWork{
+		IssueNumber:  42,
+		IssueTitle:   "Fix bug",
+		PRNumber:     100,
+		BranchName:   "ai/issue-42",
+		Status:       StatusPROpen,
+		WorktreePath: "/tmp/worktree",
+	}
+	for _, m := range mutate {
+		m(w)
+	}
+	a.state.ActiveIssues[IssueKey(a.cfg.Owner, a.cfg.Repo, w.IssueNumber)] = w
+	return w
+}
+
 // countCalls returns how many recorded commands invoked the named binary.
 func countCalls(calls []commandCall, name string) int {
 	count := 0
