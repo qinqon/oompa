@@ -4,60 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
-	"sync"
 	"testing"
 )
-
-type commandCall struct {
-	WorkDir string
-	Name    string
-	Args    []string
-	Stdin   string
-}
-
-type mockCommandRunner struct {
-	mu            sync.Mutex
-	calls         []commandCall
-	stdout        []byte
-	stderr        []byte
-	err           error
-	claudeResults [][]byte
-	claudeIndex   int
-}
-
-func (m *mockCommandRunner) Run(_ context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
-	m.mu.Lock()
-	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args})
-	stdout = m.stdout
-	if name == "claude" && len(m.claudeResults) > 0 {
-		if m.claudeIndex < len(m.claudeResults) {
-			stdout = m.claudeResults[m.claudeIndex]
-		} else {
-			stdout = m.claudeResults[len(m.claudeResults)-1]
-		}
-		m.claudeIndex++
-	}
-	stderr, err = m.stderr, m.err
-	m.mu.Unlock()
-	return stdout, stderr, err
-}
-
-func (m *mockCommandRunner) RunWithStdin(_ context.Context, workDir, stdin, name string, args ...string) (stdout, stderr []byte, err error) {
-	m.mu.Lock()
-	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args, Stdin: stdin})
-	stdout = m.stdout
-	if name == "claude" && len(m.claudeResults) > 0 {
-		if m.claudeIndex < len(m.claudeResults) {
-			stdout = m.claudeResults[m.claudeIndex]
-		} else {
-			stdout = m.claudeResults[len(m.claudeResults)-1]
-		}
-		m.claudeIndex++
-	}
-	stderr, err = m.stderr, m.err
-	m.mu.Unlock()
-	return stdout, stderr, err
-}
 
 // streamResultJSON builds a stream-json result line for testing.
 func streamResultJSON(r AgentResult) []byte {
