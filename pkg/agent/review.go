@@ -17,20 +17,7 @@ func advanceReviewCursors(work *IssueWork, maxCommentID, maxReviewID, maxIssueCo
 
 // ProcessReviewComments checks for new review comments and review bodies, then runs the coding agent to address them.
 func (a *Agent) ProcessReviewComments(ctx context.Context) {
-	a.emit(Event{
-		Type:     EventActionStarted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "reviewing",
-		Action:   "Checking for review comments",
-	})
-	defer a.emit(Event{
-		Type:     EventActionCompleted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "idle",
-		Action:   "Review check complete",
-	})
+	defer a.trackAction(CategoryCheck, "reviewing", "Checking for review comments", "Review check complete")()
 	// Scan phase: filter comments, prepare worktrees, add reactions, build tasks
 	var tasks []reviewTask
 

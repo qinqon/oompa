@@ -27,20 +27,7 @@ type ciResult struct {
 
 // ProcessCIFailures checks CI status for open PRs and invokes the coding agent to fix failures.
 func (a *Agent) ProcessCIFailures(ctx context.Context) {
-	a.emit(Event{
-		Type:     EventActionStarted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "working",
-		Action:   "Checking CI status",
-	})
-	defer a.emit(Event{
-		Type:     EventActionCompleted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "idle",
-		Action:   "CI check complete",
-	})
+	defer a.trackAction(CategoryCheck, "working", "Checking CI status", "CI check complete")()
 	// Scan phase: GitHub API calls, check run fetching, worktree setup
 	var tasks []ciTask
 
