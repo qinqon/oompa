@@ -108,20 +108,7 @@ func (a *Agent) autoRebasePR(ctx context.Context, work *IssueWork, mergeState, c
 // ProcessConflicts checks for merge conflicts (dirty mergeable_state) and tries to resolve them.
 // For simple rebases when a PR is just behind the base branch, use ProcessRebase instead.
 func (a *Agent) ProcessConflicts(ctx context.Context) {
-	a.emit(Event{
-		Type:     EventActionStarted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "working",
-		Action:   "Checking for merge conflicts",
-	})
-	defer a.emit(Event{
-		Type:     EventActionCompleted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "idle",
-		Action:   "Conflict check complete",
-	})
+	defer a.trackAction(CategoryCheck, "working", "Checking for merge conflicts", "Conflict check complete")()
 	// Scan phase: GitHub API calls, worktree setup, git fetch, automatic rebase attempts
 	var tasks []conflictTask
 
@@ -195,20 +182,7 @@ func (a *Agent) shouldRebaseNow(ctx context.Context, work *IssueWork) (allowed b
 // For PRs with actual merge conflicts (dirty state), use ProcessConflicts instead.
 // If a rebase fails due to conflicts, this delegates to the conflict resolution flow.
 func (a *Agent) ProcessRebase(ctx context.Context) {
-	a.emit(Event{
-		Type:     EventActionStarted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "rebasing",
-		Action:   "Checking for outdated PRs",
-	})
-	defer a.emit(Event{
-		Type:     EventActionCompleted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "idle",
-		Action:   "Rebase check complete",
-	})
+	defer a.trackAction(CategoryCheck, "rebasing", "Checking for outdated PRs", "Rebase check complete")()
 	// Scan phase: check states, try automatic rebase, collect failed conflicts into tasks
 	var tasks []conflictTask
 
@@ -265,8 +239,9 @@ func (a *Agent) postRebaseMarker(ctx context.Context, prNumber int, headSHA stri
 	if headSHA == "" {
 		return
 	}
-	_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, prNumber,
-		fmt.Sprintf("<!-- oompa-bot rebase:%s -->", shortSHA(headSHA)))
+	if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, prNumber, rebaseMarker(headSHA)); err != nil {
+		a.logger.Warn("failed to post rebase dedup marker", "pr", prNumber, "error", err)
+	}
 }
 
 // resolveConflictsSequential invokes the coding agent to resolve conflicts for a list of tasks sequentially.

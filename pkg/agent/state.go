@@ -12,6 +12,13 @@ import (
 
 // IssueKey returns the composite state key for an issue or PR number.
 // Format: "owner/repo#number" for cross-repo safety.
+//
+// Issue-driven work is keyed by issue number and watched PRs by PR number;
+// the two cannot collide because GitHub allocates issues and pull requests
+// from one shared number sequence per repository. The same PR could still be
+// tracked twice under different keys (once via its issue, once via a watch
+// entry), which is why the watched-PR bootstrap paths scan existing entries
+// for a matching PRNumber before inserting.
 func IssueKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
 }

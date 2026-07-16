@@ -12,20 +12,7 @@ func (a *Agent) ProcessNewIssues(ctx context.Context) {
 		return
 	}
 
-	a.emit(Event{
-		Type:     EventActionStarted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "working",
-		Action:   "Scanning for new issues",
-	})
-	defer a.emit(Event{
-		Type:     EventActionCompleted,
-		Category: CategoryCheck,
-		Worker:   a.workerName(),
-		State:    "idle",
-		Action:   "Issue scanning complete",
-	})
+	defer a.trackAction(CategoryCheck, "working", "Scanning for new issues", "Issue scanning complete")()
 
 	issues, err := a.gh.ListLabeledIssues(ctx, a.cfg.Owner, a.cfg.Repo, a.cfg.Label)
 	if err != nil {
