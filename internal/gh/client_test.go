@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1065,5 +1066,268 @@ func TestAddIssueCommentReaction(t *testing.T) {
 	err := gh.AddIssueCommentReaction(context.Background(), "owner", "repo", 42, "eyes")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// The *_Paginates tests below cover the resp.NextPage loops added for issue
+// #281: every list endpoint the agent reads must aggregate results across
+// pages instead of silently dropping everything after the first.
+func TestListLabeledIssues_Paginates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			t.Fatalf("expected per_page=100, got %q", got)
+		}
+		page := r.URL.Query().Get("page")
+		if page == "" || page == "1" {
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode([]*github.Issue{
+				{Number: new(1), Title: new("first"), Labels: []*github.Label{{Name: new("good-for-ai")}}},
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode([]*github.Issue{
+				{Number: new(2), Title: new("second"), Labels: []*github.Label{{Name: new("good-for-ai")}}},
+			})
+		}
+	})
+
+	gh := setupTestClient(t, mux)
+	issues, err := gh.ListLabeledIssues(context.Background(), "owner", "repo", "good-for-ai")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 2 || issues[0].Number != 1 || issues[1].Number != 2 {
+		t.Fatalf("expected issues [1 2] across pages, got %+v", issues)
+	}
+}
+
+func TestGetCheckRuns_Paginates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/commits/abc123/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		if page == "" || page == "1" {
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode(&github.ListCheckRunsResults{
+				Total:     new(int(2)),
+				CheckRuns: []*github.CheckRun{{ID: new(int64(1)), Name: new("test-a"), Status: new("completed"), Conclusion: new("failure")}},
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode(&github.ListCheckRunsResults{
+				Total:     new(int(2)),
+				CheckRuns: []*github.CheckRun{{ID: new(int64(2)), Name: new("test-b"), Status: new("completed"), Conclusion: new("success")}},
+			})
+		}
+	})
+
+	gh := setupTestClient(t, mux)
+	runs, err := gh.GetCheckRuns(context.Background(), "owner", "repo", "abc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runs) != 2 || runs[0].Name != "test-a" || runs[1].Name != "test-b" {
+		t.Fatalf("expected check runs [test-a test-b] across pages, got %+v", runs)
+	}
+}
+
+func TestGetPRReviews_Paginates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/7/reviews", func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		if page == "" || page == "1" {
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode([]*github.PullRequestReview{
+				{ID: new(int64(10)), User: &github.User{Login: new("alice")}, State: new("CHANGES_REQUESTED"), Body: new("fix this")},
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode([]*github.PullRequestReview{
+				{ID: new(int64(20)), User: &github.User{Login: new("bob")}, State: new("COMMENTED"), Body: new("and this")},
+			})
+		}
+	})
+
+	gh := setupTestClient(t, mux)
+	reviews, err := gh.GetPRReviews(context.Background(), "owner", "repo", 7, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviews) != 2 || reviews[0].ID != 10 || reviews[1].ID != 20 {
+		t.Fatalf("expected reviews [10 20] across pages, got %+v", reviews)
+	}
+}
+
+func TestListWorkflowJobs_Paginates(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/actions/runs/99/jobs", func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		if page == "" || page == "1" {
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode(&github.Jobs{
+				TotalCount: new(int(2)),
+				Jobs:       []*github.WorkflowJob{{ID: new(int64(1)), Name: new("build"), Conclusion: new("failure")}},
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode(&github.Jobs{
+				TotalCount: new(int(2)),
+				Jobs:       []*github.WorkflowJob{{ID: new(int64(2)), Name: new("test"), Conclusion: new("success")}},
+			})
+		}
+	})
+
+	gh := setupTestClient(t, mux)
+	jobs, err := gh.ListWorkflowJobs(context.Background(), "owner", "repo", 99)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(jobs) != 2 || jobs[0].Name != "build" || jobs[1].Name != "test" {
+		t.Fatalf("expected jobs [build test] across pages, got %+v", jobs)
+	}
+}
+
+func TestHasPRCommentReaction_FindsReactionOnLaterPage(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/pulls/comments/55/reactions", func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		if page == "" || page == "1" {
+			w.Header().Set("Link", `<`+r.URL.Path+`?page=2>; rel="next"`)
+			_ = json.NewEncoder(w).Encode([]*github.Reaction{
+				{Content: new("+1"), User: &github.User{Login: new("alice")}},
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode([]*github.Reaction{
+				{Content: new("eyes"), User: &github.User{Login: new("test-bot")}},
+			})
+		}
+	})
+
+	gh := setupTestClient(t, mux)
+	found, err := gh.HasPRCommentReaction(context.Background(), "owner", "repo", 55, "eyes", "test-bot")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected reaction on page 2 to be found")
+	}
+}
+
+// TestTailBuffer covers the bounded log reader added for issue #282: only
+// the last maxBytes of a stream are retained regardless of input size or
+// write chunking, with the truncation marker and rune-boundary handling of
+// the former whole-string truncation preserved.
+func TestTailBuffer(t *testing.T) {
+	tests := []struct {
+		name   string
+		max    int
+		writes []string
+		want   string
+	}{
+		{
+			name:   "under capacity returns input unchanged",
+			max:    10,
+			writes: []string{"hello"},
+			want:   "hello",
+		},
+		{
+			name:   "exactly at capacity returns input unchanged",
+			max:    5,
+			writes: []string{"hello"},
+			want:   "hello",
+		},
+		{
+			name:   "single oversized write keeps the tail",
+			max:    4,
+			writes: []string{"0123456789"},
+			want:   "...(truncated)...\n6789",
+		},
+		{
+			name:   "sliding window across many small writes",
+			max:    6,
+			writes: []string{"aa", "bb", "cc", "dd", "ee"},
+			want:   "...(truncated)...\nccddee",
+		},
+		{
+			name:   "write larger than remaining space slides partially",
+			max:    8,
+			writes: []string{"abcd", "efghij"},
+			want:   "...(truncated)...\ncdefghij",
+		},
+		{
+			name: "cut advances past a split multibyte rune",
+			max:  4,
+			// "xhéllo" ends in é(2 bytes) l l o — keeping the last 4 bytes
+			// cuts é in half; the boundary walk drops the orphaned
+			// continuation byte.
+			writes: []string{"xhéllo"},
+			want:   "...(truncated)...\nllo",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tb := newTailBuffer(tt.max)
+			for _, w := range tt.writes {
+				n, err := tb.Write([]byte(w))
+				if err != nil || n != len(w) {
+					t.Fatalf("Write(%q) = (%d, %v), want (%d, nil)", w, n, err, len(w))
+				}
+			}
+			if got := tb.tailString(); got != tt.want {
+				t.Errorf("tailString() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetCheckRunLog_BoundsLargeLogs(t *testing.T) {
+	// Serve a log much larger than maxCILogBytes in multiple chunks and
+	// verify only the tail is returned, with the truncation marker.
+	// The API endpoint answers 302 with a pre-signed blob-storage URL, as
+	// GitHub does; the client extracts that URL via go-github and fetches
+	// the content itself.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/actions/jobs/7/logs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://"+r.Host+"/blob/logs", http.StatusFound)
+	})
+	mux.HandleFunc("/blob/logs", func(w http.ResponseWriter, r *http.Request) {
+		for i := range 3 {
+			line := strings.Repeat(fmt.Sprintf("chunk%d ", i), maxCILogBytes/7)
+			_, _ = w.Write([]byte(line))
+		}
+		_, _ = w.Write([]byte("THE END"))
+	})
+
+	gh := setupTestClient(t, mux)
+	log, err := gh.GetCheckRunLog(context.Background(), "owner", "repo", 7)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(log, "...(truncated)...\n") {
+		t.Errorf("expected truncation marker prefix, got %q", log[:min(40, len(log))])
+	}
+	if !strings.HasSuffix(log, "THE END") {
+		t.Errorf("expected log to end with the stream tail, got %q", log[max(0, len(log)-40):])
+	}
+	if len(log) > maxCILogBytes+len("...(truncated)...\n") {
+		t.Errorf("log length %d exceeds bound %d", len(log), maxCILogBytes+len("...(truncated)...\n"))
+	}
+}
+
+func TestGetCheckRunLog_RejectsExpiredStorageURL(t *testing.T) {
+	// A pre-signed storage URL that has expired answers 403 with an XML
+	// error document — that must surface as an error, not as log content.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/owner/repo/actions/jobs/8/logs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://"+r.Host+"/blob/expired", http.StatusFound)
+	})
+	mux.HandleFunc("/blob/expired", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("<Error><Code>AuthenticationFailed</Code></Error>"))
+	})
+
+	gh := setupTestClient(t, mux)
+	_, err := gh.GetCheckRunLog(context.Background(), "owner", "repo", 8)
+	if err == nil {
+		t.Fatal("expected error for expired storage URL")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("expected error to mention the status, got: %v", err)
 	}
 }
