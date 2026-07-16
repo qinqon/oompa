@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/go-github/v88/github"
 )
@@ -227,7 +228,7 @@ func (g *RESTClient) ListPRsByHead(ctx context.Context, owner, repo, headOwner, 
 		head = fmt.Sprintf("%s:%s", headOwner, branch)
 	}
 
-	prs, err := g.listPRsByHead(ctx, owner, repo, head, branch)
+	prs, err := g.listPRsByHead(ctx, owner, repo, head, branch, "")
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +239,10 @@ func (g *RESTClient) ListPRsByHead(ctx context.Context, owner, repo, headOwner, 
 	// Retry without owner prefix — GitHub's head filter doesn't match
 	// when the fork repo has a different name than the base repo
 	// (e.g. head from kubernetes-nmstate-ci against kubernetes-nmstate).
-	return g.listPRsByHead(ctx, owner, repo, branch, branch)
+	// The head filter can no longer discriminate owners, so the expected
+	// owner is verified client-side instead: without it, a same-named
+	// branch on any other fork would match.
+	return g.listPRsByHead(ctx, owner, repo, branch, branch, headOwner)
 }
 
 // listPRsByHead returns PRs whose head ref is exactly branch. Because the
@@ -248,21 +252,24 @@ func (g *RESTClient) ListPRsByHead(ctx context.Context, owner, repo, headOwner, 
 // match already decides the caller's outcome. Closed PRs are scanned most
 // recently updated first, through at most maxClosedPRPages pages, which keeps
 // recently merged or rejected fix PRs visible regardless of creation date.
-func (g *RESTClient) listPRsByHead(ctx context.Context, owner, repo, head, branch string) ([]PR, error) {
-	openPRs, err := g.listPRsByHeadState(ctx, owner, repo, head, branch, "open", 0)
+func (g *RESTClient) listPRsByHead(ctx context.Context, owner, repo, head, branch, wantHeadOwner string) ([]PR, error) {
+	openPRs, err := g.listPRsByHeadState(ctx, owner, repo, head, branch, wantHeadOwner, "open", 0)
 	if err != nil {
 		return nil, err
 	}
 	if len(openPRs) > 0 {
 		return openPRs, nil
 	}
-	return g.listPRsByHeadState(ctx, owner, repo, head, branch, "closed", maxClosedPRPages)
+	return g.listPRsByHeadState(ctx, owner, repo, head, branch, wantHeadOwner, "closed", maxClosedPRPages)
 }
 
 // listPRsByHeadState lists PRs in the given state whose head ref is exactly
 // branch, paginated most recently updated first. maxPages == 0 means no page
 // limit.
-func (g *RESTClient) listPRsByHeadState(ctx context.Context, owner, repo, head, branch, state string, maxPages int) ([]PR, error) {
+// wantHeadOwner, when non-empty, additionally requires the PR's head user to
+// match — used by the branch-only fallback where the head filter cannot
+// discriminate between forks.
+func (g *RESTClient) listPRsByHeadState(ctx context.Context, owner, repo, head, branch, wantHeadOwner, state string, maxPages int) ([]PR, error) {
 	opts := &github.PullRequestListOptions{
 		Head:      head,
 		State:     state,
@@ -283,6 +290,9 @@ func (g *RESTClient) listPRsByHeadState(ctx context.Context, owner, repo, head, 
 			// Verify the head ref actually matches — the GitHub API may ignore
 			// the head filter when the branch doesn't exist on the upstream repo
 			if p.GetHead().GetRef() != branch {
+				continue
+			}
+			if wantHeadOwner != "" && p.GetHead().GetUser().GetLogin() != wantHeadOwner {
 				continue
 			}
 			prs = append(prs, PR{
@@ -400,16 +410,34 @@ func truncateLogTail(log string) string {
 	if len(log) <= maxCILogBytes {
 		return log
 	}
-	return "...(truncated)...\n" + log[len(log)-maxCILogBytes:]
+	// Advance to a rune boundary so the byte cut cannot split a multibyte
+	// character.
+	start := len(log) - maxCILogBytes
+	for start < len(log) && !utf8.RuneStart(log[start]) {
+		start++
+	}
+	return "...(truncated)...\n" + log[start:]
 }
 
 func (g *RESTClient) GetCheckRunLog(ctx context.Context, owner, repo string, checkRunID int64) (string, error) {
-	// The check run ID is the same as the job ID for GitHub Actions
-	_, resp, err := g.client.Actions.GetWorkflowJobLogs(ctx, owner, repo, checkRunID, 4)
+	// The check run ID is the same as the job ID for GitHub Actions.
+	return g.fetchJobLogTail(ctx, owner, repo, checkRunID)
+}
+
+// fetchJobLogTail downloads the logs for a workflow job and returns the
+// truncated tail. go-github follows the storage redirects itself (without
+// forwarding the API authorization header), so the returned body is the log
+// content.
+func (g *RESTClient) fetchJobLogTail(ctx context.Context, owner, repo string, jobID int64) (string, error) {
+	_, resp, err := g.client.Actions.GetWorkflowJobLogs(ctx, owner, repo, jobID, 4)
 	if err != nil {
 		return "", fmt.Errorf("getting job logs: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetching job logs: unexpected status %s", resp.Status)
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -667,6 +695,9 @@ func (g *RESTClient) GetLatestReleaseSHA(ctx context.Context, owner, repo string
 // server-side date filtering (e.g. ">=2026-06-15T09:00:00Z"). Results are
 // paginated when the window exceeds one page.
 func (g *RESTClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowID, status string, limit int, since time.Time) ([]WorkflowRun, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	perPage := min(limit, 100)
 
 	opts := &github.ListWorkflowRunsOptions{
@@ -768,27 +799,5 @@ func (g *RESTClient) CountCommitsSince(ctx context.Context, owner, repo string, 
 
 // GetWorkflowJobLogs fetches the logs for a specific workflow job.
 func (g *RESTClient) GetWorkflowJobLogs(ctx context.Context, owner, repo string, jobID int64) (string, error) {
-	logURL, _, err := g.client.Actions.GetWorkflowJobLogs(ctx, owner, repo, jobID, 2)
-	if err != nil {
-		return "", fmt.Errorf("getting workflow job logs: %w", err)
-	}
-
-	// Fetch the log content from the redirect URL
-	req, err := http.NewRequestWithContext(ctx, "GET", logURL.String(), http.NoBody)
-	if err != nil {
-		return "", fmt.Errorf("creating log request: %w", err)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetching log: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("reading log: %w", err)
-	}
-
-	return truncateLogTail(string(body)), nil
+	return g.fetchJobLogTail(ctx, owner, repo, jobID)
 }

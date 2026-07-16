@@ -53,13 +53,13 @@ Follow the pattern in `pkg/agent/ci.go` — see `ProcessCIFailures` for a comple
 
 ### Adding a new GitHub API method
 
-See `pkg/agent/github.go` for reference implementations of paginated API calls:
+See `internal/gh/client.go` for reference implementations of paginated API calls:
 
-1. Add the method signature to the `GitHubClient` interface in `pkg/agent/github.go`.
-2. Implement it on `*GoGitHubClient` in the same file.
+1. Add the method signature to the `Client` interface in `internal/gh/client.go`.
+2. Implement it on `*RESTClient` in the same file.
 3. Add the mock implementation to `mockGitHubClient` in `pkg/agent/mocks_test.go`.
-4. Add a no-op or pass-through implementation to `DryRunGitHubClient` in `pkg/agent/dryrun.go` (no-op for mutating methods, pass-through for reads).
-5. Write a test using `httptest.NewServer` in `pkg/agent/github_test.go`.
+4. Add a no-op or pass-through implementation to `DryRunClient` in `internal/gh/dryrun.go` (no-op for mutating methods, pass-through for reads).
+5. Write a test using `httptest.NewServer` in `internal/gh/client_test.go`.
 
 ### Adding a new tracked state field
 
