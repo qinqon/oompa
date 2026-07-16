@@ -401,11 +401,6 @@ func TestPostToSlack_HTTPError(t *testing.T) {
 	}
 }
 
-// TestCheckFindings covers the Check* finding-collection surface —
-// CheckCIStatus, checkRebaseNeededWithStates, checkConflictsWithStates, and
-// CheckNewReviews — against a slackTestAgent with one open PR (#100),
-// asserting finding count, owner/repo, category, message content, dedup key,
-// and lastReportedAt-based stale filtering.
 func TestSlackReporter_EmptyDedupKey(t *testing.T) {
 	reporter, posts := newCountingWebhook(t)
 

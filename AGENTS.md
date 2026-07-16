@@ -17,7 +17,7 @@ make fmt    # gofmt/goimports via golangci-lint fmt — run before committing
 - `internal/worktree` — clone and per-branch git worktree management (`Manager`, `GitManager`).
 - `internal/events` — observability event model and the Unix-socket server/client behind status/TUI.
 - `internal/slack` — Slack webhook reporter (`Reporter`, `Finding`) with cross-restart dedup state.
-- `pkg/agent` re-exports all internal names via type aliases and wrapper funcs, so agent code and `cmd/oompa` use one import.
+- `pkg/agent` re-exports the internal names it consumes via type aliases and wrapper funcs, so `cmd/oompa` and most agent code keep a single import surface.
 - `test/e2e` — binary-level tests against a fake GitHub HTTP server.
 
 ## Single-File Verification
