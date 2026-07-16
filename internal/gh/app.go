@@ -1,4 +1,4 @@
-package agent
+package gh
 
 import (
 	"context"
@@ -9,19 +9,19 @@ import (
 	"github.com/google/go-github/v88/github"
 )
 
-// GitHubAppAuth holds the GitHub App authentication state.
-type GitHubAppAuth struct {
-	Client    *GoGitHubClient
+// AppAuth holds the GitHub App authentication state.
+type AppAuth struct {
+	Client    *RESTClient
 	TokenFunc func(context.Context) (string, error)
 	Login     string
 	Name      string
 	Email     string
 }
 
-// NewGitHubAppAuth creates a GitHub client and token provider from GitHub App credentials.
+// NewAppAuth creates a GitHub client and token provider from GitHub App credentials.
 // It uses the App's private key to generate JWTs and exchange them for installation tokens.
 // The returned TokenFunc provides short-lived installation tokens (valid ~1 hour, auto-refreshed).
-func NewGitHubAppAuth(appID, installationID int64, privateKey []byte) (*GitHubAppAuth, error) {
+func NewAppAuth(appID, installationID int64, privateKey []byte) (*AppAuth, error) {
 	// Create app-level transport (JWT) to fetch app metadata
 	appTransport, err := ghinstallation.NewAppsTransport(http.DefaultTransport, appID, privateKey)
 	if err != nil {
@@ -43,7 +43,7 @@ func NewGitHubAppAuth(appID, installationID int64, privateKey []byte) (*GitHubAp
 		return nil, fmt.Errorf("creating installation transport: %w", err)
 	}
 
-	client, err := NewGoGitHubClientFromHTTPClient(&http.Client{Transport: itr})
+	client, err := NewRESTClientFromHTTPClient(&http.Client{Transport: itr})
 	if err != nil {
 		return nil, fmt.Errorf("creating installation client: %w", err)
 	}
@@ -65,7 +65,7 @@ func NewGitHubAppAuth(appID, installationID int64, privateKey []byte) (*GitHubAp
 	}
 	email := fmt.Sprintf("%d+%s@users.noreply.github.com", botUser.GetID(), slug)
 
-	return &GitHubAppAuth{
+	return &AppAuth{
 		Client:    client,
 		TokenFunc: func(ctx context.Context) (string, error) { return itr.Token(ctx) },
 		Login:     login,

@@ -1,4 +1,4 @@
-package agent
+package gh
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/google/go-github/v88/github"
 )
 
-func setupTestClient(t *testing.T, mux *http.ServeMux) *GoGitHubClient {
+func setupTestClient(t *testing.T, mux *http.ServeMux) *RESTClient {
 	t.Helper()
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -26,7 +26,7 @@ func setupTestClient(t *testing.T, mux *http.ServeMux) *GoGitHubClient {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	return &GoGitHubClient{client: client}
+	return &RESTClient{client: client}
 }
 
 func TestListLabeledIssues(t *testing.T) {
@@ -1031,7 +1031,7 @@ func TestNewGoGitHubClient_EnvOverridesBaseURL(t *testing.T) {
 	defer server.Close()
 
 	t.Setenv("OOMPA_GITHUB_API_URL", server.URL+"/")
-	gh, err := NewGoGitHubClient("test-token")
+	gh, err := NewRESTClient("test-token")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
