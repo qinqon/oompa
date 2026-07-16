@@ -1069,9 +1069,9 @@ func TestAddIssueCommentReaction(t *testing.T) {
 	}
 }
 
-// TestPagination covers the resp.NextPage loops added for issue #281: every
-// list endpoint the agent reads must aggregate results across pages instead
-// of silently dropping everything after the first.
+// The *_Paginates tests below cover the resp.NextPage loops added for issue
+// #281: every list endpoint the agent reads must aggregate results across
+// pages instead of silently dropping everything after the first.
 func TestListLabeledIssues_Paginates(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/issues", func(w http.ResponseWriter, r *http.Request) {
@@ -1279,8 +1279,9 @@ func TestTailBuffer(t *testing.T) {
 func TestGetCheckRunLog_BoundsLargeLogs(t *testing.T) {
 	// Serve a log much larger than maxCILogBytes in multiple chunks and
 	// verify only the tail is returned, with the truncation marker.
-	// The API endpoint answers with a redirect to blob storage, as GitHub
-	// does; go-github follows it and hands back the storage response.
+	// The API endpoint answers 302 with a pre-signed blob-storage URL, as
+	// GitHub does; the client extracts that URL via go-github and fetches
+	// the content itself.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/repos/owner/repo/actions/jobs/7/logs", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "http://"+r.Host+"/blob/logs", http.StatusFound)
@@ -1299,10 +1300,10 @@ func TestGetCheckRunLog_BoundsLargeLogs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.HasPrefix(log, "...(truncated)...\n") {
-		t.Errorf("expected truncation marker prefix, got %q", log[:40])
+		t.Errorf("expected truncation marker prefix, got %q", log[:min(40, len(log))])
 	}
 	if !strings.HasSuffix(log, "THE END") {
-		t.Errorf("expected log to end with the stream tail, got %q", log[len(log)-40:])
+		t.Errorf("expected log to end with the stream tail, got %q", log[max(0, len(log)-40):])
 	}
 	if len(log) > maxCILogBytes+len("...(truncated)...\n") {
 		t.Errorf("log length %d exceeds bound %d", len(log), maxCILogBytes+len("...(truncated)...\n"))

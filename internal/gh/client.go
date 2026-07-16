@@ -474,6 +474,11 @@ func (g *RESTClient) GetCheckRunLog(ctx context.Context, owner, repo string, che
 	return g.fetchJobLogTail(ctx, owner, repo, checkRunID)
 }
 
+// logDownloadClient fetches log content from pre-signed storage URLs. A
+// dedicated plain client: no API auth header (pre-signed URLs reject it) and
+// an explicit timeout so a stalled storage endpoint cannot hang a poll cycle.
+var logDownloadClient = &http.Client{Timeout: 60 * time.Second}
+
 // fetchJobLogTail downloads the logs for a workflow job and returns the
 // truncated tail.
 //
@@ -492,7 +497,7 @@ func (g *RESTClient) fetchJobLogTail(ctx context.Context, owner, repo string, jo
 	if err != nil {
 		return "", fmt.Errorf("creating log request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := logDownloadClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching log: %w", err)
 	}
