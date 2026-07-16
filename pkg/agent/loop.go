@@ -272,10 +272,13 @@ func (a *Agent) emit(event Event) {
 //
 //	defer a.trackAction(CategoryCheck, "working", "Checking X", "X check complete")()
 func (a *Agent) trackAction(category EventCategory, state, startMsg, doneMsg string) func() {
+	// Capture the worker name once so the started and completed events are
+	// always attributed to the same worker.
+	worker := a.workerName()
 	a.emit(Event{
 		Type:     EventActionStarted,
 		Category: category,
-		Worker:   a.workerName(),
+		Worker:   worker,
 		State:    state,
 		Action:   startMsg,
 	})
@@ -283,7 +286,7 @@ func (a *Agent) trackAction(category EventCategory, state, startMsg, doneMsg str
 		a.emit(Event{
 			Type:     EventActionCompleted,
 			Category: category,
-			Worker:   a.workerName(),
+			Worker:   worker,
 			State:    "idle",
 			Action:   doneMsg,
 		})

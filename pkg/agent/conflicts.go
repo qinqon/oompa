@@ -239,7 +239,9 @@ func (a *Agent) postRebaseMarker(ctx context.Context, prNumber int, headSHA stri
 	if headSHA == "" {
 		return
 	}
-	_ = a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, prNumber, rebaseMarker(headSHA))
+	if err := a.gh.AddIssueComment(ctx, a.cfg.Owner, a.cfg.Repo, prNumber, rebaseMarker(headSHA)); err != nil {
+		a.logger.Warn("failed to post rebase dedup marker", "pr", prNumber, "error", err)
+	}
 }
 
 // resolveConflictsSequential invokes the coding agent to resolve conflicts for a list of tasks sequentially.
