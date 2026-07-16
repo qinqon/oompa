@@ -1,4 +1,4 @@
-package agent
+package worktree
 
 import (
 	"context"
@@ -9,10 +9,40 @@ import (
 	"testing"
 )
 
+// commandCall records one invocation seen by fakeRunner.
+type commandCall struct {
+	WorkDir string
+	Name    string
+	Args    []string
+	Stdin   string
+}
+
+// fakeRunner is a recording CommandRunner double returning scripted output.
+type fakeRunner struct {
+	calls  []commandCall
+	stdout []byte
+	stderr []byte
+	err    error
+}
+
+func (m *fakeRunner) Run(_ context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
+	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args})
+	return m.stdout, m.stderr, m.err
+}
+
+func (m *fakeRunner) RunWithStdin(_ context.Context, workDir, stdin, name string, args ...string) (stdout, stderr []byte, err error) {
+	m.calls = append(m.calls, commandCall{WorkDir: workDir, Name: name, Args: args, Stdin: stdin})
+	return m.stdout, m.stderr, m.err
+}
+
+type fakeError struct{ msg string }
+
+func (e *fakeError) Error() string { return e.msg }
+
 func TestCreateWorktree_New(t *testing.T) {
-	runner := &mockCommandRunner{}
+	runner := &fakeRunner{}
 	cloneDir := "/tmp/repo"
-	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
+	mgr := NewGitManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
 
 	path, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
 	if err != nil {
@@ -62,8 +92,8 @@ func TestCreateWorktree_ReusesExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{}
+	mgr := NewGitManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
 
 	path, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
 	if err != nil {
@@ -84,8 +114,8 @@ func TestCreateWorktree_ReusesExisting(t *testing.T) {
 }
 
 func TestRemoveWorktree(t *testing.T) {
-	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{}
+	mgr := NewGitManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	err := mgr.RemoveWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
 	if err != nil {
@@ -109,8 +139,8 @@ func TestRemoveWorktree(t *testing.T) {
 }
 
 func TestSyncWorktree(t *testing.T) {
-	runner := &mockCommandRunner{stdout: []byte("ai/issue-42\n")}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{stdout: []byte("ai/issue-42\n")}
+	mgr := NewGitManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	err := mgr.SyncWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
 	if err != nil {
@@ -149,8 +179,8 @@ func TestEnsureRepoCloned_AlreadyCloned(t *testing.T) {
 
 	repoURL := "https://github.com/owner/repo.git"
 	// Mock returns the repo URL for "git remote get-url origin"
-	runner := &mockCommandRunner{stdout: []byte(repoURL + "\n")}
-	mgr := NewGitWorktreeManager(runner, dir, repoURL, "")
+	runner := &fakeRunner{stdout: []byte(repoURL + "\n")}
+	mgr := NewGitManager(runner, dir, repoURL, "")
 
 	err := mgr.EnsureRepoCloned(context.Background())
 	if err != nil {
@@ -182,8 +212,8 @@ func TestEnsureRepoCloned_URLMismatch(t *testing.T) {
 	}
 
 	// Mock returns a different URL (stale clone from another repo)
-	runner := &mockCommandRunner{stdout: []byte("https://github.com/other/repo.git\n")}
-	mgr := NewGitWorktreeManager(runner, dir, "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{stdout: []byte("https://github.com/other/repo.git\n")}
+	mgr := NewGitManager(runner, dir, "https://github.com/owner/repo.git", "")
 
 	err := mgr.EnsureRepoCloned(context.Background())
 	if err != nil {
@@ -214,8 +244,8 @@ func TestEnsureRepoCloned_URLMismatch(t *testing.T) {
 func TestEnsureRepoCloned_Fresh(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "newrepo")
 
-	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, dir, "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{}
+	mgr := NewGitManager(runner, dir, "https://github.com/owner/repo.git", "")
 
 	err := mgr.EnsureRepoCloned(context.Background())
 	if err != nil {
@@ -243,10 +273,10 @@ func TestEnsureRepoCloned_CorruptedBaseRepo(t *testing.T) {
 
 	// Mock that fails on rev-parse HEAD (corrupted repo)
 	runner := &worktreeHealthRunner{
-		mockCommandRunner: &mockCommandRunner{},
-		failRevParse:      true,
+		fakeRunner:   &fakeRunner{},
+		failRevParse: true,
 	}
-	mgr := NewGitWorktreeManager(runner, dir, "https://github.com/owner/repo.git", "")
+	mgr := NewGitManager(runner, dir, "https://github.com/owner/repo.git", "")
 
 	err := mgr.EnsureRepoCloned(context.Background())
 	if err != nil {
@@ -269,8 +299,8 @@ func TestEnsureRepoCloned_CorruptedBaseRepo(t *testing.T) {
 func TestIsWorktreeHealthy_EmptyDirectory(t *testing.T) {
 	// Empty directory (no .git file) should be detected as unhealthy
 	worktreePath := t.TempDir()
-	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{}
+	mgr := NewGitManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	if mgr.isWorktreeHealthy(context.Background(), worktreePath) {
 		t.Error("expected empty directory to be unhealthy")
@@ -291,8 +321,8 @@ func TestIsWorktreeHealthy_GitStatusFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := &mockCommandRunner{err: &mockError{msg: "fatal: not a git repository"}}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{err: &fakeError{msg: "fatal: not a git repository"}}
+	mgr := NewGitManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	if mgr.isWorktreeHealthy(context.Background(), worktreePath) {
 		t.Error("expected worktree with failing git status to be unhealthy")
@@ -306,8 +336,8 @@ func TestIsWorktreeHealthy_Healthy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{}
+	mgr := NewGitManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	if !mgr.isWorktreeHealthy(context.Background(), worktreePath) {
 		t.Error("expected healthy worktree to pass validation")
@@ -325,8 +355,8 @@ func TestCreateWorktree_HealthyReusesNoRecreate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{}
+	mgr := NewGitManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
 
 	path, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
 	if err != nil {
@@ -363,8 +393,8 @@ func TestCreateWorktree_EmptyDirectoryRecreates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
+	runner := &fakeRunner{}
+	mgr := NewGitManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
 
 	_, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
 	if err != nil {
@@ -404,10 +434,10 @@ func TestCreateWorktree_CorruptedGitStatusRecreates(t *testing.T) {
 	// Runner that fails on git status (simulating corrupted objects)
 	// but succeeds on subsequent calls (worktree remove, prune, add, etc.)
 	runner := &worktreeHealthRunner{
-		mockCommandRunner: &mockCommandRunner{},
-		failGitStatus:     true,
+		fakeRunner:    &fakeRunner{},
+		failGitStatus: true,
 	}
-	mgr := NewGitWorktreeManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
+	mgr := NewGitManager(runner, cloneDir, "https://github.com/owner/repo.git", "")
 
 	_, err := mgr.CreateWorktree(context.Background(), "ai/issue-42")
 	if err != nil {
@@ -435,20 +465,20 @@ func TestCreateWorktree_CorruptedGitStatusRecreates(t *testing.T) {
 
 // worktreeHealthRunner selectively fails git commands for health check tests.
 type worktreeHealthRunner struct {
-	*mockCommandRunner
+	*fakeRunner
 	failGitStatus bool // fail on "git status"
 	failRevParse  bool // fail on "git rev-parse HEAD"
 }
 
 func (r *worktreeHealthRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
-	r.mockCommandRunner.Run(ctx, workDir, name, args...) //nolint:errcheck // recording call
+	r.fakeRunner.Run(ctx, workDir, name, args...) //nolint:errcheck // recording call
 
 	if name == "git" && len(args) > 0 {
 		if r.failGitStatus && args[0] == "status" {
-			return nil, []byte("fatal: not a git repository"), &mockError{msg: "exit status 128"}
+			return nil, []byte("fatal: not a git repository"), &fakeError{msg: "exit status 128"}
 		}
 		if r.failRevParse && args[0] == "rev-parse" && len(args) > 1 && args[1] == "HEAD" {
-			return nil, []byte("fatal: unable to read sha1"), &mockError{msg: "exit status 128"}
+			return nil, []byte("fatal: unable to read sha1"), &fakeError{msg: "exit status 128"}
 		}
 	}
 
@@ -458,14 +488,14 @@ func (r *worktreeHealthRunner) Run(ctx context.Context, workDir, name string, ar
 // syncPullFailRunner fails `git pull --rebase` with a scripted stderr and
 // optionally fails the recovery `git reset --hard`.
 type syncPullFailRunner struct {
-	mockCommandRunner
+	fakeRunner
 	pullStderr  string
 	failReset   bool
 	resetStderr string
 }
 
 func (r *syncPullFailRunner) Run(ctx context.Context, workDir, name string, args ...string) (stdout, stderr []byte, err error) {
-	stdout, stderr, err = r.mockCommandRunner.Run(ctx, workDir, name, args...)
+	stdout, stderr, err = r.fakeRunner.Run(ctx, workDir, name, args...)
 	if name == "git" && len(args) > 0 {
 		switch args[0] {
 		case "pull":
@@ -483,7 +513,7 @@ func (r *syncPullFailRunner) Run(ctx context.Context, workDir, name string, args
 
 func TestSyncWorktree_PullConflictResetsToRemote(t *testing.T) {
 	runner := &syncPullFailRunner{pullStderr: "CONFLICT (content): Merge conflict in main.go\nerror: could not apply abc123"}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+	mgr := NewGitManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	err := mgr.SyncWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
 	if err != nil {
@@ -507,7 +537,7 @@ func TestSyncWorktree_PullConflictResetsToRemote(t *testing.T) {
 
 func TestSyncWorktree_MissingRemoteRefIsOK(t *testing.T) {
 	runner := &syncPullFailRunner{pullStderr: "fatal: couldn't find remote ref ai/issue-42"}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+	mgr := NewGitManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	err := mgr.SyncWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
 	if err != nil {
@@ -526,7 +556,7 @@ func TestSyncWorktree_PullFailureAndResetFailureErrors(t *testing.T) {
 		failReset:   true,
 		resetStderr: "fatal: ambiguous argument 'origin/ai/issue-42'",
 	}
-	mgr := NewGitWorktreeManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
+	mgr := NewGitManager(runner, "/tmp/repo", "https://github.com/owner/repo.git", "")
 
 	err := mgr.SyncWorktree(context.Background(), "/tmp/repo/worktrees/ai/issue-42")
 	if err == nil {

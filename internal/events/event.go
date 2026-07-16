@@ -1,4 +1,6 @@
-package agent
+// Package events defines the observability event model emitted by the
+// agent and the Unix-socket server/client used by the status and TUI views.
+package events
 
 import (
 	"fmt"
