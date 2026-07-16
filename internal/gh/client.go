@@ -93,35 +93,41 @@ func NewRESTClientFromHTTPClient(httpClient *http.Client) (*RESTClient, error) {
 
 func (g *RESTClient) ListLabeledIssues(ctx context.Context, owner, repo, label string) ([]Issue, error) {
 	opts := &github.IssueListByRepoOptions{
-		Labels: []string{label},
-		State:  "open",
-	}
-
-	ghIssues, _, err := g.client.Issues.ListByRepo(ctx, owner, repo, opts)
-	if err != nil {
-		return nil, fmt.Errorf("listing issues: %w", err)
+		Labels:      []string{label},
+		State:       "open",
+		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
 	var issues []Issue
-	for _, gi := range ghIssues {
-		if gi.IsPullRequest() {
-			continue
+	for {
+		ghIssues, resp, err := g.client.Issues.ListByRepo(ctx, owner, repo, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing issues: %w", err)
 		}
-		var labels []string
-		for _, l := range gi.Labels {
-			labels = append(labels, l.GetName())
+		for _, gi := range ghIssues {
+			if gi.IsPullRequest() {
+				continue
+			}
+			var labels []string
+			for _, l := range gi.Labels {
+				labels = append(labels, l.GetName())
+			}
+			var assignees []string
+			for _, a := range gi.Assignees {
+				assignees = append(assignees, a.GetLogin())
+			}
+			issues = append(issues, Issue{
+				Number:    gi.GetNumber(),
+				Title:     gi.GetTitle(),
+				Body:      gi.GetBody(),
+				Labels:    labels,
+				Assignees: assignees,
+			})
 		}
-		var assignees []string
-		for _, a := range gi.Assignees {
-			assignees = append(assignees, a.GetLogin())
+		if resp.NextPage == 0 {
+			break
 		}
-		issues = append(issues, Issue{
-			Number:    gi.GetNumber(),
-			Title:     gi.GetTitle(),
-			Body:      gi.GetBody(),
-			Labels:    labels,
-			Assignees: assignees,
-		})
+		opts.ListOptions.Page = resp.NextPage
 	}
 	return issues, nil
 }
@@ -333,13 +339,25 @@ func (g *RESTClient) GetCheckRuns(ctx context.Context, owner, repo, ref string) 
 	opts := &github.ListCheckRunsOptions{
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
-	result, _, err := g.client.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, opts)
-	if err != nil {
-		return nil, fmt.Errorf("listing check runs: %w", err)
-	}
 
 	var runs []CheckRun
-	for _, r := range result.CheckRuns {
+	for {
+		result, resp, err := g.client.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing check runs: %w", err)
+		}
+		runs = appendCheckRuns(runs, result.CheckRuns)
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return runs, nil
+}
+
+// appendCheckRuns converts go-github check runs onto the accumulator.
+func appendCheckRuns(runs []CheckRun, ghRuns []*github.CheckRun) []CheckRun {
+	for _, r := range ghRuns {
 		var output string
 		if r.Output != nil {
 			output = r.Output.GetText()
@@ -361,7 +379,7 @@ func (g *RESTClient) GetCheckRuns(ctx context.Context, owner, repo, ref string) 
 			CompletedAt: completedAt,
 		})
 	}
-	return runs, nil
+	return runs
 }
 
 // GetCommitStatuses queries the Combined Status API and returns failures as
@@ -404,19 +422,51 @@ func (g *RESTClient) GetCommitStatuses(ctx context.Context, owner, repo, ref str
 // context for investigation while avoiding excessively large prompts.
 const maxCILogBytes = 50000
 
-// truncateLogTail returns the last maxCILogBytes of a log, with a truncation
-// marker prepended when the log was cut.
-func truncateLogTail(log string) string {
-	if len(log) <= maxCILogBytes {
-		return log
+// tailBuffer is an io.Writer that retains only the last max bytes written,
+// so arbitrarily large streams are consumed with bounded memory. The buffer
+// is allocated once; each overflowing write slides the retained window with
+// copies instead of growing the backing array.
+type tailBuffer struct {
+	buf   []byte // fixed backing array of cap max
+	n     int    // bytes currently retained
+	total int64  // total bytes ever written
+}
+
+func newTailBuffer(maxBytes int) *tailBuffer {
+	return &tailBuffer{buf: make([]byte, maxBytes)}
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	t.total += int64(written)
+	if written >= len(t.buf) {
+		// The chunk alone fills the window: keep only its tail.
+		copy(t.buf, p[written-len(t.buf):])
+		t.n = len(t.buf)
+		return written, nil
 	}
-	// Advance to a rune boundary so the byte cut cannot split a multibyte
-	// character.
-	start := len(log) - maxCILogBytes
-	for start < len(log) && !utf8.RuneStart(log[start]) {
+	if drop := t.n + written - len(t.buf); drop > 0 {
+		copy(t.buf, t.buf[drop:t.n])
+		t.n -= drop
+	}
+	copy(t.buf[t.n:], p)
+	t.n += written
+	return written, nil
+}
+
+// tailString returns the retained tail, prepending a truncation marker when
+// bytes were dropped. The cut is advanced to a rune boundary so it cannot
+// split a multibyte character.
+func (t *tailBuffer) tailString() string {
+	s := string(t.buf[:t.n])
+	if t.total <= int64(t.n) {
+		return s
+	}
+	start := 0
+	for start < len(s) && !utf8.RuneStart(s[start]) {
 		start++
 	}
-	return "...(truncated)...\n" + log[start:]
+	return "...(truncated)...\n" + s[start:]
 }
 
 func (g *RESTClient) GetCheckRunLog(ctx context.Context, owner, repo string, checkRunID int64) (string, error) {
@@ -425,13 +475,26 @@ func (g *RESTClient) GetCheckRunLog(ctx context.Context, owner, repo string, che
 }
 
 // fetchJobLogTail downloads the logs for a workflow job and returns the
-// truncated tail. go-github follows the storage redirects itself (without
-// forwarding the API authorization header), so the returned body is the log
-// content.
+// truncated tail.
+//
+// go-github does not download log content: the API answers with a 302 whose
+// Location is a pre-signed storage URL, and GetWorkflowJobLogs returns that
+// URL (following only intermediate 301s, up to maxRedirects). The content is
+// fetched from the storage URL with a plain client — deliberately without
+// the API authorization header, which pre-signed URLs reject.
 func (g *RESTClient) fetchJobLogTail(ctx context.Context, owner, repo string, jobID int64) (string, error) {
-	_, resp, err := g.client.Actions.GetWorkflowJobLogs(ctx, owner, repo, jobID, 4)
+	logURL, _, err := g.client.Actions.GetWorkflowJobLogs(ctx, owner, repo, jobID, 4)
 	if err != nil {
-		return "", fmt.Errorf("getting job logs: %w", err)
+		return "", fmt.Errorf("getting job logs URL: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, logURL.String(), http.NoBody)
+	if err != nil {
+		return "", fmt.Errorf("creating log request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetching log: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -439,25 +502,35 @@ func (g *RESTClient) fetchJobLogTail(ctx context.Context, owner, repo string, jo
 		return "", fmt.Errorf("fetching job logs: unexpected status %s", resp.Status)
 	}
 
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
+	// Stream through a fixed-size tail buffer so memory stays bounded
+	// regardless of log size.
+	tail := newTailBuffer(maxCILogBytes)
+	if _, err := io.Copy(tail, resp.Body); err != nil {
 		return "", fmt.Errorf("reading job logs: %w", err)
 	}
 
-	return truncateLogTail(string(data)), nil
+	return tail.tailString(), nil
 }
 
 func (g *RESTClient) HasPRCommentReaction(ctx context.Context, owner, repo string, commentID int64, reaction, user string) (bool, error) {
-	reactions, _, err := g.client.Reactions.ListPullRequestCommentReactions(ctx, owner, repo, commentID, nil)
-	if err != nil {
-		return false, fmt.Errorf("listing reactions: %w", err)
+	opts := &github.ListReactionOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
 	}
-	for _, r := range reactions {
-		if r.GetContent() == reaction && r.GetUser().GetLogin() == user {
-			return true, nil
+	for {
+		reactions, resp, err := g.client.Reactions.ListPullRequestCommentReactions(ctx, owner, repo, commentID, opts)
+		if err != nil {
+			return false, fmt.Errorf("listing reactions: %w", err)
 		}
+		for _, r := range reactions {
+			if r.GetContent() == reaction && r.GetUser().GetLogin() == user {
+				return true, nil
+			}
+		}
+		if resp.NextPage == 0 {
+			return false, nil
+		}
+		opts.Page = resp.NextPage
 	}
-	return false, nil
 }
 
 func (g *RESTClient) GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error) {
@@ -493,27 +566,34 @@ func (g *RESTClient) GetPRMergeable(ctx context.Context, owner, repo string, prN
 }
 
 func (g *RESTClient) GetPRReviews(ctx context.Context, owner, repo string, prNumber int, sinceID int64) ([]PRReview, error) {
-	ghReviews, _, err := g.client.PullRequests.ListReviews(ctx, owner, repo, prNumber, nil)
-	if err != nil {
-		return nil, fmt.Errorf("listing PR reviews: %w", err)
-	}
+	opts := &github.ListOptions{PerPage: 100}
 
 	var reviews []PRReview
-	for _, r := range ghReviews {
-		if r.GetID() <= sinceID {
-			continue
+	for {
+		ghReviews, resp, err := g.client.PullRequests.ListReviews(ctx, owner, repo, prNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing PR reviews: %w", err)
 		}
-		body := strings.TrimSpace(r.GetBody())
-		if body == "" {
-			continue
+		for _, r := range ghReviews {
+			if r.GetID() <= sinceID {
+				continue
+			}
+			body := strings.TrimSpace(r.GetBody())
+			if body == "" {
+				continue
+			}
+			reviews = append(reviews, PRReview{
+				ID:          r.GetID(),
+				User:        r.GetUser().GetLogin(),
+				State:       r.GetState(),
+				Body:        body,
+				SubmittedAt: r.GetSubmittedAt().Time,
+			})
 		}
-		reviews = append(reviews, PRReview{
-			ID:          r.GetID(),
-			User:        r.GetUser().GetLogin(),
-			State:       r.GetState(),
-			Body:        body,
-			SubmittedAt: r.GetSubmittedAt().Time,
-		})
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 	return reviews, nil
 }
@@ -749,20 +829,27 @@ func (g *RESTClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 
 // ListWorkflowJobs lists jobs for a specific workflow run.
 func (g *RESTClient) ListWorkflowJobs(ctx context.Context, owner, repo string, runID int64) ([]WorkflowJob, error) {
-	opts := &github.ListWorkflowJobsOptions{}
-
-	jobs, _, err := g.client.Actions.ListWorkflowJobs(ctx, owner, repo, runID, opts)
-	if err != nil {
-		return nil, fmt.Errorf("listing workflow jobs: %w", err)
+	opts := &github.ListWorkflowJobsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
 	var workflowJobs []WorkflowJob
-	for _, job := range jobs.Jobs {
-		workflowJobs = append(workflowJobs, WorkflowJob{
-			ID:         job.GetID(),
-			Name:       job.GetName(),
-			Conclusion: job.GetConclusion(),
-		})
+	for {
+		jobs, resp, err := g.client.Actions.ListWorkflowJobs(ctx, owner, repo, runID, opts)
+		if err != nil {
+			return nil, fmt.Errorf("listing workflow jobs: %w", err)
+		}
+		for _, job := range jobs.Jobs {
+			workflowJobs = append(workflowJobs, WorkflowJob{
+				ID:         job.GetID(),
+				Name:       job.GetName(),
+				Conclusion: job.GetConclusion(),
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 
 	return workflowJobs, nil
