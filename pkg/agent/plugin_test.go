@@ -331,7 +331,6 @@ func TestStartPluginVersionChecker_RunsAndStops(t *testing.T) {
 
 	logger := discardLogger()
 	reporter := NewSlackReporter(ts.URL, "", logger)
-	reporter.httpClient = ts.Client()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	initDone := StartPluginVersionChecker(ctx, reporter, logger)

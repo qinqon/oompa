@@ -11,8 +11,13 @@ make fmt    # gofmt/goimports via golangci-lint fmt — run before committing
 ## Package Layout
 
 - `cmd/oompa` — CLI entry point, flag binding, polling loop, TUI.
-- `pkg/agent` — the agent core: reactions (`Process*`), GitHub client, state, config, events, Slack.
-- `internal/execx` — external command execution (`CommandRunner`, `ExecRunner`, streaming). `pkg/agent` re-exports the names via type aliases; further leaves (github client, worktree, events) are being peeled out the same way.
+- `pkg/agent` — the agent core: reactions (`Process*`), state, config, prompts, coding-agent backends.
+- `internal/execx` — external command execution (`CommandRunner`, `ExecRunner`, streaming).
+- `internal/gh` — GitHub REST client (`Client` interface, `RESTClient`, etag cache, dry-run wrapper, App auth) and the GitHub domain types.
+- `internal/worktree` — clone and per-branch git worktree management (`Manager`, `GitManager`).
+- `internal/events` — observability event model and the Unix-socket server/client behind status/TUI.
+- `internal/slack` — Slack webhook reporter (`Reporter`, `Finding`) with cross-restart dedup state.
+- `pkg/agent` re-exports the internal names it consumes via type aliases and wrapper funcs, so `cmd/oompa` and most agent code keep a single import surface.
 - `test/e2e` — binary-level tests against a fake GitHub HTTP server.
 
 ## Single-File Verification

@@ -1,6 +1,8 @@
 package agent
 
 import (
+	ghapi "github.com/qinqon/oompa/internal/gh"
+
 	"context"
 	"fmt"
 	"log/slog"
@@ -624,7 +626,7 @@ func (a *Agent) CheckCIStatus(ctx context.Context, lastReportedAt time.Time) []S
 					Repo:     a.cfg.Repo,
 					PRNumber: work.PRNumber,
 					PRTitle:  work.IssueTitle,
-					PRURL:    prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber),
+					PRURL:    ghapi.PRURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber),
 					Category: "ci",
 					Message:  msg,
 					DedupKey: fmt.Sprintf("ci:%s:%s", headSHA, r.Name),
@@ -661,7 +663,7 @@ func (a *Agent) checkRebaseNeededWithStates(ctx context.Context, states map[int]
 		}
 
 		if needsRebase {
-			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+			pURL := ghapi.PRURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
 
 			// Check dynamic rebase conditions for richer Slack reporting
 			msg := fmt.Sprintf("⚠️ <%s|PR #%d> is behind %s", pURL, work.PRNumber, a.defaultBranch())
@@ -700,7 +702,7 @@ func (a *Agent) checkConflictsWithStates(_ context.Context, states map[int]strin
 		}
 
 		if mergeState == "dirty" {
-			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+			pURL := ghapi.PRURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
 			findings = append(findings, SlackFinding{
 				Owner:    a.cfg.Owner,
 				Repo:     a.cfg.Repo,
@@ -761,7 +763,7 @@ func (a *Agent) CheckNewReviews(ctx context.Context, lastReportedAt time.Time) [
 					maxID = c.ID
 				}
 			}
-			pURL := prURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
+			pURL := ghapi.PRURL(a.cfg.Owner, a.cfg.Repo, work.PRNumber)
 			findings = append(findings, SlackFinding{
 				Owner:    a.cfg.Owner,
 				Repo:     a.cfg.Repo,
