@@ -12,6 +12,20 @@ import (
 // message change. The outer automation reads and deletes it during squash/amend.
 const commitMsgFile = ".oompa-commit-msg"
 
+// scratchFiles lists well-known scratch files that agents may create in the
+// worktree but must never be committed. They are removed before every staging
+// operation to prevent accidental inclusion in commits.
+var scratchFiles = []string{".pr-body.md", commitMsgFile}
+
+// removeScratchFiles deletes well-known scratch files from the worktree so that
+// a subsequent `git add -A` cannot stage them. Errors are ignored because the
+// files may not exist.
+func removeScratchFiles(worktreePath string) {
+	for _, name := range scratchFiles {
+		os.Remove(filepath.Join(worktreePath, name)) //nolint:errcheck // best-effort
+	}
+}
+
 // readCommitMsgFile reads and removes the commit message override file from the
 // worktree root. Returns the trimmed contents and true if the file existed and
 // was non-empty; returns ("", false) otherwise.
@@ -196,8 +210,12 @@ func (a *Agent) gitAmendAll(ctx context.Context, worktreePath string) error {
 		a.logger.Info("[dry-run] would amend commit", "worktree", worktreePath)
 		return nil
 	}
-	// Read the commit message override BEFORE git add -A so it doesn't get staged.
+	// Read the commit message override BEFORE removing scratch files so we
+	// capture the content before it is deleted.
 	newMsg, hasNewMsg := readCommitMsgFile(worktreePath)
+
+	// Remove scratch files so git add -A cannot stage them.
+	removeScratchFiles(worktreePath)
 
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "add", "-A"); err != nil {
 		return fmt.Errorf("git add: %w (stderr: %s)", err, string(stderr))
@@ -224,8 +242,12 @@ func (a *Agent) gitSquashInto(ctx context.Context, worktreePath, targetSHA strin
 		a.logger.Info("[dry-run] would squash into", "worktree", worktreePath, "target", shortSHA(targetSHA))
 		return nil
 	}
-	// Read the commit message override BEFORE git add -A so it doesn't get staged.
+	// Read the commit message override BEFORE removing scratch files so we
+	// capture the content before it is deleted.
 	newMsg, hasNewMsg := readCommitMsgFile(worktreePath)
+
+	// Remove scratch files so git add -A cannot stage them.
+	removeScratchFiles(worktreePath)
 
 	// Stage all changes first to capture any unstaged modifications the agent left behind
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "add", "-A"); err != nil {
@@ -288,13 +310,24 @@ func (a *Agent) gitSquashCommits(ctx context.Context, worktreePath string, issue
 	}
 	commitMessages := strings.TrimSpace(string(logOut))
 
+	// Remove scratch files from the worktree before the soft-reset.
+	removeScratchFiles(worktreePath)
+
 	// Reset to origin default branch while keeping changes staged
 	if _, stderr, err := a.runner.Run(ctx, worktreePath, "git", "reset", "--soft", a.originDefaultBranch()); err != nil {
 		return fmt.Errorf("git reset --soft: %w (stderr: %s)", err, string(stderr))
 	}
 
-	// Unstage .pr-body.md if the agent accidentally staged it — it must not be committed.
-	a.runner.Run(ctx, worktreePath, "git", "restore", "--staged", ".pr-body.md") //nolint:errcheck // best-effort
+	// If a scratch file was already committed, the soft-reset leaves it in the
+	// index even though the worktree copy was deleted above. Remove it from the
+	// index so it is not included in the squash commit. --ignore-unmatch handles
+	// the common case where the file was never committed; any other failure is a
+	// real error.
+	for _, name := range scratchFiles {
+		if _, stderr, rmErr := a.runner.Run(ctx, worktreePath, "git", "rm", "--cached", "--ignore-unmatch", "-f", name); rmErr != nil {
+			return fmt.Errorf("git rm --cached %s: %w (stderr: %s)", name, rmErr, string(stderr))
+		}
+	}
 
 	// Create a single commit with a meaningful message.
 	// Strip any Signed-off-by/Assisted-by trailers the agent may have added to individual

@@ -94,6 +94,39 @@ func TestReadCommitMsgFile_Empty(t *testing.T) {
 	}
 }
 
+// TestRemoveScratchFiles verifies that removeScratchFiles deletes all known
+// scratch files from the worktree and tolerates missing files.
+func TestRemoveScratchFiles(t *testing.T) {
+	tests := []struct {
+		name  string
+		files []string // files to create before calling removeScratchFiles
+	}{
+		{"all scratch files present", []string{".pr-body.md", commitMsgFile}},
+		{"only pr-body present", []string{".pr-body.md"}},
+		{"only commit-msg present", []string{commitMsgFile}},
+		{"no scratch files present", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, f := range tt.files {
+				if err := os.WriteFile(filepath.Join(dir, f), []byte("scratch"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			removeScratchFiles(dir)
+
+			for _, name := range scratchFiles {
+				if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+					t.Errorf("expected %s to be removed, but it still exists", name)
+				}
+			}
+		})
+	}
+}
+
 func TestEnsureTrailers_AppendsWhenMissing(t *testing.T) {
 	agent := newTestAgent(&mockGitHubClient{}, &mockCommandRunner{}, &mockWorktreeManager{})
 	agent.cfg.SignedOffBy = "Test User <test@example.com>"
